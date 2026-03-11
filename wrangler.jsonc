@@ -1,0 +1,38 @@
+{
+  "name": "tableo-assitant-worker",
+  "main": "src/app.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+    },
+  ],
+  "vars": {
+    "BASE_BRANCH": "main",
+    "CODEX_MODEL": "openai/gpt-5.2-codex",
+    "MAX_REVIEW_FILES": "50",
+    "ALLOWED_REPOS": "tableoltd/tableo-s3-browser-app",
+    "REVIEW_TRIGGER": "@donmerge"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      }
+    ],
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": [
+        "Sandbox"
+      ],
+      "tag": "v1"
+    }
+  ],
+}

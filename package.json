@@ -1,0 +1,19 @@
+{
+  "name": "tableorag3",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@cloudflare/sandbox": "^0.7.17",
+    "@flue/client": "^0.0.31",
+    "@flue/cloudflare": "^0.0.3",
+    "valibot": "^1.2.0",
+    "wrangler": "^4.72.0"
+  }
+}
