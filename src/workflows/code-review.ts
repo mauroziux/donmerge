@@ -34,7 +34,7 @@ interface WebhookPayload {
     number: number;
     pull_request?: Record<string, unknown>;
   };
-  comment?: { body?: string };
+  comment?: { body?: string; id?: number };
 }
 
 interface ReviewComment {
@@ -45,17 +45,32 @@ interface ReviewComment {
   severity: 'critical' | 'suggestion';
 }
 
+```
+
+interface PreviousComment {
+  id: number;
+  path: string;
+  line: number;
+  body: string;
+  inReplyToId?: number;
+}
+
+interface PreviousComment {
+  id: number;
+  path: string;
+  line: number;
+  body: string;
+  inReplyToId?: number;
+}
+
 interface ReviewResult {
   approved: boolean;
   summary: string;
   lineComments: ReviewComment[];
   criticalIssues: string[];
   suggestions: string[];
-  stats: {
-    filesReviewed: number;
-    criticalIssuesFound: number;
-    suggestionsProvided: number;
-  };
+  resolvedComments?: number[];
+  fileSummaries?: FileSummary[]; // Brief summary of changes per file
 }
 
 interface WebhookResult {
@@ -63,15 +78,38 @@ interface WebhookResult {
   body: Record<string, unknown>;
 }
 
-export async function processGitHubCodeReviewWebhook(
+interface WebhookContext {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  retrigger: boolean;
+  commentId?: number;
+  commentType?: 'issue' | 'review';
+  installationId?: number;
+  instruction?: string; // Custom instruction from the user
+}
+
+interface FastValidationResult {
+  shouldProcess: boolean;
+  status: number;
+  body: Record<string, unknown>;
+  context?: WebhookContext;
+}
+
+/**
+ * Fast validation that completes within GitHub's 10s timeout.
+ * Validates signature, repo allowlist, and trigger conditions.
+ * Returns context needed for background processing.
+ */
+export async function validateWebhookFast(
   env: WorkerEnv,
   event: string,
   signature: string,
   rawBody: string,
-): Promise<WebhookResult> {
+): Promise<FastValidationResult> {
   const isValid = await verifyWebhookSignature(env.GITHUB_WEBHOOK_SECRET, rawBody, signature);
   if (!isValid) {
-    return { status: 401, body: { error: 'invalid signature' } };
+    return { shouldProcess: false, status: 401, body: { error: 'invalid signature' } };
   }
 
   const payload = JSON.parse(rawBody) as WebhookPayload;
@@ -79,11 +117,12 @@ export async function processGitHubCodeReviewWebhook(
   const repo = payload.repository?.name;
 
   if (!owner || !repo) {
-    return { status: 400, body: { error: 'missing repository context' } };
+    return { shouldProcess: false, status: 400, body: { error: 'missing repository context' } };
   }
 
   if (!isRepoAllowed(owner, repo, env.ALLOWED_REPOS)) {
     return {
+      shouldProcess: false,
       status: 403,
       body: {
         error: 'repository not allowed',
@@ -94,29 +133,80 @@ export async function processGitHubCodeReviewWebhook(
 
   const trigger = parseTrigger(event, payload, env.REVIEW_TRIGGER);
   if (!trigger.shouldRun) {
-    return { status: 200, body: { ok: true, skipped: true, reason: trigger.reason } };
+    return { shouldProcess: false, status: 200, body: { ok: true, skipped: true, reason: trigger.reason } };
   }
 
-  const githubToken = await resolveGitHubToken(env, payload.installation?.id);
-  const prNumber = trigger.prNumber;
-  const pr = await githubFetch<{ base: { ref: string }; head: { sha: string } }>(
+  return {
+    shouldProcess: true,
+    status: 202,
+    body: { ok: true, accepted: true },
+    context: {
+      owner,
+      repo,
+      prNumber: trigger.prNumber,
+      retrigger: trigger.retrigger,
+      commentId: trigger.commentId,
+      commentType: trigger.commentType,
+      installationId: payload.installation?.id,
+      instruction: trigger.instruction,
+    },
+  };
+}
+
+/**
+ * Background processing of the code review.
+ * Called via waitUntil() after responding 202 to GitHub.
+ */
+export async function processGitHubCodeReviewWebhook(
+  env: WorkerEnv,
+  context: WebhookContext,
+): Promise<void> {
+  const { owner, repo, prNumber, retrigger, commentId, commentType, installationId, instruction } = context;
+
+  console.log('Starting background review', { owner, repo, prNumber, retrigger, hasInstruction: !!instruction });
+
+  let githubToken: string;
+  try {
+    githubToken = await resolveGitHubToken(env, installationId);
+  } catch (error) {
+    console.error('Failed to resolve GitHub token', {
+      owner,
+      repo,
+      error: error instanceof Error ? error.message : error,
+    });
+    return;
+  }
+
+  // Add eyes reaction to comment if triggered by @donmerge mention
+  if (commentId && commentType) {
+    await addCommentReaction(owner, repo, commentId, commentType, githubToken);
+  }
+
+  const pr = await githubFetch<{ base: { ref: string }; head: { sha: string }; body?: string; title?: string }>(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
     githubToken,
   );
 
   const baseBranch = env.BASE_BRANCH ?? 'main';
   if (pr.base.ref !== baseBranch) {
-    return {
-      status: 200,
-      body: {
-        ok: true,
-        skipped: true,
-        reason: `PR base is '${pr.base.ref}', expected '${baseBranch}'`,
-      },
-    };
+    console.log('PR skipped - wrong base branch', {
+      owner,
+      repo,
+      prNumber,
+      expected: baseBranch,
+      actual: pr.base.ref,
+    });
+    return;
   }
 
   const checkRun = await createCheckRun(owner, repo, pr.head.sha, githubToken);
+
+  // On retrigger, fetch previous DonMerge comments to potentially resolve them
+  let previousComments: PreviousComment[] = [];
+  if (retrigger) {
+    previousComments = await fetchPreviousDonMergeComments(owner, repo, prNumber, githubToken);
+    console.log('Found previous comments to check', { count: previousComments.length });
+  }
 
   try {
     const review = await runReviewWithFlue({
@@ -125,22 +215,29 @@ export async function processGitHubCodeReviewWebhook(
       owner,
       repo,
       prNumber,
-      retrigger: trigger.retrigger,
+      retrigger,
+      instruction,
+      previousComments,
     });
+
+    // Resolve comments that are now fixed
+    if (review.resolvedComments && review.resolvedComments.length > 0) {
+      await resolveFixedComments(owner, repo, review.resolvedComments, githubToken);
+    }
 
     await publishReview(owner, repo, prNumber, pr.head.sha, review, githubToken);
     await completeCheckRun(owner, repo, checkRun.id, review, githubToken);
+    await updatePRDescription(owner, repo, prNumber, review, githubToken);
 
-    return {
-      status: 200,
-      body: {
-        ok: true,
-        prNumber,
-        checkRunId: checkRun.id,
-        approved: review.approved,
-        criticalIssues: review.stats.criticalIssuesFound,
-      },
-    };
+    console.log('Review completed successfully', {
+      owner,
+      repo,
+      prNumber,
+      approved: review.approved,
+      criticalIssues: review.criticalIssues.length,
+      suggestions: review.suggestions.length,
+      resolvedComments: review.resolvedComments?.length ?? 0,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown error';
     await failCheckRun(owner, repo, checkRun.id, message, githubToken);
@@ -151,7 +248,6 @@ export async function processGitHubCodeReviewWebhook(
       model: env.CODEX_MODEL ?? 'codex-5.3',
       error: message,
     });
-    return { status: 500, body: { ok: false, error: message } };
   }
 }
 
@@ -159,9 +255,13 @@ function parseTrigger(event: string, payload: WebhookPayload, triggerTag?: strin
   shouldRun: boolean;
   prNumber: number;
   retrigger: boolean;
+  commentId?: number;
+  commentType?: 'issue' | 'review';
+  instruction?: string;
   reason?: string;
 } {
   const triggerRegex = getTriggerRegex(triggerTag);
+  const triggerTagNormalized = (triggerTag ?? '@donmerge').trim();
 
   if (event === 'pull_request') {
     const valid = payload.action === 'opened' || payload.action === 'synchronize' || payload.action === 'reopened';
@@ -178,7 +278,15 @@ function parseTrigger(event: string, payload: WebhookPayload, triggerTag?: strin
     if (!shouldRun || !payload.issue) {
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'comment does not trigger review' };
     }
-    return { shouldRun: true, prNumber: payload.issue.number, retrigger: true };
+    const instruction = extractInstruction(body, triggerTagNormalized);
+    return {
+      shouldRun: true,
+      prNumber: payload.issue.number,
+      retrigger: true,
+      commentId: payload.comment?.id,
+      commentType: 'issue',
+      instruction,
+    };
   }
 
   if (event === 'pull_request_review_comment') {
@@ -192,10 +300,37 @@ function parseTrigger(event: string, payload: WebhookPayload, triggerTag?: strin
         reason: 'review comment does not trigger review',
       };
     }
-    return { shouldRun: true, prNumber: payload.pull_request.number, retrigger: true };
+    const instruction = extractInstruction(body, triggerTagNormalized);
+    return {
+      shouldRun: true,
+      prNumber: payload.pull_request.number,
+      retrigger: true,
+      commentId: payload.comment?.id,
+      commentType: 'review',
+      instruction,
+    };
   }
 
   return { shouldRun: false, prNumber: 0, retrigger: false, reason: `unsupported event: ${event}` };
+}
+
+/**
+ * Extract instruction from comment after the trigger tag.
+ * Example: "@donmerge focus on security" -> "focus on security"
+ */
+function extractInstruction(body: string, triggerTag: string): string | undefined {
+  // Create regex to find trigger tag and capture everything after it
+  const escaped = triggerTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`${escaped}\\s+(.+)$`, 'im');
+  const match = body.match(regex);
+  
+  if (match && match[1]) {
+    const instruction = match[1].trim();
+    // Return only if there's actual content
+    return instruction.length > 0 ? instruction : undefined;
+  }
+  
+  return undefined;
 }
 
 function getTriggerRegex(triggerTag?: string): RegExp {
@@ -242,6 +377,8 @@ async function runReviewWithFlue(input: {
   repo: string;
   prNumber: number;
   retrigger: boolean;
+  instruction?: string;
+  previousComments?: PreviousComment[];
 }): Promise<ReviewResult> {
   const sessionId = `review-${input.owner}-${input.repo}-${input.prNumber}-${Date.now()}`;
   const sandbox = getSandbox(input.env.Sandbox, sessionId, { sleepAfter: '30m' });
@@ -265,19 +402,109 @@ async function runReviewWithFlue(input: {
     .join('\n');
 
   const model = parseModelConfig(input.env.CODEX_MODEL);
-  const reviewPrompt = [
-    'You are a senior code reviewer.',
-    'Return only JSON with this schema:',
-    '{"approved":boolean,"summary":string,"lineComments":[{"path":string,"line":number,"side":"LEFT"|"RIGHT","body":string,"severity":"critical"|"suggestion"}],"criticalIssues":[string],"suggestions":[string],"stats":{"filesReviewed":number,"criticalIssuesFound":number,"suggestionsProvided":number}}',
-    'Rules:',
-    '- mark approved=false if any critical issue exists',
-    '- provide line-specific comments only for lines present in patches',
-    '- keep comments actionable and concise',
-    `Repository: ${input.owner}/${input.repo}`,
-    `PR Number: ${input.prNumber}`,
-    `Retrigger: ${input.retrigger}`,
-    `Diff:\n${diffText}`,
-  ].join('\n');
+
+  // Build prompt with optional instruction and previous comments
+  const promptParts: string[] = [
+    'You are DonMerge 🤠, a friendly senior code reviewer.',
+    '',
+    'PERSONALITY (subtle touches only):',
+    '- Occasionally start comments with: "Compadre...", "Che...", "Ojo...", "Mira..."',
+    '- Keep it professional but warm, like a helpful senior dev',
+    '',
+    'CRITICAL RULES:',
+    '1. If you find ANY issues, you MUST provide lineComments - do NOT just list them in criticalIssues',
+    '2. Each lineComment MUST include the exact line number from the diff',
+    '3. If no issues found, set approved=true and lineComments=[]',
+    '',
+    'COMMENT FORMAT (required for each issue):',
+    'Each lineComment body must follow this exact format:',
+    '',
+    '🔴 **Issue:** [clear description of the problem]',
+    '',
+    '💡 **Suggestion:** [specific code or approach to fix it]',
+    '',
+    '🤖 **AI Prompt:**',
+    '```',
+    '[copy-pasteable prompt for an AI assistant to fix this]',
+    '```',
+    '',
+    'EXAMPLE COMMENT:',
+    '"🔴 **Issue:** This SQL query is vulnerable to injection attacks - user input is directly concatenated.',
+    '',
+    '💡 **Suggestion:** Use parameterized queries with prepared statements.',
+    '',
+    '🤖 **AI Prompt:**',
+    '```',
+    'Refactor this database query to use parameterized statements. Replace string concatenation with placeholders and bind the user input parameter.',
+    '```"',
+    '',
+    'IMPORTANT: Write ALL comments in English. Only sprinkle in Spanish expressions occasionally (like "Compadre", "Che").',
+    'A developer who speaks no Spanish should understand everything.',
+  ];
+
+  // Add custom instruction if provided
+  if (input.instruction) {
+    promptParts.push('');
+    promptParts.push('📝 CUSTOM INSTRUCTION FROM DEVELOPER:');
+    promptParts.push(`"${input.instruction}"`);
+    promptParts.push('Focus your review based on this instruction.');
+  }
+
+  // Add previous comments to check if retrigger
+  if (input.retrigger && input.previousComments && input.previousComments.length > 0) {
+    promptParts.push('');
+    promptParts.push('🔄 PREVIOUS COMMENTS TO CHECK:');
+    promptParts.push('You previously left these comments. Check if they have been addressed in the new diff.');
+    promptParts.push('If an issue is FIXED, include its ID in the "resolvedComments" array.');
+    promptParts.push('');
+    input.previousComments.forEach((comment, index) => {
+      promptParts.push(`[${index + 1}] ID:${comment.id} | File:${comment.path}:${comment.line}`);
+      promptParts.push(`    ${comment.body.substring(0, 200)}${comment.body.length > 200 ? '...' : ''}`);
+    });
+  }
+
+  promptParts.push('');
+  promptParts.push('Return ONLY valid JSON (no markdown, no code blocks) with this schema:');
+  promptParts.push('{');
+  promptParts.push('  "approved": boolean,');
+  promptParts.push('  "summary": "1-2 sentence summary of the review",');
+  promptParts.push('  "fileSummaries": [');
+  promptParts.push('    {');
+  promptParts.push('      "path": "exact file path from diff",');
+  promptParts.push('      "changeType": "added" or "modified" or "deleted" or "renamed",');
+  promptParts.push('      "summary": "1 sentence describing what changed in this file"');
+  promptParts.push('    }');
+  promptParts.push('  ],');
+  promptParts.push('  "lineComments": [');
+  promptParts.push('    {');
+  promptParts.push('      "path": "exact file path from diff",');
+  promptParts.push('      "line": number (exact line from diff),');
+  promptParts.push('      "side": "LEFT" or "RIGHT",');
+  promptParts.push('      "body": "Full comment with Issue, Suggestion, and AI Prompt sections",');
+  promptParts.push('      "severity": "critical" or "suggestion"');
+  promptParts.push('    }');
+  promptParts.push('  ],');
+  if (input.retrigger && input.previousComments && input.previousComments.length > 0) {
+    promptParts.push('  "resolvedComments": [list of previous comment IDs that are now fixed],');
+  }
+  promptParts.push('  "criticalIssues": ["brief summary of each critical issue"],');
+  promptParts.push('  "suggestions": ["brief summary of each suggestion"]');
+  promptParts.push('}');
+  promptParts.push('');
+  promptParts.push('RULES:');
+  promptParts.push('- approved=false if ANY critical issues exist');
+  promptParts.push('- ALWAYS provide lineComments for issues - do NOT skip them');
+  promptParts.push('- ALWAYS provide fileSummaries for ALL files in the diff');
+  promptParts.push('- Only comment on lines that exist in the patches');
+  promptParts.push('- If no issues, return approved=true with empty arrays');
+  promptParts.push(`Repository: ${input.owner}/${input.repo}`);
+  promptParts.push(`PR Number: ${input.prNumber}`);
+  promptParts.push(`Is Retrigger: ${input.retrigger}`);
+  promptParts.push('');
+  promptParts.push('DIFF TO REVIEW:');
+  promptParts.push(diffText);
+
+  const reviewPrompt = promptParts.join('\n');
 
   let response: string;
   try {
@@ -286,25 +513,114 @@ async function runReviewWithFlue(input: {
     throw new Error(formatPromptError(error, `${model.providerID}/${model.modelID}`));
   }
   const parsed = safeJsonParse<ReviewResult>(response);
-  return normalizeReviewResult(parsed, filesToReview.length);
+  return normalizeReviewResult(parsed, input.previousComments);
 }
 
-function normalizeReviewResult(result: ReviewResult, filesReviewed: number): ReviewResult {
-  const criticalIssuesFound = result.criticalIssues?.length ?? 0;
-  const suggestionsProvided = result.suggestions?.length ?? 0;
+function normalizeReviewResult(
+  result: ReviewResult,
+  previousComments?: PreviousComment[],
+): ReviewResult {
+  // Validate resolvedComments against actual previous comment IDs
+  const resolvedComments: number[] = [];
+  if (result.resolvedComments && previousComments && previousComments.length > 0) {
+    const validIds = new Set(previousComments.map((c) => c.id));
+    resolvedComments = result.resolvedComments.filter((id) => validIds.has(id));
+  }
 
   return {
-    approved: criticalIssuesFound === 0 && result.approved,
+    approved: (result.criticalIssues?.length ?? 0) === 0 && result.approved,
     summary: result.summary ?? 'Review completed.',
     lineComments: Array.isArray(result.lineComments) ? result.lineComments : [],
     criticalIssues: Array.isArray(result.criticalIssues) ? result.criticalIssues : [],
     suggestions: Array.isArray(result.suggestions) ? result.suggestions : [],
-    stats: {
-      filesReviewed,
-      criticalIssuesFound,
-      suggestionsProvided,
-    },
+    resolvedComments,
+    fileSummaries: Array.isArray(result.fileSummaries) ? result.fileSummaries : [],
   };
+}
+
+/**
+ * Fetch previous DonMerge review comments from the PR.
+ * These will be checked against the new diff to see if issues are resolved.
+ */
+async function fetchPreviousDonMergeComments(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token: string,
+): Promise<PreviousComment[]> {
+  try {
+    // Fetch all review comments on the PR
+    const comments = await githubFetch<
+      Array<{
+        id: number;
+        path: string;
+        line: number;
+        body: string;
+        user: { login: string } | null;
+        in_reply_to_id?: number;
+      }>
+    >(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100`,
+      token,
+    );
+
+    // Filter to only DonMerge's comments (exclude replies/acknowledgments)
+    const donmergeComments = comments.filter(
+      (c) =>
+        c.user?.login &&
+        (c.user.login.includes('donmerge') || c.user.login.includes('DonMerge')) &&
+        !c.body.includes('✅ Fixed') && // Exclude our resolution replies
+        !c.in_reply_to_id, // Only original comments, not replies
+    );
+
+    return donmergeComments.map((c) => ({
+      id: c.id,
+      path: c.path,
+      line: c.line,
+      body: c.body,
+    }));
+  } catch (error) {
+    console.error('Failed to fetch previous comments', {
+      owner,
+      repo,
+      prNumber,
+      error: error instanceof Error ? error.message : error,
+    });
+    return [];
+  }
+}
+
+/**
+ * Reply to resolved comments acknowledging the fix.
+ * GitHub doesn't have a "resolve thread" API, so we reply with a confirmation.
+ */
+async function resolveFixedComments(
+  owner: string,
+  repo: string,
+  commentIds: number[],
+  token: string,
+): Promise<void> {
+  for (const commentId of commentIds) {
+    try {
+      // Reply to the comment thread acknowledging the fix
+      await githubFetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}/replies`,
+        token,
+        'POST',
+        {
+          body: '✅ **Fixed!** Thanks for addressing this, compadre! 🤠',
+        },
+      );
+    } catch (error) {
+      // Log but don't fail - this is a nice-to-have
+      console.error('Failed to reply to resolved comment', {
+        owner,
+        repo,
+        commentId,
+        error: error instanceof Error ? error.message : error,
+      });
+    }
+  }
 }
 
 async function publishReview(
@@ -343,12 +659,103 @@ async function createCheckRun(owner: string, repo: string, headSha: string, toke
     token,
     'POST',
     {
-      name: 'Codex Code Review',
+      name: 'DonMerge 🤠 Review',
       head_sha: headSha,
       status: 'in_progress',
       started_at: new Date().toISOString(),
     },
   );
+}
+
+async function addCommentReaction(
+  owner: string,
+  repo: string,
+  commentId: number,
+  commentType: 'issue' | 'review',
+  token: string,
+): Promise<void> {
+  const url =
+    commentType === 'issue'
+      ? `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}/reactions`
+      : `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}/reactions`;
+
+  try {
+    await githubFetch(
+      url,
+      token,
+      'POST',
+      { content: 'eyes' },
+    );
+  } catch (error) {
+    console.error('Failed to add reaction', { owner, repo, commentId, error: error instanceof Error ? error.message : error });
+  }
+}
+
+async function updatePRDescription(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  review: ReviewResult,
+  token: string,
+): Promise<void> {
+  const pr = await githubFetch<{ body: string; title: string }>(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+    token,
+  );
+
+  const donmergeSection = buildDonmergeSection(review);
+  const separator = '<!-- donmerge-review -->';
+  
+  let newBody = pr.body ?? '';
+  
+  // Remove existing donmerge section if present
+  const separatorIndex = newBody.indexOf(separator);
+  if (separatorIndex !== -1) {
+    newBody = newBody.substring(0, separatorIndex).trimEnd();
+  }
+
+  // Append new donmerge section
+  newBody = `${newBody}\n\n${separator}\n${donmergeSection}`;
+
+  await githubFetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+    token,
+    'PATCH',
+    { body: newBody },
+  );
+}
+
+function buildDonmergeSection(review: ReviewResult): string {
+  const statusEmoji = review.approved ? '✅' : '⚠️';
+  const statusText = review.approved ? 'All good, compadre!' : 'Ojo, some things need attention';
+  const timestamp = new Date().toISOString();
+
+  const greeting = review.approved
+    ? '¡Nada que objetar! This PR is ready to merge.'
+    : 'Check the comments on the files above for details on what needs to be fixed.';
+
+  let section = `
+## DonMerge 🤠 Code Review
+
+> ${greeting}
+
+**Status:** ${statusEmoji} ${statusText}
+
+${review.summary}
+`;
+
+  // Only add issue lists if there are issues
+  if (review.criticalIssues.length > 0) {
+    section += `\n### 🔴 Critical Issues\n${review.criticalIssues.map((i) => `- ${i}`).join('\n')}\n`;
+  }
+  
+  if (review.suggestions.length > 0) {
+    section += `\n### 💡 Suggestions\n${review.suggestions.map((s) => `- ${s}`).join('\n')}\n`;
+  }
+
+  section += `\n---\n*Reviewed by DonMerge 🤠 — ${timestamp}*\n`;
+
+  return section;
 }
 
 async function completeCheckRun(
@@ -358,9 +765,9 @@ async function completeCheckRun(
   review: ReviewResult,
   token: string,
 ): Promise<void> {
-  const title = review.approved ? 'Code Review Passed' : 'Code Review Failed';
-  const critical = review.criticalIssues.length > 0 ? review.criticalIssues.map((issue) => `- ${issue}`).join('\n') : '- None';
-  const suggestions = review.suggestions.length > 0 ? review.suggestions.map((issue) => `- ${issue}`).join('\n') : '- None';
+  const title = review.approved ? '✅ All good, compadre!' : '⚠️ Ojo, some things need attention';
+  const critical = review.criticalIssues.length > 0 ? review.criticalIssues.map((issue) => `- ${issue}`).join('\n') : '- None, ¡nada que objetar!';
+  const suggestions = review.suggestions.length > 0 ? review.suggestions.map((issue) => `- ${issue}`).join('\n') : '- All clean!';
 
   await githubFetch(
     `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}`,
@@ -373,7 +780,7 @@ async function completeCheckRun(
       output: {
         title,
         summary: review.summary,
-        text: `Critical Issues:\n${critical}\n\nSuggestions:\n${suggestions}`,
+        text: `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}`,
       },
     },
   );
@@ -389,8 +796,8 @@ async function failCheckRun(owner: string, repo: string, checkRunId: number, mes
       conclusion: 'failure',
       completed_at: new Date().toISOString(),
       output: {
-        title: 'Code Review Failed',
-        summary: 'Webhook processing failed before review completed.',
+        title: '🤠 DonMerge hit a snag',
+        summary: 'Something went wrong during the review. Check the logs.',
         text: message,
       },
     },
@@ -407,6 +814,19 @@ async function createInstallationToken(installationId: number, appJwt: string): 
 }
 
 async function createGitHubAppJwt(appId: string, privateKeyPem: string): Promise<string> {
+  // Validate inputs
+  if (!appId || !privateKeyPem) {
+    throw new Error('Missing GitHub App credentials: appId or privateKey is empty');
+  }
+
+  // Check if PEM looks valid (basic sanity check)
+  if (!privateKeyPem.includes('PRIVATE KEY')) {
+    throw new Error(
+      'Invalid GitHub App private key: PEM must contain "PRIVATE KEY" header. ' +
+      'Ensure you copied the full key including -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY-----'
+    );
+  }
+
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const payload = base64UrlEncode(
@@ -418,7 +838,17 @@ async function createGitHubAppJwt(appId: string, privateKeyPem: string): Promise
   );
 
   const signingInput = `${header}.${payload}`;
-  const keyData = pemToArrayBuffer(privateKeyPem);
+  
+  let keyData: ArrayBuffer;
+  try {
+    keyData = pemToArrayBuffer(privateKeyPem);
+  } catch (error) {
+    throw new Error(
+      `Failed to parse GitHub App private key: ${error instanceof Error ? error.message : 'unknown error'}. ` +
+      'Make sure the key is in PEM format (base64 encoded).'
+    );
+  }
+
   const key = await crypto.subtle.importKey(
     'pkcs8',
     keyData,
@@ -556,18 +986,42 @@ function safeStringify(value: unknown): string {
 }
 
 function pemToArrayBuffer(pem: string): ArrayBuffer {
-  const normalized = pem
+  // Handle various PEM formats and normalize
+  let normalized = pem
+    // Handle escaped newlines from different sources
     .replace(/\\n/g, '\n')
-    .replace('-----BEGIN PRIVATE KEY-----', '')
-    .replace('-----END PRIVATE KEY-----', '')
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    // Remove PEM headers/footers (handle variations)
+    .replace(/-----BEGIN[^-]*PRIVATE KEY[^-]*-----/gi, '')
+    .replace(/-----END[^-]*PRIVATE KEY[^-]*-----/gi, '')
+    // Remove all whitespace (newlines, spaces, tabs, etc.)
     .replace(/\s+/g, '');
 
-  const binary = atob(normalized);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  // Validate base64 characters only
+  const base64Regex = /^[A-Za-z0-9+/=]+$/;
+  if (!base64Regex.test(normalized)) {
+    // Try to clean up any remaining invalid characters
+    normalized = normalized.replace(/[^A-Za-z0-9+/=]/g, '');
   }
-  return bytes.buffer;
+
+  // Add padding if needed
+  const paddingNeeded = (4 - (normalized.length % 4)) % 4;
+  normalized += '='.repeat(paddingNeeded);
+
+  try {
+    const binary = atob(normalized);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes.buffer;
+  } catch (error) {
+    throw new Error(
+      `Failed to parse PEM key: ${error instanceof Error ? error.message : 'invalid base64'}. ` +
+      `Key length: ${pem.length}, normalized length: ${normalized.length}`
+    );
+  }
 }
 
 function base64UrlEncode(value: string): string {

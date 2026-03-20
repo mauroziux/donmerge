@@ -19,6 +19,50 @@ wrangler secret put GITHUB_APP_ID
 wrangler secret put GITHUB_APP_PRIVATE_KEY
 ```
 
+### ⚠️ Important: GITHUB_APP_PRIVATE_KEY Format
+
+The private key must be configured **with escaped newlines** (`\n` as literal characters, not actual line breaks).
+
+**Option 1: Using `wrangler secret put` (recommended)**
+
+When prompted, paste the key as a single line with `\n` for newlines:
+
+```text
+-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----
+```
+
+To convert your PEM file to this format:
+
+```bash
+# macOS/Linux
+awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' your-private-key.pem
+
+# Or use this one-liner:
+paste -sd '\\n' your-private-key.pem | sed 's/$/\\n/' | tr -d '\n'
+```
+
+**Option 2: Using `.dev.vars` for local development**
+
+Create a `.dev.vars` file in the project root:
+
+```bash
+# .dev.vars (DO NOT commit this file!)
+OPENAI_API_KEY=sk-...
+GITHUB_WEBHOOK_SECRET=your-webhook-secret
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+```
+
+**Option 3: Using wrangler secret bulk**
+
+Create a `secrets.json` file and upload all secrets at once:
+
+```bash
+wrangler secret bulk secrets.json
+```
+
+> **Note:** Do NOT use actual newlines in the secret value. The worker expects `\n` as literal backslash-n characters.
+
 - Optional non-secret vars (already in `wrangler.jsonc` defaults):
 
 ```jsonc
@@ -45,9 +89,9 @@ Create a GitHub App and install it on source repositories.
   - `Pull requests: Read and write`
   - `Checks: Read and write`
   - `Contents: Read-only`
-  - `Issues: Read-only`
+  - `Issues: Read and write` (required for emoji reactions on comments)
 
-These are required for line comments and check runs.
+These are required for line comments, check runs, and comment reactions.
 
 ### Webhook Events
 
@@ -113,5 +157,11 @@ curl "https://<your-worker-domain>/health"
   - Webhook secret does not match `GITHUB_WEBHOOK_SECRET`.
 - `403/404 from GitHub API`
   - App is missing permissions or not installed on the target repository.
+- `InvalidCharacterError: atob() called with invalid base64-encoded data`
+  - The `GITHUB_APP_PRIVATE_KEY` secret is malformed.
+  - Ensure newlines are escaped as `\n` (literal backslash-n), not actual line breaks.
+  - See the "Important: GITHUB_APP_PRIVATE_KEY Format" section above.
 - No review on comment
   - Must be PR comment event and include `@donmerge`.
+- Missing permissions for reactions
+  - Ensure GitHub App has `Issues: Read and write` permission for emoji reactions.

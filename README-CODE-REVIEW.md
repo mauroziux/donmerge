@@ -7,6 +7,8 @@ An AI-powered code review assistant that provides automated, line-specific feedb
 - **Automatic PR Reviews**: Triggers on PR creation and updates
 - **Manual Re-trigger**: Re-run reviews by commenting `@codereview`
 - **Line-Specific Comments**: Provides feedback on exact lines in the diff
+- **Comment Deduplication**: Avoids repeating the same issue across re-runs
+- **Auto-Resolve Fixed Issues**: Marks previous comments as fixed when addressed
 - **GitHub Check Runs**: Creates actionable check runs with pass/fail status
 - **Critical Issue Detection**: Fails PRs with security vulnerabilities, logic errors, or breaking changes
 - **Configurable Base Branch**: Works with any base branch (default: `main`)
@@ -117,6 +119,11 @@ Please focus on security vulnerabilities and performance issues.
 
 - 🔴 **Critical**: Blocking issues (security, logic errors, breaking changes)
 - 💡 **Suggestions**: Non-blocking improvements (code quality, best practices)
+
+#### Comment Lifecycle
+
+- Existing DonMerge comments are deduplicated on re-runs
+- Fixed issues are acknowledged with a ✅ reply
 
 ### Example Review
 
