@@ -57,56 +57,22 @@ export function attachFingerprint(body: string, fingerprint: string): string {
 }
 
 /**
- * Normalize a comment body for hashing.
- */
-export function normalizeCommentBody(body: string): string {
-  const lines = body.split('\n');
-  const normalizedLines: string[] = [];
-  let inCodeBlock = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith('```')) {
-      inCodeBlock = !inCodeBlock;
-      continue;
-    }
-
-    if (inCodeBlock) {
-      continue;
-    }
-
-    if (!trimmed) {
-      continue;
-    }
-
-    const cleaned = trimmed
-      .replace(/[`*#_>]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (!cleaned) {
-      continue;
-    }
-
-    normalizedLines.push(cleaned.toLowerCase());
-  }
-
-  return normalizedLines.join(' ');
-}
-
-/**
  * Compute a stable fingerprint for a review comment.
  */
 export async function computeFingerprint(input: {
   path: string;
-  body: string;
+  issueKey?: string;
+  line: number;
+  side?: string;
   severity?: string;
 }): Promise<string> {
-  const normalizedBody = normalizeCommentBody(input.body);
-  const pieces = [input.path.trim().toLowerCase(), normalizedBody];
-  if (input.severity) {
-    pieces.push(input.severity.trim().toLowerCase());
+  const pieces = [input.path.trim().toLowerCase()];
+  if (input.issueKey) {
+    pieces.push(input.issueKey.trim().toLowerCase());
+  } else {
+    pieces.push(String(input.line));
+    if (input.side) pieces.push(input.side.trim().toLowerCase());
+    if (input.severity) pieces.push(input.severity.trim().toLowerCase());
   }
   const text = pieces.join('|');
   const data = new TextEncoder().encode(text);

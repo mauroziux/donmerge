@@ -58,6 +58,7 @@ export interface ReviewComment {
   side: 'LEFT' | 'RIGHT';
   body: string;
   severity: 'critical' | 'suggestion';
+  issueKey?: string;
 }
 
 export interface PreviousComment {

@@ -8,6 +8,7 @@ An AI-powered code review assistant that provides automated, line-specific feedb
 - **Manual Re-trigger**: Re-run reviews by commenting `@codereview`
 - **Line-Specific Comments**: Provides feedback on exact lines in the diff
 - **Comment Deduplication**: Avoids repeating the same issue across re-runs
+- **Stable Issue Keys**: Tracks findings from normalized issue identity instead of comment wording
 - **Auto-Resolve Fixed Issues**: Marks previous comments as fixed when addressed
 - **GitHub Check Runs**: Creates actionable check runs with pass/fail status
 - **Critical Issue Detection**: Fails PRs with security vulnerabilities, logic errors, or breaking changes

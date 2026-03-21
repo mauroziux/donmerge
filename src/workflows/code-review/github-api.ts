@@ -166,7 +166,7 @@ export async function publishReview(
         existingFingerprints.add(comment.fingerprint);
         continue;
       }
-      const fallback = await computeFingerprint({ path: comment.path, body: comment.body });
+      const fallback = await computeFingerprint({ path: comment.path, line: comment.line });
       existingFingerprints.add(fallback);
     }
   }
@@ -181,7 +181,9 @@ export async function publishReview(
   for (const comment of review.lineComments) {
     const fingerprint = await computeFingerprint({
       path: comment.path,
-      body: comment.body,
+      issueKey: comment.issueKey,
+      line: comment.line,
+      side: comment.side,
       severity: comment.severity,
     });
 
@@ -349,7 +351,7 @@ export async function fetchPreviousDonMergeComments(
       donmergeComments.map(async (comment) => {
         const metadata = parseFingerprint(comment.body);
         const fingerprint = metadata?.fingerprint ??
-          (await computeFingerprint({ path: comment.path, body: comment.body }));
+          (await computeFingerprint({ path: comment.path, line: comment.line }));
 
         return {
           id: comment.id,

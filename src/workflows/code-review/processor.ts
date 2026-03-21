@@ -377,7 +377,12 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       resolvedComments = result.resolvedComments.filter((id) => validIds.has(id));
     }
 
-    const lineComments = Array.isArray(result.lineComments) ? result.lineComments : [];
+    const lineComments = Array.isArray(result.lineComments)
+      ? result.lineComments.map((comment) => ({
+          ...comment,
+          issueKey: deriveIssueKey(comment),
+        }))
+      : [];
     const criticalIssues = Array.isArray(result.criticalIssues) ? result.criticalIssues : [];
 
     const hasLineComments = lineComments.length > 0;
@@ -440,6 +445,12 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     const criticalIssues = Array.isArray(result.criticalIssues) ? result.criticalIssues : [];
     const lineComments = Array.isArray(result.lineComments) ? result.lineComments : [];
 
+    for (const comment of lineComments) {
+      if (!deriveIssueKey(comment)) {
+        return { valid: false, reason: 'lineComment missing issueKey' };
+      }
+    }
+
     if (criticalIssues.length > 0 && lineComments.length === 0) {
       return { valid: false, reason: 'criticalIssues present but lineComments empty' };
     }
@@ -491,6 +502,46 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // Retry on network/timeout errors
     return true;
   }
+}
+
+function deriveIssueKey(comment: { issueKey?: string; body: string }): string | undefined {
+  const normalizedProvided = normalizeIssueKey(comment.issueKey);
+  const derivedFromBody = normalizeIssueKey(extractIssueSentence(comment.body));
+
+  return derivedFromBody ?? normalizedProvided;
+}
+
+function extractIssueSentence(body: string): string | undefined {
+  const issueMatch = body.match(/\*\*Issue:\*\*\s*([^\n]+)/i);
+  if (!issueMatch?.[1]) {
+    return undefined;
+  }
+
+  return issueMatch[1]
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/\b(compadre|che|ojo|mira)\b[:,.!]?/gi, ' ')
+    .replace(/\b(this|that|the|a|an|so|now|which|when|on|in|at|to|for|of|and|or|it|is|are)\b/gi, ' ')
+    .replace(/[^a-z0-9\s-]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeIssueKey(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .filter((segment) => segment.length > 1)
+    .slice(0, 8)
+    .join('-');
+
+  return normalized || undefined;
 }
 
 /**
