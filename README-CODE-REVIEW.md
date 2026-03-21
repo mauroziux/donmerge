@@ -124,7 +124,7 @@ Please focus on security vulnerabilities and performance issues.
 #### Comment Lifecycle
 
 - Existing DonMerge comments are deduplicated on re-runs
-- Fixed issues are acknowledged with a ✅ reply
+- Fixed issues are acknowledged once with a ✅ reply and won't be re-resolved on later runs
 
 ### Example Review
 

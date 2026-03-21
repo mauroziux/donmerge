@@ -13,10 +13,13 @@
     },
   ],
   "vars": {
-    "BASE_BRANCH": "main",
+    // Format: "owner/repo:baseBranch" - branch is optional (no branch = review all PRs)
+    // Examples:
+    //   "org/repo1:main,org/repo2:develop" - repo1 only reviews PRs to main, repo2 only to develop
+    //   "org/repo1,org/repo2:main" - repo1 reviews all PRs, repo2 only reviews PRs to main
+    "REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
     "CODEX_MODEL": "openai/gpt-5.2-codex",
     "MAX_REVIEW_FILES": "50",
-    "ALLOWED_REPOS": "tableoltd/tableo-s3-browser-app",
     "REVIEW_TRIGGER": "@donmerge"
   },
   "durable_objects": {
@@ -24,6 +27,10 @@
       {
         "class_name": "Sandbox",
         "name": "Sandbox"
+      },
+      {
+        "class_name": "ReviewProcessor",
+        "name": "ReviewProcessor"
       }
     ],
   },
@@ -33,6 +40,27 @@
         "Sandbox"
       ],
       "tag": "v1"
+    },
+    {
+      "new_sqlite_classes": [
+        "ReviewProcessor"
+      ],
+      "tag": "v2"
     }
   ],
+  "observability": {
+    "enabled": false,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": false,
+      "persist": true,
+      "head_sampling_rate": 1
+    }
+  }
 }

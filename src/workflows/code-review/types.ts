@@ -59,6 +59,10 @@ export interface ReviewComment {
   body: string;
   severity: 'critical' | 'suggestion';
   issueKey?: string;
+  ruleId?: string;
+  entityType?: 'method' | 'function' | 'class' | 'variable' | 'module';
+  symbolName?: string;
+  codeSnippet?: string;
 }
 
 export interface PreviousComment {
@@ -68,6 +72,41 @@ export interface PreviousComment {
   body: string;
   inReplyToId?: number;
   fingerprint?: string;
+  issueKey?: string;
+  ruleId?: string;
+  entityType?: 'method' | 'function' | 'class' | 'variable' | 'module';
+  symbolName?: string;
+  codeSnippet?: string;
+  resolved?: boolean;
+  resolutionReplyId?: number;
+}
+
+export type IssueStatus = 'new' | 'open' | 'fixed' | 'reintroduced' | 'dismissed';
+
+export interface TrackedIssue {
+  id: string;
+  fingerprint: string;
+  logicalKey: string;
+  anchorKey: string;
+  repo: string;
+  prNumber: number;
+  ruleId: string;
+  entityType: 'method' | 'function' | 'class' | 'variable' | 'module';
+  symbolName: string;
+  filePath: string;
+  line: number;
+  side: 'LEFT' | 'RIGHT';
+  snippetHash: string;
+  severity: 'critical' | 'suggestion';
+  body: string;
+  status: IssueStatus;
+  githubCommentId?: number;
+  resolutionReplyId?: number;
+  firstSeenCommit: string;
+  lastSeenCommit: string;
+  fixedCommit?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface FileSummary {

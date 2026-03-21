@@ -4,6 +4,11 @@
 
 import type { PreviousComment, RepoContext, ReviewResult } from './types';
 import { attachFingerprint, computeFingerprint, parseFingerprint } from './fingerprint';
+import { normalizeEntityType, normalizeRuleId, normalizeSymbolName } from './issue-identity';
+import { deriveIssueKey } from './issue-key';
+
+const RESOLVED_REPLY_MARKER = '✅ **Fixed!**';
+const META_MARKER_PREFIX = '<!-- DONMERGE_META:';
 
 /**
  * Generic GitHub API fetch helper.
@@ -162,6 +167,9 @@ export async function publishReview(
   const existingFingerprints = new Set<string>();
   if (previousComments && previousComments.length > 0) {
     for (const comment of previousComments) {
+      if (comment.resolved) {
+        continue;
+      }
       if (comment.fingerprint) {
         existingFingerprints.add(comment.fingerprint);
         continue;
@@ -192,9 +200,16 @@ export async function publishReview(
     }
 
     existingFingerprints.add(fingerprint);
+    const bodyWithMeta = attachCommentMeta(attachFingerprint(comment.body, fingerprint), {
+      ruleId: comment.ruleId,
+      entityType: comment.entityType,
+      symbolName: comment.symbolName,
+      codeSnippet: comment.codeSnippet,
+    });
+
     uniqueLineComments.push({
       path: comment.path,
-      body: attachFingerprint(comment.body, fingerprint),
+      body: bodyWithMeta,
       line: comment.line,
       side: comment.side,
     });
@@ -215,6 +230,24 @@ export async function publishReview(
     'POST',
     payload
   );
+}
+
+export async function fetchReviewComments(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token: string
+): Promise<Array<{ id: number; path: string; line: number; body: string }>> {
+  const comments = await githubFetch<
+    Array<{ id: number; path: string; line: number; body: string; user?: { login: string } }>
+  >(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`, token);
+
+  return comments.map((comment) => ({
+    id: comment.id,
+    path: comment.path,
+    line: comment.line,
+    body: comment.body,
+  }));
 }
 
 /**
@@ -338,20 +371,32 @@ export async function fetchPreviousDonMergeComments(
       token
     );
 
-    // Filter to only DonMerge's comments (exclude replies/acknowledgments)
     const donmergeComments = comments.filter(
       (c) =>
         c.user?.login &&
-        (c.user.login.includes('donmerge') || c.user.login.includes('DonMerge')) &&
-        !c.body.includes('✅ Fixed') && // Exclude our resolution replies
-        !c.in_reply_to_id // Only original comments, not replies
+        (c.user.login.includes('donmerge') || c.user.login.includes('DonMerge'))
+    );
+
+    const resolutionReplies = new Map<number, number>();
+    for (const comment of donmergeComments) {
+      if (!comment.in_reply_to_id || !comment.body.includes(RESOLVED_REPLY_MARKER)) {
+        continue;
+      }
+      resolutionReplies.set(comment.in_reply_to_id, comment.id);
+    }
+
+    const originalComments = donmergeComments.filter(
+      (comment) => !comment.in_reply_to_id && !comment.body.includes(RESOLVED_REPLY_MARKER)
     );
 
     const mapped = await Promise.all(
-      donmergeComments.map(async (comment) => {
+      originalComments.map(async (comment) => {
         const metadata = parseFingerprint(comment.body);
-        const fingerprint = metadata?.fingerprint ??
-          (await computeFingerprint({ path: comment.path, line: comment.line }));
+        const fingerprint =
+          metadata?.fingerprint ?? (await computeFingerprint({ path: comment.path, line: comment.line }));
+        const resolutionReplyId = resolutionReplies.get(comment.id);
+        const issueKey = deriveIssueKey({ body: comment.body });
+        const meta = parseCommentMeta(comment.body);
 
         return {
           id: comment.id,
@@ -359,6 +404,13 @@ export async function fetchPreviousDonMergeComments(
           line: comment.line,
           body: comment.body,
           fingerprint,
+          issueKey,
+          ruleId: meta?.ruleId,
+          entityType: meta?.entityType,
+          symbolName: meta?.symbolName,
+          codeSnippet: meta?.codeSnippet,
+          resolved: resolutionReplyId !== undefined,
+          resolutionReplyId,
         };
       })
     );
@@ -375,32 +427,89 @@ export async function fetchPreviousDonMergeComments(
   }
 }
 
+function attachCommentMeta(
+  body: string,
+  meta: {
+    ruleId?: string;
+    entityType?: string;
+    symbolName?: string;
+    codeSnippet?: string;
+  }
+): string {
+  const payload = {
+    ruleId: normalizeRuleId(meta.ruleId),
+    entityType: normalizeEntityType(meta.entityType),
+    symbolName: normalizeSymbolName(meta.symbolName),
+    codeSnippet: meta.codeSnippet ?? undefined,
+  };
+
+  return `${META_MARKER_PREFIX} ${JSON.stringify(payload)} -->\n\n${body}`;
+}
+
+function parseCommentMeta(body: string): {
+  ruleId?: string;
+  entityType?: string;
+  symbolName?: string;
+  codeSnippet?: string;
+} | null {
+  const markerIndex = body.indexOf(META_MARKER_PREFIX);
+  if (markerIndex === -1) {
+    return null;
+  }
+
+  const endIndex = body.indexOf('-->', markerIndex);
+  if (endIndex === -1) {
+    return null;
+  }
+
+  const raw = body.substring(markerIndex + META_MARKER_PREFIX.length, endIndex).trim();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      ruleId?: string;
+      entityType?: string;
+      symbolName?: string;
+      codeSnippet?: string;
+    };
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Reply to resolved comments acknowledging the fix.
  */
 export async function resolveFixedComments(
   owner: string,
   repo: string,
-  commentIds: number[],
+  prNumber: number,
+  comments: PreviousComment[],
   token: string
 ): Promise<void> {
-  for (const commentId of commentIds) {
+  for (const comment of comments) {
+    if (comment.resolved) {
+      continue;
+    }
+
     try {
-      // Reply to the comment thread acknowledging the fix
       await githubFetch(
-        `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}/replies`,
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
         token,
         'POST',
         {
-          body: '✅ **Fixed!** Thanks for addressing this, compadre! 🤠',
+          in_reply_to: comment.id,
+          body: `${RESOLVED_REPLY_MARKER} Thanks for addressing this, compadre! 🤠`,
         }
       );
     } catch (error) {
-      // Log but don't fail - this is a nice-to-have
       console.error('Failed to reply to resolved comment', {
         owner,
         repo,
-        commentId,
+        commentId: comment.id,
         error: error instanceof Error ? error.message : error,
       });
     }
