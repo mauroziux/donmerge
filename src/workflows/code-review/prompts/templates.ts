@@ -37,9 +37,17 @@ Each lineComment body must follow this exact format:
 
 🤖 **AI Prompt:**
 \`\`\`
-File: [exact file path from diff]
-[copy-pasteable prompt for an AI assistant to fix this specific file]
+Verify each finding against the current code and only fix it if needed.
+
+In \`@{filePath}\` around lines {startLine} - {endLine}, {describe what the current code does}; {precise actionable instruction to fix it}.
 \`\`\`
+
+The AI Prompt MUST:
+- Start with the preamble: "Verify each finding against the current code and only fix it if needed."
+- Reference the file with \`@\` prefix (e.g., \`@src/api/users.ts\`)
+- Specify a line range (e.g., "around lines 28 - 30")
+- Describe what the current code does BEFORE suggesting the change
+- Give a precise, actionable instruction that an AI agent can execute directly
 
 Each lineComment object must also include an issueKey in kebab-case.
 The issueKey must describe the root problem, not the wording of the comment.
@@ -61,8 +69,9 @@ export const EXAMPLE_COMMENT = `EXAMPLE COMMENT:
 
 🤖 **AI Prompt:**
 \`\`\`
-File: src/api/users.ts
-Refactor the getUserById function to use parameterized statements. Replace the string concatenation in the SQL query with placeholders and bind the userId parameter safely.
+Verify each finding against the current code and only fix it if needed.
+
+In \`@src/api/users.ts\` around lines 15 - 18, the getUserById function concatenates userId directly into the SQL string; refactor it to use parameterized statements with placeholders and bind the userId parameter safely.
 \`\`\`"`;
 
 /**
@@ -71,7 +80,11 @@ Refactor the getUserById function to use parameterized statements. Replace the s
 export const LANGUAGE_GUIDELINES = `IMPORTANT: Write ALL comments in English. Only sprinkle in Spanish expressions occasionally (like "Compadre", "Che").
 A developer who speaks no Spanish should understand everything.
 
-MANDATORY: The AI Prompt MUST start with "File:" followed by the exact file path from the diff.`;
+MANDATORY: The AI Prompt section MUST follow this exact structure:
+1. Start with: "Verify each finding against the current code and only fix it if needed."
+2. Then on a new line: "In \`@{filePath}\` around lines {start} - {end}, {current code description}; {actionable fix instruction}."
+3. The file path MUST use the \`@\` prefix and match the exact path from the diff.
+4. The line range MUST match the comment's actual line number and surrounding context.`;
 
 /**
  * Custom instruction template.
