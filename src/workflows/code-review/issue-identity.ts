@@ -3,7 +3,6 @@
  */
 
 import { base64UrlFromBuffer } from './crypto';
-import type { ReviewComment } from './types';
 
 export interface IssueIdentityInput {
   ruleId: string;
@@ -84,17 +83,4 @@ export async function computeFingerprint(input: IssueIdentityInput): Promise<str
   return hashIdentity(`${logicalKey}|${anchorKey}`);
 }
 
-export function ensureIdentityDefaults(comment: ReviewComment): ReviewComment {
-  const ruleId = normalizeRuleId(comment.ruleId);
-  const entityType = normalizeEntityType(comment.entityType) ?? 'module';
-  const symbolName = normalizeSymbolName(comment.symbolName) ?? comment.path;
-  const codeSnippet = comment.codeSnippet ?? '';
 
-  return {
-    ...comment,
-    ruleId,
-    entityType,
-    symbolName,
-    codeSnippet,
-  };
-}

@@ -519,7 +519,7 @@ export async function resolveFixedComments(
 /**
  * Fetch a single file from the repository (returns null if not found)
  */
-async function fetchRepoFile(
+export async function fetchRepoFile(
   owner: string,
   repo: string,
   path: string,
@@ -532,7 +532,10 @@ async function fetchRepoFile(
     );
     
     if (response.encoding === 'base64') {
-      return atob(response.content);
+      const binary = atob(response.content);
+      return new TextDecoder().decode(
+        Uint8Array.from(binary, c => c.charCodeAt(0))
+      );
     }
     return response.content;
   } catch (error) {

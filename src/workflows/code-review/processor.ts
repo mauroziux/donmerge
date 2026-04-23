@@ -19,6 +19,7 @@ import type {
   RepoContext as RepoContextType,
   ReviewComment,
   TrackedIssue,
+  DonmergeResolved,
 } from './types';
 import {
   githubFetch,
@@ -27,6 +28,7 @@ import {
   fetchPreviousDonMergeComments,
   fetchReviewComments,
   fetchRepoContext,
+  fetchRepoFile,
   resolveFixedComments,
   publishReview,
   completeCheckRun,
@@ -34,7 +36,7 @@ import {
   updatePRDescription,
 } from './github-api';
 import { resolveGitHubToken } from './github-auth';
-import { buildIssueIdentity, deriveIssueKey, extractIssueTerms } from './issue-key';
+import { deriveIssueKey } from './issue-key';
 import {
   buildAnchorKey,
   buildLogicalKey,
@@ -49,6 +51,17 @@ import { matchCurrentFindingsToStored, type CurrentIssue } from './issue-matcher
 import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
 import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig } from './utils';
 import { buildReviewPrompt } from './prompts';
+import {
+  fetchDonmergeConfig,
+  shouldExcludeFile,
+  resolveDonmergeSkills,
+} from './donmerge';
+import {
+  validateReviewResult,
+  normalizeReviewResult,
+  filterCommentsByMatch,
+  syncTrackedIssuesFromComments,
+} from './processor-utils';
 
 // State keys
 const STATE_KEYS = {
@@ -234,6 +247,24 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // Cache updated context
     await this.state.storage.put(STATE_KEYS.context, context);
 
+    // Fetch .donmerge config (best-effort, never fails the review)
+    let donmergeResolved: DonmergeResolved | undefined;
+    try {
+      const donmergeConfig = await fetchDonmergeConfig(owner, repo, githubToken, fetchRepoFile);
+      if (donmergeConfig) {
+        console.log('[donmerge] Loaded config', {
+          exclude: donmergeConfig.exclude?.length ?? 0,
+          include: donmergeConfig.include?.length ?? 0,
+          skills: donmergeConfig.skills?.length ?? 0,
+          severity: donmergeConfig.severity ? Object.keys(donmergeConfig.severity).length : 0,
+        });
+        // Don't resolve skills yet — wait until after repo context fetch
+        donmergeResolved = { config: donmergeConfig, skillsContent: new Map(), skillsErrors: new Map() };
+      }
+    } catch (error) {
+      console.warn('[donmerge] Failed to fetch config, continuing without it:', error);
+    }
+
     // Add eyes reaction
     if (commentId && commentType) {
       await addCommentReaction(owner, repo, commentId, commentType, githubToken);
@@ -271,6 +302,29 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         });
       }
     }
+
+    // Apply .donmerge exclude/include filtering (best-effort)
+    if (donmergeResolved) {
+      try {
+        const excludePatterns = donmergeResolved.config.exclude ?? [];
+        const includePatterns = donmergeResolved.config.include ?? [];
+        if (excludePatterns.length > 0) {
+          const beforeCount = filesToReview.length;
+          filesToReview = filesToReview.filter(
+            (file) => !shouldExcludeFile(file.filename, excludePatterns, includePatterns)
+          );
+          if (filesToReview.length < beforeCount) {
+            console.log('[donmerge] Excluded files', {
+              before: beforeCount,
+              after: filesToReview.length,
+            });
+          }
+        }
+      } catch (error) {
+        console.warn('[donmerge] File filtering failed, continuing:', error);
+      }
+    }
+
     const diffText = filesToReview
       .map((file) => `FILE: ${file.filename}\n${file.patch ?? '[no patch available]'}\n`)
       .join('\n');
@@ -278,12 +332,28 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // Fetch repo context (standards, configs, docs)
     const repoContext = await fetchRepoContext(owner, repo, githubToken);
 
+    // Resolve .donmerge skills (fetch skill file contents, best-effort)
+    if (donmergeResolved && donmergeResolved.config.skills && donmergeResolved.config.skills.length > 0) {
+      try {
+        donmergeResolved = await resolveDonmergeSkills(
+          donmergeResolved.config, owner, repo, githubToken, fetchRepoFile
+        );
+        console.log('[donmerge] Resolved skills', {
+          loaded: donmergeResolved.skillsContent.size,
+          errors: donmergeResolved.skillsErrors.size,
+        });
+      } catch (error) {
+        console.warn('[donmerge] Skill resolution failed, continuing without skills:', error);
+      }
+    }
+
     // Run LLM review
     const result = await this.runLlmReview(
       { owner, repo, prNumber, retrigger, instruction, repoContext },
       activePreviousComments,
       diffText,
-      githubToken
+      githubToken,
+      donmergeResolved
     );
 
     let storedIssues: TrackedIssue[] = [];
@@ -292,7 +362,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     if (headSha) {
       storedIssues = await loadTrackedIssues(this.state.storage);
       if (activePreviousComments.length > 0 && storedIssues.length > 0) {
-        storedIssues = this.syncTrackedIssuesFromComments(storedIssues, activePreviousComments);
+        storedIssues = syncTrackedIssuesFromComments(storedIssues, activePreviousComments);
         await saveTrackedIssues(this.state.storage, storedIssues);
       }
       currentIssues = await this.buildCurrentIssues(context, headSha, result.lineComments);
@@ -320,7 +390,13 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     const filteredResult = matchResult
       ? {
           ...result,
-          lineComments: this.filterCommentsByMatch(result.lineComments, currentIssues, matchResult),
+          lineComments: filterCommentsByMatch(
+            result.lineComments,
+            currentIssues.map((ci) => ci.fingerprint),
+            currentIssues.map((ci) => ci.logicalKey),
+            matchResult.newIssues.map((i) => i.fingerprint),
+            matchResult.reintroducedIssues.map((i) => i.logicalKey)
+          ),
         }
       : result;
 
@@ -371,7 +447,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     },
     previousComments: PreviousComment[],
     diffText: string,
-    githubToken: string
+    githubToken: string,
+    donmergeResolved?: DonmergeResolved
   ): Promise<ReviewResult> {
     const sessionId = `review-${input.owner}-${input.repo}-${input.prNumber}-${Date.now()}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
@@ -384,21 +461,26 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     await flue.setup();
 
     const model = parseModelConfig(this.env.CODEX_MODEL);
-    const prompt = buildReviewPrompt({
-      owner: input.owner,
-      repo: input.repo,
-      prNumber: input.prNumber,
-      retrigger: input.retrigger,
-      instruction: input.instruction,
-      previousComments,
-      diffText,
-      repoContext: input.repoContext,
-    });
+    const prompt = buildReviewPrompt(
+      {
+        owner: input.owner,
+        repo: input.repo,
+        prNumber: input.prNumber,
+        retrigger: input.retrigger,
+        instruction: input.instruction,
+        previousComments,
+        diffText,
+        repoContext: input.repoContext,
+      },
+      { donmergeResolved }
+    );
 
     const promptErrorHint =
       'Your previous response was invalid. Return ONLY valid JSON matching the schema. ' +
       'Ensure `summary` is present and 1-2 sentences. Ensure `prSummary` includes overview, keyChanges (non-empty), codeQuality, testingNotes, riskAssessment. ' +
       'If `criticalIssues` is non-empty, you MUST include `lineComments` for each issue.';
+
+    const severityOverrides = donmergeResolved?.config.severity;
 
     let response: string;
     let parsed: ReviewResult;
@@ -409,9 +491,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     }
 
     parsed = safeJsonParse<ReviewResult>(response);
-    const validation = this.validateReviewResult(parsed);
+    const validation = validateReviewResult(parsed);
     if (validation.valid) {
-      return this.normalizeReviewResult(parsed, previousComments);
+      return normalizeReviewResult(parsed, previousComments, severityOverrides);
     }
 
     const retryPrompt = `${prompt}\n\n${promptErrorHint}\nReason: ${validation.reason}`;
@@ -422,62 +504,17 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     }
 
     parsed = safeJsonParse<ReviewResult>(response);
-    const retryValidation = this.validateReviewResult(parsed);
+    const retryValidation = validateReviewResult(parsed);
     if (retryValidation.valid) {
-      return this.normalizeReviewResult(parsed, previousComments);
+      return normalizeReviewResult(parsed, previousComments, severityOverrides);
     }
 
     throw new Error(`Invalid review output after retry: ${retryValidation.reason}`);
   }
 
   /**
-   * Normalize and validate the review result
+   * Build issues from review comments.
    */
-  private normalizeReviewResult(
-    result: ReviewResult,
-    previousComments?: PreviousComment[]
-  ): ReviewResult {
-    const lineComments = Array.isArray(result.lineComments)
-      ? result.lineComments.map((comment) => ({
-          ...comment,
-          issueKey: deriveIssueKey(comment),
-        }))
-      : [];
-    const reconciledLineComments = this.reconcileIssueKeys(lineComments, previousComments ?? []);
-    const criticalIssues = Array.isArray(result.criticalIssues) ? result.criticalIssues : [];
-
-    const hasLineComments = reconciledLineComments.length > 0;
-    const hasCriticalIssues = criticalIssues.length > 0;
-    const approved = !hasLineComments && !hasCriticalIssues;
-
-    // Normalize prSummary
-    let prSummary: PRSummary | undefined;
-    if (result.prSummary && typeof result.prSummary === 'object') {
-      prSummary = {
-        overview: result.prSummary.overview ?? 'No overview provided.',
-        keyChanges: Array.isArray(result.prSummary.keyChanges) ? result.prSummary.keyChanges : [],
-        codeQuality: result.prSummary.codeQuality ?? 'Not assessed.',
-        testingNotes: result.prSummary.testingNotes ?? 'No testing notes provided.',
-        riskAssessment: result.prSummary.riskAssessment ?? 'Not assessed.',
-      };
-    }
-
-    const derivedSummary = prSummary
-      ? `${prSummary.overview}${prSummary.riskAssessment ? ` Risk: ${prSummary.riskAssessment}` : ''}`
-      : 'Review completed.';
-
-    return {
-      approved,
-      summary: result.summary ?? derivedSummary,
-      prSummary,
-      lineComments: reconciledLineComments,
-      criticalIssues,
-      suggestions: Array.isArray(result.suggestions) ? result.suggestions : [],
-      resolvedComments: [],
-      fileSummaries: Array.isArray(result.fileSummaries) ? result.fileSummaries : [],
-    };
-  }
-
   private async updateTrackedIssuesWithMatch(
     headSha: string,
     storedIssues: TrackedIssue[],
@@ -509,144 +546,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     await saveTrackedIssues(this.state.storage, Array.from(updatedIssues.values()));
   }
 
-  private async buildCurrentIssues(
-    context: ReviewContext,
-    headSha: string,
-    comments: ReviewComment[]
-  ): Promise<CurrentIssue[]> {
-    const now = new Date().toISOString();
-    const issues: CurrentIssue[] = [];
-
-    for (const comment of comments) {
-      const ruleId = normalizeRuleId(comment.ruleId ?? comment.issueKey) ?? 'unknown-rule';
-      const entityType = (normalizeEntityType(comment.entityType) ?? 'module') as TrackedIssue['entityType'];
-      const symbolName = normalizeSymbolName(comment.symbolName) ?? comment.path;
-      const codeSnippet = comment.codeSnippet ?? '';
-      const snippetHash = await computeSnippetHash(codeSnippet);
-      const identity = {
-        ruleId,
-        entityType,
-        symbolName,
-        filePath: comment.path,
-        codeSnippet,
-      };
-      const logicalKey = buildLogicalKey(identity);
-      const anchorKey = buildAnchorKey(identity);
-      const fingerprint = await computeFingerprint(identity);
-
-      const payload: TrackedIssue = {
-        id: crypto.randomUUID(),
-        fingerprint,
-        logicalKey,
-        anchorKey,
-        repo: context.repo,
-        prNumber: context.prNumber,
-        ruleId,
-        entityType,
-        symbolName,
-        filePath: comment.path,
-        line: comment.line,
-        side: comment.side,
-        snippetHash,
-        severity: comment.severity,
-        body: comment.body,
-        status: 'new',
-        firstSeenCommit: headSha,
-        lastSeenCommit: headSha,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      issues.push({
-        fingerprint,
-        logicalKey,
-        anchorKey,
-        payload,
-      });
-    }
-
-    return issues;
-  }
-
-  private filterCommentsByMatch(
-    comments: ReviewComment[],
-    currentIssues: CurrentIssue[],
-    match: ReturnType<typeof matchCurrentFindingsToStored>
-  ): ReviewComment[] {
-    if (currentIssues.length === 0) {
-      return comments;
-    }
-
-    const newFingerprints = new Set(match.newIssues.map((issue) => issue.fingerprint));
-    const reintroducedKeys = new Set(match.reintroducedIssues.map((issue) => issue.logicalKey));
-
-    const commentByFingerprint = new Map<string, ReviewComment>();
-    for (let i = 0; i < currentIssues.length; i += 1) {
-      commentByFingerprint.set(currentIssues[i].fingerprint, comments[i]);
-    }
-
-    const filtered: ReviewComment[] = [];
-    for (const currentIssue of currentIssues) {
-      const comment = commentByFingerprint.get(currentIssue.fingerprint);
-      if (!comment) {
-        continue;
-      }
-
-      if (newFingerprints.has(currentIssue.fingerprint)) {
-        filtered.push(comment);
-        continue;
-      }
-
-      if (reintroducedKeys.has(currentIssue.logicalKey)) {
-        filtered.push(comment);
-      }
-    }
-
-    return filtered;
-  }
-
-  private syncTrackedIssuesFromComments(
-    storedIssues: TrackedIssue[],
-    previousComments: PreviousComment[]
-  ): TrackedIssue[] {
-    if (storedIssues.length === 0 || previousComments.length === 0) {
-      return storedIssues;
-    }
-
-    return storedIssues.map((issue) => {
-      if (issue.githubCommentId) {
-        return issue;
-      }
-
-      const issueTerms = extractIssueTerms(issue.body);
-      const matching = previousComments.find((comment) => {
-        if (issue.filePath !== comment.path) {
-          return false;
-        }
-
-        if (comment.ruleId && issue.ruleId === comment.ruleId && comment.symbolName && issue.symbolName === comment.symbolName) {
-          return true;
-        }
-
-        if (comment.issueKey && (issue.ruleId === comment.issueKey || issue.logicalKey.startsWith(`${comment.issueKey}|`))) {
-          return true;
-        }
-
-        const commentTerms = extractIssueTerms(comment.body);
-        return this.hasStrongIssueTextOverlap(issueTerms, commentTerms);
-      });
-
-      if (!matching) {
-        return issue;
-      }
-
-      return {
-        ...issue,
-        githubCommentId: matching.id,
-      };
-    });
-  }
-
+  /**
+   * Attach GitHub comment IDs to new issues.
+   */
   private async attachCommentIds(
     owner: string,
     repo: string,
@@ -694,144 +596,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   }
 
   /**
-   * Validate required fields from LLM output.
-   */
-  private validateReviewResult(result: ReviewResult): { valid: boolean; reason?: string } {
-    if (!result || typeof result !== 'object') {
-      return { valid: false, reason: 'result is not an object' };
-    }
-
-    if (!result.summary || typeof result.summary !== 'string' || !result.summary.trim()) {
-      return { valid: false, reason: 'missing summary' };
-    }
-
-    const prSummary = result.prSummary as PRSummary | undefined;
-    if (!prSummary || typeof prSummary !== 'object') {
-      return { valid: false, reason: 'missing prSummary' };
-    }
-
-    if (!prSummary.overview?.trim()) return { valid: false, reason: 'missing prSummary.overview' };
-    if (!Array.isArray(prSummary.keyChanges) || prSummary.keyChanges.length === 0) {
-      return { valid: false, reason: 'missing prSummary.keyChanges' };
-    }
-    if (!prSummary.codeQuality?.trim()) return { valid: false, reason: 'missing prSummary.codeQuality' };
-    if (!prSummary.testingNotes?.trim()) return { valid: false, reason: 'missing prSummary.testingNotes' };
-    if (!prSummary.riskAssessment?.trim()) return { valid: false, reason: 'missing prSummary.riskAssessment' };
-
-    const criticalIssues = Array.isArray(result.criticalIssues) ? result.criticalIssues : [];
-    const lineComments = Array.isArray(result.lineComments) ? result.lineComments : [];
-
-    for (const comment of lineComments) {
-      if (!deriveIssueKey(comment)) {
-        return { valid: false, reason: 'lineComment missing issueKey' };
-      }
-    }
-
-    if (criticalIssues.length > 0 && lineComments.length === 0) {
-      return { valid: false, reason: 'criticalIssues present but lineComments empty' };
-    }
-
-    return { valid: true };
-  }
-
-  private hasStrongIssueTextOverlap(previousTerms: string[], currentTerms: string[]): boolean {
-    if (previousTerms.length === 0 || currentTerms.length === 0) {
-      return false;
-    }
-
-    const previousSet = new Set(previousTerms);
-    let overlap = 0;
-    for (const term of currentTerms) {
-      if (previousSet.has(term)) {
-        overlap += 1;
-      }
-    }
-
-    const baseline = Math.min(previousSet.size, new Set(currentTerms).size);
-    return overlap >= 2 && overlap / baseline >= 0.5;
-  }
-
-  private reconcileIssueKeys(
-    lineComments: ReviewResult['lineComments'],
-    previousComments: PreviousComment[]
-  ): ReviewResult['lineComments'] {
-    if (lineComments.length === 0 || previousComments.length === 0) {
-      return lineComments;
-    }
-
-    const availablePrevious = previousComments.filter((comment) => !comment.resolved);
-
-    return lineComments.map((comment) => {
-      const matchedPrevious = this.findPersistingPreviousComment(comment, availablePrevious);
-      if (!matchedPrevious?.issueKey) {
-        return comment;
-      }
-
-      return {
-        ...comment,
-        issueKey: matchedPrevious.issueKey,
-      };
-    });
-  }
-
-  private findPersistingPreviousComment(
-    currentComment: ReviewResult['lineComments'][number],
-    previousComments: PreviousComment[]
-  ): PreviousComment | undefined {
-    const currentPath = currentComment.path.trim().toLowerCase();
-    const currentTerms = extractIssueTerms(currentComment.body);
-    const currentIdentity = buildIssueIdentity(currentComment.path, currentComment.issueKey);
-
-    const sameFileComments = previousComments.filter(
-      (comment) => comment.path.trim().toLowerCase() === currentPath
-    );
-
-    for (const previousComment of sameFileComments) {
-      const previousIdentity = buildIssueIdentity(previousComment.path, previousComment.issueKey);
-      if (currentIdentity && previousIdentity && currentIdentity === previousIdentity) {
-        return previousComment;
-      }
-    }
-
-    const scoredMatches = sameFileComments
-      .map((previousComment) => {
-        const previousTerms = extractIssueTerms(previousComment.body);
-        const overlapScore = this.calculateIssueOverlapScore(previousTerms, currentTerms);
-        const lineDistance = Math.abs((previousComment.line || 0) - currentComment.line);
-
-        return { previousComment, overlapScore, lineDistance };
-      })
-      .filter((match) => match.overlapScore >= 0.5)
-      .sort((a, b) => {
-        if (b.overlapScore !== a.overlapScore) {
-          return b.overlapScore - a.overlapScore;
-        }
-        return a.lineDistance - b.lineDistance;
-      });
-
-    return scoredMatches[0]?.previousComment;
-  }
-
-  private calculateIssueOverlapScore(previousTerms: string[], currentTerms: string[]): number {
-    if (previousTerms.length === 0 || currentTerms.length === 0) {
-      return 0;
-    }
-
-    const previousSet = new Set(previousTerms);
-    const currentSet = new Set(currentTerms);
-    let overlap = 0;
-
-    for (const term of currentSet) {
-      if (previousSet.has(term)) {
-        overlap += 1;
-      }
-    }
-
-    return overlap / Math.min(previousSet.size, currentSet.size);
-  }
-
-  /**
-   * Fail the review and update the check run if it exists
+   * Build issues from review comments.
    */
   private async failReview(context: ReviewContext, error: string): Promise<void> {
     if (context.checkRunId && context.githubToken) {

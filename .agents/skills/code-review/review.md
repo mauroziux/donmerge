@@ -188,9 +188,10 @@ You are using **Codex** model for this review:
 - Focus on files with most significant changes
 - Note in summary if review was abbreviated
 
-### Skip Patterns
-- Files matching `${SKIP_PATTERNS}` should be skipped
-- Common patterns: test files, generated code, vendored dependencies
+### File Filtering (via `.donmerge`)
+- Files matching `.donmerge` exclude patterns (glob) are skipped
+- Include patterns override exclude patterns
+- Common exclude patterns: test files, generated code, vendored dependencies
 - Note skipped files in summary
 
 ### Custom Instructions

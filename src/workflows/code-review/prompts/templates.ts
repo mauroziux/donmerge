@@ -88,6 +88,17 @@ You previously left these comments. Check if they have been addressed in the new
 If an issue is FIXED, include its ID in the "resolvedComments" array.`;
 
 /**
+ * Header for .donmerge skills context section.
+ */
+export const DONMERGE_SKILLS_HEADER = `📋 PROJECT CONTEXT (from .donmerge configuration):`;
+
+/**
+ * Template for .donmerge custom instructions.
+ */
+export const DONMERGE_INSTRUCTION_TEMPLATE = `📝 PROJECT INSTRUCTIONS (from .donmerge configuration):
+"{instruction}"`;
+
+/**
  * Approval rules.
  */
 export const APPROVAL_RULES = `RULES:

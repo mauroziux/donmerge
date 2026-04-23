@@ -57,7 +57,7 @@ export interface ReviewComment {
   line: number;
   side: 'LEFT' | 'RIGHT';
   body: string;
-  severity: 'critical' | 'suggestion';
+  severity: 'critical' | 'suggestion' | 'low';
   issueKey?: string;
   ruleId?: string;
   entityType?: 'method' | 'function' | 'class' | 'variable' | 'module';
@@ -97,7 +97,7 @@ export interface TrackedIssue {
   line: number;
   side: 'LEFT' | 'RIGHT';
   snippetHash: string;
-  severity: 'critical' | 'suggestion';
+  severity: 'critical' | 'suggestion' | 'low';
   body: string;
   status: IssueStatus;
   githubCommentId?: number;
@@ -192,4 +192,46 @@ export interface RepoContext {
 
   // Documentation
   readme?: string;         // README.md
+}
+
+/**
+ * A skill entry from .donmerge — a repo file used as LLM context.
+ */
+export interface DonmergeSkill {
+  /** Path to the file in the repo (e.g., "DESIGN.md", "docs/API_CONVENTIONS.md") */
+  path: string;
+  /** Human-readable description of what this file provides to the reviewer */
+  description: string;
+}
+
+/**
+ * Parsed .donmerge configuration file.
+ * All fields are optional — an empty file or missing file is valid.
+ */
+export interface DonmergeConfig {
+  /** Schema version. Must be "1". */
+  version?: string;
+  /** Glob patterns for files to exclude from review. */
+  exclude?: string[];
+  /** Glob patterns for files to always include (overrides exclude). */
+  include?: string[];
+  /** Additional context files for the LLM reviewer. */
+  skills?: DonmergeSkill[];
+  /** Custom instructions appended to the review prompt. */
+  instructions?: string;
+  /** Path-specific severity overrides. Map of glob pattern → severity. */
+  severity?: Record<string, 'critical' | 'suggestion' | 'low'>;
+}
+
+/**
+ * Resolved .donmerge config with skills content fetched.
+ * This is the runtime object passed through the pipeline.
+ */
+export interface DonmergeResolved {
+  /** Original parsed config (may be partial/empty). */
+  config: DonmergeConfig;
+  /** Fetched skills content: path → content. */
+  skillsContent: Map<string, string>;
+  /** Skills that failed to fetch: path → error. */
+  skillsErrors: Map<string, string>;
 }

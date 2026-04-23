@@ -70,14 +70,15 @@ wrangler secret bulk secrets.json
   "BASE_BRANCH": "main",
   "CODEX_MODEL": "codex-5.3",
   "MAX_REVIEW_FILES": "50",
-  "ALLOWED_REPOS": "my-org/private-repo,my-org/another-repo",
+  "REPO_CONFIGS": "my-org/private-repo:main,my-org/another-repo:develop",
   "REVIEW_TRIGGER": "@donmerge"
 }
 ```
 
-- `ALLOWED_REPOS` is a comma-separated allowlist of `owner/repo`.
-  - If empty, any repository can trigger (subject to signature + PAT access).
+- `REPO_CONFIGS` is a comma-separated allowlist of `owner/repo[:branch]` entries.
+  - If empty or unset, any repository can trigger (subject to signature + PAT access).
   - If set, repositories not in the list are rejected with `403`.
+  - The optional `:branch` suffix restricts reviews to PRs targeting that branch only.
 
 ## 2) GitHub App Configuration
 

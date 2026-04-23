@@ -1,8 +1,14 @@
 import { FlueWorker } from '@flue/cloudflare/worker';
 import { processGitHubCodeReviewWebhook, validateWebhookFast } from './workflows/code-review';
 import type { WorkerEnv } from './workflows/code-review';
+import { ReviewProcessor } from './workflows/code-review/processor';
 
-const app = new FlueWorker<WorkerEnv>();
+// Extended env type that includes the ReviewProcessor binding
+interface AppEnv extends WorkerEnv {
+  ReviewProcessor: DurableObjectNamespace;
+}
+
+const app = new FlueWorker<AppEnv>();
 
 app.get('/health', (c) => {
   return c.json({ ok: true, service: 'codex-review-webhook' });
@@ -21,8 +27,8 @@ app.post('/webhook/github', async (c) => {
     return c.json(validation.body, validation.status);
   }
 
-  // Respond immediately to GitHub (within 10s timeout)
-  // Process the review in background using waitUntil
+  // Start review via ReviewProcessor Durable Object
+  // This is non-blocking - the DO will handle everything via alarms
   c.executionCtx.waitUntil(
     processGitHubCodeReviewWebhook(c.env, validation.context!)
   );
@@ -39,5 +45,7 @@ app.post('/webhook/github', async (c) => {
   );
 });
 
+// Export Durable Objects
 export { Sandbox } from '@cloudflare/sandbox';
+export { ReviewProcessor };
 export default app;

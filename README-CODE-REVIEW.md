@@ -55,7 +55,6 @@ Settings → Secrets and variables → Actions → Variables
 | `FAIL_ON_CRITICAL` | `true` | Fail check on critical issues |
 | `REVIEW_TIMEOUT` | `300` | Review timeout in seconds |
 | `CUSTOM_REVIEW_INSTRUCTIONS` | `""` | Domain-specific review guidance |
-| `SKIP_PATTERNS` | `*.test.ts,*.spec.ts` | Files to skip during review |
 | `LOG_LEVEL` | `info` | Logging verbosity |
 
 ### 3. Verify Setup
@@ -201,15 +200,73 @@ Focus on:
 - Error handling for external API calls
 ```
 
-### Skip Patterns
+### `.donmerge` Configuration File
 
-Exclude files from review:
+Each reviewed repository can include a `.donmerge` file in its root to customise review behaviour — file filtering, severity overrides, additional LLM context, and project-specific instructions.
 
-**Repository Variable**: `SKIP_PATTERNS`
+#### What is `.donmerge`?
 
-```bash
-*.test.ts,*.spec.ts,*.generated.ts,dist/**,build/**,vendor/**
+A YAML configuration file placed at the repository root. It is fetched and parsed on every review (best-effort — a missing or invalid file never fails a review). Think of it as per-repo settings that travel with the code.
+
+#### Full Example
+
+```yaml
+# .donmerge
+version: "1"
+
+# Files to exclude from review (glob patterns)
+exclude:
+  - "*.test.ts"
+  - "*.spec.ts"
+  - "*.generated.ts"
+  - "dist/**"
+  - "build/**"
+  - "vendor/**"
+
+# Files to always include, even if matched by exclude (include overrides exclude)
+include:
+  - "dist/important-entry.ts"
+
+# Additional context files fed to the LLM reviewer
+skills:
+  - path: "DESIGN.md"
+    description: "System architecture and design decisions"
+  - path: "docs/API_CONVENTIONS.md"
+    description: "REST API naming and error-handling conventions"
+  - path: "CONTRIBUTING.md"
+    description: "Project coding standards"
+
+# Custom instructions appended to the review prompt
+instructions: |
+  Focus on:
+  - Security vulnerabilities (OWASP Top 10)
+  - Performance issues (N+1 queries, memory leaks)
+  - Error handling for external API calls
+
+# Per-path severity overrides (glob pattern → severity level)
+severity:
+  "src/middleware/**": "critical"
+  "**/*.config.ts": "low"
+  "docs/**": "suggestion"
 ```
+
+#### Field Reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | `string` | Schema version. Currently `"1"`. |
+| `exclude` | `string[]` | Glob patterns for files to **skip** during review. |
+| `include` | `string[]` | Glob patterns that **override** exclude — matched files are always reviewed. |
+| `skills` | `{path, description}[]` | Up to 5 repo files fetched as additional LLM context (max 10 KB each, 50 KB total). |
+| `instructions` | `string` | Free-form text appended to the review prompt for domain-specific guidance. |
+| `severity` | `map<string, "critical"\|"suggestion"\|"low">` | Glob-pattern → severity-level overrides for files matching the pattern. |
+
+#### Example Use Cases
+
+- **Monorepo**: Exclude generated code and vendored dependencies while keeping `src/` under review.
+- **Security-critical paths**: Elevate `src/auth/**` and `src/middleware/**` to `critical` severity.
+- **Project conventions**: Reference `DESIGN.md` or `CONTRIBUTING.md` as skills so the reviewer understands your architecture.
+- **Domain-specific instructions**: Tell the reviewer to focus on HIPAA compliance, payment logic, or public API stability.
 
 ### Multiple Base Branches
 
@@ -265,7 +322,7 @@ Choose between Codex versions:
 
 **Solutions**:
 1. Check if files exceed `MAX_REVIEW_FILES` limit
-2. Verify files aren't matched by `SKIP_PATTERNS`
+2. Verify files aren't excluded by `.donmerge` exclude patterns
 3. Review workflow logs for API errors
 4. Ensure PR has actual code changes (not just renames)
 
@@ -286,7 +343,7 @@ Choose between Codex versions:
 **Solutions**:
 1. Increase `REVIEW_TIMEOUT` variable
 2. Reduce `MAX_REVIEW_FILES` to limit scope
-3. Add more files to `SKIP_PATTERNS`
+3. Add more files to `.donmerge` exclude patterns
 4. Consider breaking large PRs into smaller ones
 
 ### Private Repository Issues
@@ -392,7 +449,7 @@ MIT License - See LICENSE file for details
 
 - [ ] Support for GitLab repositories
 - [ ] Integration with SonarQube
-- [ ] Custom rule sets per repository
+- [x] Custom rule sets per repository (via `.donmerge`)
 - [ ] Batch review for multiple PRs
 - [ ] Slack/Teams notifications
 - [ ] Review analytics dashboard
