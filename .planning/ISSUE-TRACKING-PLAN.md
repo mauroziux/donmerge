@@ -37,6 +37,11 @@ anchorKey   = filePath + snippetHash
 fingerprint = hash(logicalKey + anchorKey)
 ```
 
+Fallbacks when fields are missing:
+- If `symbolName` is unknown, set `entityType=module` and `symbolName=<filePath>`
+- If `ruleId` is unknown, derive from Issue sentence + symbol + snippet hash
+- If `snippetHash` is missing, use a short normalized diff-hunk hash
+
 ### Matching Priority
 
 1. Exact `fingerprint` match
@@ -57,6 +62,8 @@ States:
 - `open` — Still present in latest commit, don't repost
 - `fixed` — Not found in latest commit, post "Fixed!" reply
 - `reintroduced` — Was fixed, now appears again, post new comment
+
+Important: never mark an issue `fixed` if it only matched by weak heuristics. Use strict matching for resolve decisions.
 
 ### Stored Issue Record
 
@@ -132,10 +139,12 @@ interface TrackedIssue {
      - `generateAnchorKey(identity)`
      - `normalizeCodeSnippet(snippet)`
      - `extractSymbolFromCode(code, line)` — best-effort symbol extraction
+     - `deriveRuleIdFromIssue(body, symbol, snippet)` — fallback ruleId
 
 **Verification:**
 - LLM returns structured fields in test PR
 - Fingerprints are stable across paraphrased comments
+- Missing symbol/rule fields produce stable fallbacks
 
 ---
 
@@ -156,7 +165,8 @@ interface TrackedIssue {
      - `saveTrackedIssues(storage, issues): Promise<void>`
      - `findIssueByFingerprint(issues, fingerprint): TrackedIssue | undefined`
      - `findIssueByLogicalKey(issues, logicalKey): TrackedIssue | undefined`
-     - `findIssueByAnchorOverlap(issues, filePath, snippetHash): TrackedIssue | undefined`
+    - `findIssueByAnchorOverlap(issues, filePath, snippetHash): TrackedIssue | undefined`
+    - `findIssueByWeakHeuristic(issues, filePath, issueText): TrackedIssue | undefined`
 
 3. **Add issue matching logic**
    - File: `src/workflows/code-review/issue-matcher.ts` (new)
@@ -170,6 +180,7 @@ interface TrackedIssue {
 **Verification:**
 - Unit test matching logic with sample issues
 - Storage persists across alarm retries
+- Rate-limit safe for PRs with many files/comments
 
 ---
 
@@ -200,9 +211,10 @@ interface TrackedIssue {
      - Load stored issues
      - Match current findings to stored
      - Apply transitions
-     - Post only `new` and `reintroduced` comments
-     - Post `fixed` replies for resolved
-     - Save updated issues
+      - Post only `new` and `reintroduced` comments
+      - Post `fixed` replies for resolved
+      - Save updated issues
+      - Never resolve on weak heuristic matches
 
 **Verification:**
 - New issue → comment posted
@@ -221,10 +233,11 @@ interface TrackedIssue {
 1. **Add reconciliation logic**
    - File: `src/workflows/code-review/issue-reconcile.ts` (new)
    - Function: `reconcileExistingComments(comments, currentFindings): TrackedIssue[]`
-   - For each existing DonMerge comment:
-     - Parse fingerprint from body
-     - Extract issue identity from comment (fallback to deriving from body)
-     - Create tracked issue with status = open
+    - For each existing DonMerge comment:
+      - Parse fingerprint from body
+      - Extract issue identity from comment (fallback to deriving from body)
+      - Create tracked issue with status = open
+    - Skip auto-resolve for comments without stable identity
 
 2. **Wire reconciliation into processor**
    - File: `src/workflows/code-review/processor.ts`
@@ -236,6 +249,7 @@ interface TrackedIssue {
 **Verification:**
 - Existing PRs get issues tracked on first re-run
 - No duplicate comments after upgrade
+- No false "Fixed!" replies during migration
 
 ---
 
@@ -284,6 +298,16 @@ interface TrackedIssue {
 **Verification:**
 - All test scenarios pass manually
 - No duplicate comments in any scenario
+
+---
+
+## Debug & Logging Checklist
+
+During rollout, log these per finding:
+- `ruleId`, `entityType`, `symbolName`
+- `logicalKey`, `anchorKey`, `fingerprint`
+- Match result: `exact`, `logical`, `anchor`, `weak`, `none`
+- Resolution decision: `open`, `fixed`, `reintroduced`
 
 ---
 
