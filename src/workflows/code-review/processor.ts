@@ -136,7 +136,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
    * Get current review status
    */
   async getStatus(): Promise<ReviewStatus | null> {
-    return this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    return (await this.state.storage.get<ReviewStatus>(STATE_KEYS.status)) ?? null;
   }
 
   /**
@@ -190,6 +190,62 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         await this.failReview(context, message);
       }
     }
+  }
+
+  /**
+   * Build CurrentIssue array from review line comments.
+   */
+  private async buildCurrentIssues(
+    context: ReviewContext,
+    headSha: string,
+    comments: ReviewComment[]
+  ): Promise<CurrentIssue[]> {
+    const now = new Date().toISOString();
+    return Promise.all(
+      comments.map(async (comment) => {
+        const ruleId = normalizeRuleId(comment.ruleId) ?? 'unspecified';
+        const entityType = normalizeEntityType(comment.entityType) ?? 'function';
+        const symbolName = normalizeSymbolName(comment.symbolName) ?? '';
+        const snippetHash = await computeSnippetHash(comment.codeSnippet ?? '');
+
+        const identityInput = {
+          ruleId,
+          entityType,
+          symbolName,
+          filePath: comment.path,
+          codeSnippet: comment.codeSnippet ?? '',
+        };
+
+        const fingerprint = await computeFingerprint(identityInput);
+        const logicalKey = buildLogicalKey(identityInput);
+        const anchorKey = buildAnchorKey(identityInput);
+
+        const tracked: TrackedIssue = {
+          id: `${fingerprint}`,
+          fingerprint,
+          logicalKey,
+          anchorKey,
+          repo: context.repo,
+          prNumber: context.prNumber,
+          ruleId,
+          entityType: entityType as TrackedIssue['entityType'],
+          symbolName,
+          filePath: comment.path,
+          line: comment.line,
+          side: comment.side,
+          snippetHash,
+          severity: comment.severity,
+          body: comment.body,
+          status: 'new' as const,
+          firstSeenCommit: headSha,
+          lastSeenCommit: headSha,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        return { fingerprint, logicalKey, anchorKey, payload: tracked };
+      })
+    );
   }
 
   /**
@@ -650,7 +706,7 @@ export function getReviewProcessor(
   owner: string,
   repo: string,
   prNumber: number
-): DurableObjectStub {
+): DurableObjectStub<ReviewProcessor> {
   const id = namespace.idFromName(`${owner}/${repo}/${prNumber}`);
-  return namespace.get(id);
+  return namespace.get(id) as DurableObjectStub<ReviewProcessor>;
 }

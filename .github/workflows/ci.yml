@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  model-sync-check:
+    name: Model sync check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify wrangler CODEX_MODEL matches parseModelConfig fallback
+        run: |
+          # Extract CODEX_MODEL from wrangler.jsonc (strip comments, pull value)
+          WRANGLER_MODEL=$(grep -oP '"CODEX_MODEL"\s*:\s*"\K[^"]+' wrangler.jsonc)
+
+          # Extract the fallback model from parseModelConfig in utils.ts
+          # Matches the first string after raw ?? which is the default fallback
+          FALLBACK_MODEL=$(grep -oP "raw \?\? '[^']+'\)" src/workflows/code-review/utils.ts | head -1 | grep -oP "'\K[^']+")
+
+          if [ -z "$WRANGLER_MODEL" ]; then
+            echo "FAIL: Could not extract CODEX_MODEL from wrangler.jsonc" >&2
+            exit 1
+          fi
+
+          if [ -z "$FALLBACK_MODEL" ]; then
+            echo "FAIL: Could not extract fallback model from src/workflows/code-review/utils.ts" >&2
+            exit 1
+          fi
+
+          echo "wrangler.jsonc CODEX_MODEL : $WRANGLER_MODEL"
+          echo "parseModelConfig fallback  : $FALLBACK_MODEL"
+
+          if [ "$WRANGLER_MODEL" != "$FALLBACK_MODEL" ]; then
+            echo "FAIL: CODEX_MODEL ($WRANGLER_MODEL) does not match parseModelConfig fallback ($FALLBACK_MODEL)" >&2
+            exit 1
+          fi
+
+          echo "PASS: Models are in sync."

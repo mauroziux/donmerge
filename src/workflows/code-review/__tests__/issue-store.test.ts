@@ -8,7 +8,7 @@ import { createTrackedIssue } from './helpers';
 
 function createMockStorage(): DurableObjectStorage {
   const store = new Map<string, unknown>();
-  return {
+  const mock: Record<string, unknown> = {
     get: vi.fn(<T>(key: string) => Promise.resolve(store.get(key) as T | undefined)),
     put: vi.fn((key: string, value: unknown) => {
       store.set(key, value);
@@ -16,15 +16,22 @@ function createMockStorage(): DurableObjectStorage {
     }),
     delete: vi.fn((key: string) => {
       store.delete(key);
-      return Promise.resolve();
+      return Promise.resolve(true);
     }),
-    list: vi.fn(() => Promise.resolve({ keys: [], done: true })),
+    list: vi.fn(() => Promise.resolve(new Map<string, unknown>())),
     getAlarm: vi.fn(() => Promise.resolve(null)),
     setAlarm: vi.fn(() => Promise.resolve()),
     deleteAlarm: vi.fn(() => Promise.resolve()),
-    transaction: vi.fn((_ctx, fn) => fn(store as DurableObjectStorage)),
+    transaction: vi.fn((closure: (txn: DurableObjectTransaction) => Promise<unknown>) => closure({
+      get: <T>(key: string) => Promise.resolve(store.get(key) as T | undefined),
+      put: (key: string, value: unknown) => { store.set(key, value); return Promise.resolve(); },
+      delete: (key: string) => { store.delete(key); return Promise.resolve(true); },
+      rollback: () => {},
+    } as unknown as DurableObjectTransaction)),
     sync: vi.fn(() => Promise.resolve()),
+    deleteAll: vi.fn(() => Promise.resolve()),
   };
+  return mock as unknown as DurableObjectStorage;
 }
 
 describe('loadTrackedIssues', () => {

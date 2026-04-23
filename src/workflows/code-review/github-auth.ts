@@ -70,7 +70,7 @@ async function createGitHubAppJwt(appId: string, privateKeyPem: string): Promise
 
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlFromBuffer(
-    new TextEncoder().encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).buffer
+    new TextEncoder().encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).buffer as ArrayBuffer
   );
   const payload = base64UrlFromBuffer(
     new TextEncoder().encode(
@@ -79,7 +79,7 @@ async function createGitHubAppJwt(appId: string, privateKeyPem: string): Promise
         exp: now + 9 * 60,
         iss: appId,
       })
-    ).buffer
+    ).buffer as ArrayBuffer
   );
 
   const signingInput = `${header}.${payload}`;

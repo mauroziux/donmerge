@@ -59,14 +59,14 @@ describe('pemToArrayBuffer', () => {
 describe('base64UrlFromBuffer', () => {
   it('should convert an ArrayBuffer to base64url encoding', () => {
     const input = new TextEncoder().encode('hello world');
-    const result = base64UrlFromBuffer(input.buffer);
+    const result = base64UrlFromBuffer(input.buffer as ArrayBuffer);
     expect(result).toBe('aGVsbG8gd29ybGQ');
   });
 
   it('should replace + with - and / with _', () => {
     // '\xff\xff' in base64 is '//8='
     const input = new Uint8Array([0xff, 0xff]);
-    const result = base64UrlFromBuffer(input.buffer);
+    const result = base64UrlFromBuffer(input.buffer as ArrayBuffer);
     // base64: "//8=" -> base64url: "__8"
     expect(result).not.toContain('+');
     expect(result).not.toContain('/');
@@ -75,7 +75,7 @@ describe('base64UrlFromBuffer', () => {
 
   it('should strip trailing = padding', () => {
     const input = new TextEncoder().encode('hi');
-    const result = base64UrlFromBuffer(input.buffer);
+    const result = base64UrlFromBuffer(input.buffer as ArrayBuffer);
     expect(result).not.toContain('=');
   });
 

@@ -5,7 +5,7 @@ An AI-powered code review assistant that provides automated, line-specific feedb
 ## ✨ Features
 
 - **Automatic PR Reviews**: Triggers on PR creation and updates
-- **Manual Re-trigger**: Re-run reviews by commenting `@codereview`
+- **Manual Re-trigger**: Re-run reviews by commenting `@donmerge` (configurable via `REVIEW_TRIGGER`)
 - **Line-Specific Comments**: Provides feedback on exact lines in the diff
 - **Comment Deduplication**: Avoids repeating the same issue across re-runs
 - **Stable Issue Keys**: Tracks findings from normalized issue identity instead of comment wording
@@ -55,6 +55,7 @@ Settings → Secrets and variables → Actions → Variables
 | `FAIL_ON_CRITICAL` | `true` | Fail check on critical issues |
 | `REVIEW_TIMEOUT` | `300` | Review timeout in seconds |
 | `CUSTOM_REVIEW_INSTRUCTIONS` | `""` | Domain-specific review guidance |
+| `REVIEW_TRIGGER` | `@donmerge` | Mention tag that triggers manual re-reviews on PR comments |
 | `LOG_LEVEL` | `info` | Logging verbosity |
 
 ### 3. Verify Setup
@@ -72,10 +73,10 @@ Settings → Secrets and variables → Actions → Variables
 To re-run a review (e.g., after fixing issues):
 
 ```
-@codereview
+@donmerge
 ```
 
-Comment this on any PR to trigger a new review.
+Comment this on any PR to trigger a new review. The default trigger tag is `@donmerge`; set the `REVIEW_TRIGGER` environment variable to change it (e.g. `REVIEW_TRIGGER=@mybot`).
 
 ## 📖 Usage
 
@@ -93,13 +94,13 @@ Reviews trigger automatically when:
 Comment on any PR:
 
 ```
-@codereview
+@donmerge
 ```
 
 Additional context (optional):
 
 ```
-@codereview
+@donmerge
 
 Please focus on security vulnerabilities and performance issues.
 ```
@@ -160,6 +161,7 @@ MAX_REVIEW_FILES=50
 AUTO_REVIEW_ON_PR=true
 FAIL_ON_CRITICAL=true
 REVIEW_TIMEOUT=300
+REVIEW_TRIGGER=@donmerge
 LOG_LEVEL=info
 ```
 
@@ -227,7 +229,7 @@ exclude:
 include:
   - "dist/important-entry.ts"
 
-# Additional context files fed to the LLM reviewer
+# Additional context files fed to the LLM reviewer (max 10 files, 20 KB each, 50 KB total)
 skills:
   - path: "DESIGN.md"
     description: "System architecture and design decisions"
@@ -257,7 +259,7 @@ severity:
 | `version` | `string` | Schema version. Currently `"1"`. |
 | `exclude` | `string[]` | Glob patterns for files to **skip** during review. |
 | `include` | `string[]` | Glob patterns that **override** exclude — matched files are always reviewed. |
-| `skills` | `{path, description}[]` | Up to 5 repo files fetched as additional LLM context (max 10 KB each, 50 KB total). |
+| `skills` | `{path, description}[]` | Up to 10 repo files fetched as additional LLM context (max 20 KB each, 50 KB total). |
 | `instructions` | `string` | Free-form text appended to the review prompt for domain-specific guidance. |
 | `severity` | `map<string, "critical"\|"suggestion"\|"low">` | Glob-pattern → severity-level overrides for files matching the pattern. |
 
@@ -267,6 +269,23 @@ severity:
 - **Security-critical paths**: Elevate `src/auth/**` and `src/middleware/**` to `critical` severity.
 - **Project conventions**: Reference `DESIGN.md` or `CONTRIBUTING.md` as skills so the reviewer understands your architecture.
 - **Domain-specific instructions**: Tell the reviewer to focus on HIPAA compliance, payment logic, or public API stability.
+
+#### Exclude Pattern Pitfalls
+
+Broad exclude patterns can unintentionally hide important files from review. Keep these guidelines in mind:
+
+1. **Avoid overly broad excludes** — patterns like `*.json`, `*.yaml`, or `*.md` can silence review across the entire repository, including configuration and manifest files that often contain security-relevant settings.
+2. **Prefer targeted secret patterns** — instead of `*.env*`, exclude specific paths like `secrets/**` or `.env.local`. This keeps shared `.env.example` or `.env.defaults` files under review.
+3. **Use include overrides when broad excludes are necessary** — if you must exclude `*.json` to skip generated schemas, add explicit include entries for files that matter:
+   ```yaml
+   exclude:
+     - "*.json"
+   include:
+     - "package.json"
+     - "tsconfig.json"
+     - ".eslintrc.json"
+   ```
+4. **Remember that include overrides exclude** — a file matched by both `exclude` and `include` will be **included** in the review. The `include` list always wins.
 
 ### Multiple Base Branches
 
@@ -430,7 +449,7 @@ npx flue run .flue/workflows/code-review.ts \
 ### Testing Changes
 
 1. Create test PR in development repository
-2. Trigger review with `@codereview`
+2. Trigger review with `@donmerge`
 3. Verify output and behavior
 4. Check all edge cases (large PRs, binary files, etc.)
 

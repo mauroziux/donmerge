@@ -18,7 +18,7 @@
     //   "org/repo1:main,org/repo2:develop" - repo1 only reviews PRs to main, repo2 only to develop
     //   "org/repo1,org/repo2:main" - repo1 reviews all PRs, repo2 only reviews PRs to main
     "REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
-    "CODEX_MODEL": "openai/gpt-5.2-codex",
+    "CODEX_MODEL": "openai/gpt-5.3-codex",
     "MAX_REVIEW_FILES": "50",
     "REVIEW_TRIGGER": "@donmerge"
   },

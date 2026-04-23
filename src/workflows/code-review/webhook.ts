@@ -115,7 +115,12 @@ export async function processGitHubCodeReviewWebhook(
   const processor = getReviewProcessor(env.ReviewProcessor, owner, repo, prNumber);
 
   // Start the review (this will trigger an alarm in the DO)
-  await processor.startReview({
+  // Cast needed: DurableObjectStub proxies user-defined methods at runtime
+  await (processor as unknown as { startReview(ctx: {
+    owner: string; repo: string; prNumber: number; retrigger: boolean;
+    commentId?: number; commentType?: 'issue' | 'review';
+    installationId?: number; instruction?: string; focusFiles?: string[];
+  }): Promise<void> }).startReview({
     owner,
     repo,
     prNumber,

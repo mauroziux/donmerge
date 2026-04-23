@@ -406,7 +406,7 @@ export async function fetchPreviousDonMergeComments(
           fingerprint,
           issueKey,
           ruleId: meta?.ruleId,
-          entityType: meta?.entityType,
+          entityType: meta?.entityType as PreviousComment['entityType'],
           symbolName: meta?.symbolName,
           codeSnippet: meta?.codeSnippet,
           resolved: resolutionReplyId !== undefined,

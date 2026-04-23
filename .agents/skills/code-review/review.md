@@ -84,14 +84,26 @@ You MUST return a JSON object with this exact structure:
 ```json
 {
   "approved": boolean,
-  "summary": "Brief overall assessment (2-3 sentences)",
+  "summary": "Brief overall assessment (1-2 sentences)",
+  "prSummary": {
+    "overview": "1-2 sentence high-level description",
+    "keyChanges": ["Change 1", "Change 2"],
+    "codeQuality": "Assessment of code quality",
+    "testingNotes": "Testing coverage/observations",
+    "riskAssessment": "Risk level and concerns"
+  },
   "lineComments": [
     {
       "path": "relative/path/to/file.ts",
       "line": 42,
       "side": "RIGHT",
-      "body": "Your specific comment about this line",
-      "severity": "critical" | "suggestion"
+      "body": "Comment body with Issue + Suggestion + AI Prompt sections",
+      "severity": "critical" | "suggestion" | "low",
+      "issueKey": "kebab-case-root-problem",
+      "ruleId": "kebab-case-rule-id",
+      "entityType": "method" | "function" | "class" | "variable" | "module",
+      "symbolName": "FullyQualified.SymbolName",
+      "codeSnippet": "short normalized snippet around the issue"
     }
   ],
   "criticalIssues": [
@@ -101,6 +113,14 @@ You MUST return a JSON object with this exact structure:
   "suggestions": [
     "Description of improvement 1",
     "Description of improvement 2"
+  ],
+  "resolvedComments": [12345],
+  "fileSummaries": [
+    {
+      "path": "relative/path/to/file.ts",
+      "changeType": "added" | "modified" | "deleted" | "renamed",
+      "summary": "What changed in this file"
+    }
   ],
   "stats": {
     "filesReviewed": 5,
@@ -113,15 +133,23 @@ You MUST return a JSON object with this exact structure:
 ### Field Definitions
 
 - **approved**: `true` if no critical issues found, `false` otherwise
-- **summary**: High-level assessment of the PR quality
+- **summary**: High-level assessment of the PR quality (1-2 sentences)
+- **prSummary**: Structured PR summary with overview, keyChanges, codeQuality, testingNotes, riskAssessment (all 5 fields required)
 - **lineComments**: Array of line-specific comments
   - **path**: Relative file path from repository root
   - **line**: Line number in the diff (use RIGHT side for additions, LEFT for deletions)
   - **side**: "RIGHT" for new code (additions), "LEFT" for old code (deletions)
-  - **body**: Specific feedback for this line (be concise and actionable)
-  - **severity**: "critical" for blocking issues, "suggestion" for improvements
+  - **body**: Comment body following the Issue + Suggestion + AI Prompt format (see Comment Format below)
+  - **severity**: "critical" for blocking issues, "suggestion" for improvements, "low" for minor notes
+  - **issueKey**: Stable kebab-case key describing the root problem (not the comment wording). Examples: `inverted-response-check`, `off-by-one-pagination`, `secret-logged-to-console`
+  - **ruleId**: Kebab-case rule identifier (e.g., `inverted-response-check`)
+  - **entityType**: Type of code entity: `method`, `function`, `class`, `variable`, or `module`
+  - **symbolName**: Fully-qualified symbol name (e.g., `BookingService.confirm`)
+  - **codeSnippet**: Short normalized code snippet around the issue
 - **criticalIssues**: List of critical problems found (for check run summary)
 - **suggestions**: List of non-blocking improvements (for check run summary)
+- **resolvedComments**: Array of previous comment IDs that are now fixed
+- **fileSummaries**: Summary for each file in the diff (path, changeType, summary)
 - **stats**: Review statistics
 
 ## Review Process
@@ -159,12 +187,32 @@ You MUST return a JSON object with this exact structure:
 - ✅ Be constructive: "Consider using `const` instead of `let` since this variable is never reassigned."
 - ✅ Explain impact: "This missing error handling could cause the app to crash if the API is unavailable."
 - ✅ Suggest solutions: "Add a try-catch block and return a user-friendly error message."
+- ✅ Structure AI-prompt comments with: a mandatory preamble (`"Verify each finding against the current code and only fix it if needed."`), then a single-line instruction in the format `In \`@{path}\` around lines X - Y, {current-state}; {action}.`
 
 ### DON'T:
 - ❌ Be vague: "This code needs improvement"
 - ❌ Be rude or condescending
 - ❌ Comment on trivial style issues (use linter for that)
 - ❌ Make assumptions without checking the code
+
+## AI Prompt Format
+
+When the review comment will be used as an AI-prompt instruction (e.g. an auto-fix bot), follow this structure:
+
+1. **Preamble** — Always start with: `Verify each finding against the current code and only fix it if needed.`
+2. **Single-line instruction** — Follow immediately with a line in this exact format:
+   `In \`@{relative/path}\` around lines {start} - {end}, {current-state}; {action}.`
+
+The file path **must** use the `@` prefix (e.g. `@src/auth/login.ts`) and match the exact path from the diff.
+The line range **must** match the comment's actual line number and surrounding context.
+
+### Example
+
+```
+Verify each finding against the current code and only fix it if needed.
+
+In `@src/auth/login.ts` around lines 45 - 48, user input (email) is interpolated directly into the SQL query string, creating an injection surface; replace the string interpolation with a parameterized query using placeholders and bind the email parameter safely.
+```
 
 ## Model Configuration
 
@@ -204,30 +252,65 @@ You are using **Codex** model for this review:
 {
   "approved": false,
   "summary": "This PR introduces a new user authentication feature but contains critical security vulnerabilities that must be addressed before merging. The SQL injection risk on line 45 is particularly concerning.",
+  "prSummary": {
+    "overview": "Adds user authentication with login, registration, and session management.",
+    "keyChanges": ["New login endpoint", "User registration flow", "Session token handling"],
+    "codeQuality": "Well-structured but has security gaps in input sanitization.",
+    "testingNotes": "No unit tests for the new auth module.",
+    "riskAssessment": "High — SQL injection and missing password hashing are exploitable."
+  },
   "lineComments": [
     {
       "path": "src/auth/login.ts",
       "line": 45,
       "side": "RIGHT",
-      "body": "🔴 **CRITICAL**: SQL injection vulnerability. The user input is directly interpolated into the query string. Use parameterized queries:\n\n```typescript\nconst query = 'SELECT * FROM users WHERE email = $1';\nconst result = await db.query(query, [email]);\n```",
-      "severity": "critical"
+      "body": "🔴 **Issue:** SQL injection vulnerability — user input is directly interpolated into the query string, allowing an attacker to execute arbitrary SQL.\n\n💡 **Suggestion:** Use parameterized queries with prepared statements:\n```typescript\nconst query = 'SELECT * FROM users WHERE email = $1';\nconst result = await db.query(query, [email]);\n```\n\n🤖 **AI Prompt:**\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@src/auth/login.ts` around lines 45 - 48, the getUser function interpolates the email parameter directly into the SQL string; refactor to use parameterized queries with placeholders and bind the email parameter safely.\n```",
+      "severity": "critical",
+      "issueKey": "sql-injection-login",
+      "ruleId": "sql-injection",
+      "entityType": "function",
+      "symbolName": "AuthService.login",
+      "codeSnippet": "const query = `SELECT * FROM users WHERE email = '${email}'`;"
     },
     {
       "path": "src/auth/login.ts",
       "line": 67,
       "side": "RIGHT",
-      "body": "Consider adding a rate limiter here to prevent brute force attacks on the login endpoint.",
-      "severity": "suggestion"
+      "body": "🔴 **Issue:** Missing rate limiting on the login endpoint — this allows brute-force attacks against user accounts.\n\n💡 **Suggestion:** Add a rate limiter middleware (e.g., `express-rate-limit`) to cap login attempts per IP.\n\n🤖 **AI Prompt:**\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@src/auth/login.ts` around lines 65 - 70, the login handler has no rate limiting; add rate-limit middleware before the handler to cap requests per IP.\n```",
+      "severity": "suggestion",
+      "issueKey": "missing-rate-limit-login",
+      "ruleId": "missing-rate-limit",
+      "entityType": "function",
+      "symbolName": "AuthService.login",
+      "codeSnippet": "router.post('/login', async (req, res) => {"
     }
   ],
   "criticalIssues": [
-    "SQL injection vulnerability in login.ts:45 - user input not sanitized",
+    "SQL injection vulnerability in login.ts:45 — user input not sanitized",
     "Missing password hashing before database storage in login.ts:52"
   ],
   "suggestions": [
     "Add rate limiting to login endpoint to prevent brute force attacks",
     "Consider using a constant-time comparison for password verification",
     "Add input validation for email format before processing"
+  ],
+  "resolvedComments": [],
+  "fileSummaries": [
+    {
+      "path": "src/auth/login.ts",
+      "changeType": "added",
+      "summary": "New login endpoint with SQL query and session handling"
+    },
+    {
+      "path": "src/auth/register.ts",
+      "changeType": "added",
+      "summary": "User registration flow with validation"
+    },
+    {
+      "path": "src/middleware/auth.ts",
+      "changeType": "modified",
+      "summary": "Updated auth middleware to support new token format"
+    }
   ],
   "stats": {
     "filesReviewed": 3,

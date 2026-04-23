@@ -26,16 +26,18 @@ vi.mock('../processor', () => ({
 import { validateWebhookFast } from '../webhook';
 import { verifyWebhookSignature, isRepoAllowed } from '../github-auth';
 import { parseTrigger } from '../triggers';
+import type { WorkerEnv } from '../types';
 
 const mockedVerify = vi.mocked(verifyWebhookSignature);
 const mockedIsAllowed = vi.mocked(isRepoAllowed);
 const mockedParseTrigger = vi.mocked(parseTrigger);
 
-const baseEnv = {
+const baseEnv: WorkerEnv = {
   OPENAI_API_KEY: 'test-key',
   GITHUB_WEBHOOK_SECRET: 'secret123',
   REPO_CONFIGS: 'tableoltd/test-repo:main',
-} as const;
+  Sandbox: {},
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
