@@ -9,8 +9,8 @@ import { parse as parseYaml } from 'yaml';
 import type { DonmergeConfig, DonmergeSkill, DonmergeResolved } from './types';
 
 // Constants
-const MAX_SKILLS = 5;
-const MAX_SKILL_SIZE_BYTES = 10 * 1024; // 10KB per skill
+const MAX_SKILLS = 10;
+const MAX_SKILL_SIZE_BYTES = 20 * 1024; // 20KB per skill
 const MAX_TOTAL_SKILLS_BYTES = 50 * 1024; // 50KB total
 
 /**

@@ -123,13 +123,13 @@ describe('validateDonmergeConfig', () => {
     expect(config.skills).toEqual([{ path: 'CONTRIBUTING.md', description: 'CONTRIBUTING.md' }]);
   });
 
-  it('should truncate skills to max 5', () => {
-    const skills = Array.from({ length: 8 }, (_, i) => ({
+  it('should truncate skills to max 10', () => {
+    const skills = Array.from({ length: 12 }, (_, i) => ({
       path: `skill${i}.md`,
       description: `Skill ${i}`,
     }));
     const config = validateDonmergeConfig({ skills });
-    expect(config.skills).toHaveLength(5);
+    expect(config.skills).toHaveLength(10);
   });
 
   it('should ignore unknown keys', () => {
@@ -517,12 +517,12 @@ describe('resolveDonmergeSkills', () => {
     expect(result.skillsErrors.get('MISSING.md')).toBe('File not found');
   });
 
-  it('should add skill to errors when file exceeds 10KB', async () => {
+  it('should add skill to errors when file exceeds 20KB', async () => {
     const config: DonmergeConfig = {
       skills: [{ path: 'LARGE.md', description: 'Too big' }],
     };
-    // Create a string > 10KB
-    const largeContent = 'x'.repeat(11 * 1024);
+    // Create a string > 20KB
+    const largeContent = 'x'.repeat(21 * 1024);
     mockFetchFile.mockResolvedValueOnce(largeContent);
 
     const result = await resolveDonmergeSkills(config, 'owner', 'repo', 'token', mockFetchFile);
@@ -557,7 +557,7 @@ describe('resolveDonmergeSkills', () => {
         { path: 'F.md', description: 'Should overflow' },
       ],
     };
-    // Each file is ~9KB (under 10KB per-file limit), but 6 × 9KB = ~54KB total → exceeds 50KB
+    // Each file is ~9KB (under 20KB per-file limit), but 6 × 9KB = ~54KB total → exceeds 50KB
     const content9k = 'a'.repeat(9 * 1024);
 
     mockFetchFile
