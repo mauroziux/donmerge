@@ -10,6 +10,8 @@ import {
   parseModelConfig,
   formatPromptError,
   safeStringify,
+  extractRawFlueResponse,
+  extractJsonFromResponse,
 } from '../utils';
 
 describe('parseRepoConfigs', () => {
@@ -255,5 +257,137 @@ describe('safeStringify', () => {
     expect(safeStringify(42)).toBe('42');
     expect(safeStringify('hello')).toBe('"hello"');
     expect(safeStringify(null)).toBe('null');
+  });
+});
+
+describe('extractRawFlueResponse', () => {
+  it('should extract rawOutput from a SkillOutputError', () => {
+    const error = new Error('No ---RESULT_START--- block found');
+    (error as Record<string, unknown>).name = 'SkillOutputError';
+    (error as Record<string, unknown>).data = {
+      sessionId: 'abc-123',
+      rawOutput: '{"approved": true, "summary": "Looks good"}',
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"approved": true, "summary": "Looks good"}');
+  });
+
+  it('should return null for non-SkillOutputError', () => {
+    const error = new Error('some other error');
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  it('should return null for null input', () => {
+    expect(extractRawFlueResponse(null)).toBeNull();
+  });
+
+  it('should return null for undefined input', () => {
+    expect(extractRawFlueResponse(undefined)).toBeNull();
+  });
+
+  it('should return null for string input', () => {
+    expect(extractRawFlueResponse('error')).toBeNull();
+  });
+
+  it('should return null when data.rawOutput is missing', () => {
+    const error = new Error('delimiter missing');
+    (error as Record<string, unknown>).name = 'SkillOutputError';
+    (error as Record<string, unknown>).data = { sessionId: 'abc' };
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  it('should return null when data is missing entirely', () => {
+    const error = new Error('delimiter missing');
+    (error as Record<string, unknown>).name = 'SkillOutputError';
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  it('should return null when rawOutput is an empty string', () => {
+    const error = new Error('delimiter missing');
+    (error as Record<string, unknown>).name = 'SkillOutputError';
+    (error as Record<string, unknown>).data = { rawOutput: '   ' };
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  it('should return null when rawOutput is not a string', () => {
+    const error = new Error('delimiter missing');
+    (error as Record<string, unknown>).name = 'SkillOutputError';
+    (error as Record<string, unknown>).data = { rawOutput: 42 };
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  it('should handle rawOutput with surrounding whitespace', () => {
+    const error = new Error('delimiter missing');
+    (error as Record<string, unknown>).name = 'SkillOutputError';
+    (error as Record<string, unknown>).data = { rawOutput: '  {"key": "val"}  ' };
+    expect(extractRawFlueResponse(error)).toBe('{"key": "val"}');
+  });
+});
+
+describe('extractJsonFromResponse', () => {
+  it('should return text as-is when it starts with {', () => {
+    const json = '{"approved": true}';
+    expect(extractJsonFromResponse(json)).toBe(json);
+  });
+
+  it('should return text as-is when it starts with [', () => {
+    const json = '[1, 2, 3]';
+    expect(extractJsonFromResponse(json)).toBe(json);
+  });
+
+  it('should strip ```json code fences', () => {
+    const input = '```json\n{"approved": true}\n```';
+    expect(extractJsonFromResponse(input)).toBe('{"approved": true}');
+  });
+
+  it('should strip bare ``` code fences', () => {
+    const input = '```\n{"approved": true}\n```';
+    expect(extractJsonFromResponse(input)).toBe('{"approved": true}');
+  });
+
+  it('should find JSON object in mixed text', () => {
+    const input = 'Here is the review:\n{"approved": true, "summary": "good"}\nEnd of review.';
+    expect(extractJsonFromResponse(input)).toBe('{"approved": true, "summary": "good"}');
+  });
+
+  it('should find JSON array in mixed text when no object present', () => {
+    const input = 'Results:\n[{"id": 1}, {"id": 2}]\nDone.';
+    expect(extractJsonFromResponse(input)).toBe('[{"id": 1}, {"id": 2}]');
+  });
+
+  it('should prefer object over array when both present', () => {
+    const input = 'Stats: [1,2,3]\nData: {"key": "value"}\nEnd.';
+    // First { at "Data:" line, last } at "value"} — extracts the object
+    expect(extractJsonFromResponse(input)).toContain('"key"');
+  });
+
+  it('should handle text with preamble before JSON', () => {
+    const input = "I've reviewed the code. Here's my assessment:\n{\"approved\": false}";
+    expect(extractJsonFromResponse(input)).toBe('{"approved": false}');
+  });
+
+  it('should handle JSON with nested braces', () => {
+    const input = 'Some text {"a": {"b": 1}, "c": 2} more text';
+    const result = extractJsonFromResponse(input);
+    expect(result).toBe('{"a": {"b": 1}, "c": 2}');
+    expect(JSON.parse(result)).toEqual({ a: { b: 1 }, c: 2 });
+  });
+
+  it('should return cleaned text when no JSON boundaries found', () => {
+    const input = 'Just plain text with no JSON at all';
+    expect(extractJsonFromResponse(input)).toBe('Just plain text with no JSON at all');
+  });
+
+  it('should handle empty string', () => {
+    expect(extractJsonFromResponse('')).toBe('');
+  });
+
+  it('should handle text that is only a code fence with JSON', () => {
+    const input = '```json\n{"summary": "ok"}\n```';
+    expect(extractJsonFromResponse(input)).toBe('{"summary": "ok"}');
+  });
+
+  it('should handle text with leading/trailing whitespace', () => {
+    const input = '   {"key": "val"}   ';
+    expect(extractJsonFromResponse(input)).toBe('{"key": "val"}');
   });
 });

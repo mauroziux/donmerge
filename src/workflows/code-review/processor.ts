@@ -49,7 +49,7 @@ import {
 import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
 import { matchCurrentFindingsToStored, type CurrentIssue } from './issue-matcher';
 import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
-import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig } from './utils';
+import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse } from './utils';
 import { buildReviewPrompt } from './prompts';
 import {
   fetchDonmergeConfig,
@@ -543,7 +543,23 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     try {
       response = await flue.client.prompt(prompt, { model, result: v.string() });
     } catch (error) {
-      throw new Error(formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      const rawResponse = extractRawFlueResponse(error);
+      if (rawResponse) {
+        try {
+          const jsonText = extractJsonFromResponse(rawResponse);
+          parsed = safeJsonParse<ReviewResult>(jsonText);
+          const validation = validateReviewResult(parsed);
+          if (validation.valid) {
+            return normalizeReviewResult(parsed, previousComments, severityOverrides);
+          }
+          response = rawResponse;
+        } catch {
+          // Raw response could not be parsed, fall through to throw
+        }
+      }
+      if (!response) {
+        throw new Error(formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      }
     }
 
     parsed = safeJsonParse<ReviewResult>(response);
@@ -556,7 +572,23 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     try {
       response = await flue.client.prompt(retryPrompt, { model, result: v.string() });
     } catch (error) {
-      throw new Error(formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      const rawResponse = extractRawFlueResponse(error);
+      if (rawResponse) {
+        try {
+          const jsonText = extractJsonFromResponse(rawResponse);
+          parsed = safeJsonParse<ReviewResult>(jsonText);
+          const retryValidation = validateReviewResult(parsed);
+          if (retryValidation.valid) {
+            return normalizeReviewResult(parsed, previousComments, severityOverrides);
+          }
+          response = rawResponse;
+        } catch {
+          // Raw response could not be parsed, fall through to throw
+        }
+      }
+      if (!response) {
+        throw new Error(formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      }
     }
 
     parsed = safeJsonParse<ReviewResult>(response);

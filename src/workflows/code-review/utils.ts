@@ -82,6 +82,94 @@ export function safeJsonParse<T>(jsonText: string): T {
 }
 
 /**
+ * Extract raw model response from a Flue SkillOutputError.
+ *
+ * When Flue's delimiter extraction fails (e.g. the model ignores
+ * ---RESULT_START---/---RESULT_END--- instructions), the full model
+ * response is available on error.data.rawOutput.
+ *
+ * Returns the raw output string if present, or null otherwise.
+ */
+export function extractRawFlueResponse(error: unknown): string | null {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const err = error as Record<string, unknown>;
+
+  // Check for SkillOutputError by name and data.rawOutput presence
+  if (err.name !== 'SkillOutputError') {
+    return null;
+  }
+
+  const data = err.data as Record<string, unknown> | undefined;
+  if (!data || typeof data.rawOutput !== 'string') {
+    return null;
+  }
+
+  const rawOutput = (data.rawOutput as string).trim();
+  return rawOutput.length > 0 ? rawOutput : null;
+}
+
+/**
+ * Extract a JSON substring from a mixed-text LLM response.
+ *
+ * Tries in order:
+ * 1. Strip markdown code fences (```json ... ```)
+ * 2. Find first { and last } for a JSON object
+ * 3. Find first [ and last ] for a JSON array
+ * 4. Return the original text as-is
+ */
+export function extractJsonFromResponse(text: string): string {
+  const trimmed = text.trim();
+
+  // Already valid JSON?
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return trimmed;
+  }
+
+  // Strip markdown code fences
+  const noFence = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```/, '')
+    .replace(/```$/, '')
+    .trim();
+
+  if (noFence.startsWith('{') || noFence.startsWith('[')) {
+    return noFence;
+  }
+
+  // Try to find JSON in mixed text by locating boundaries
+  const objStart = trimmed.indexOf('{');
+  const objEnd = trimmed.lastIndexOf('}');
+  const arrStart = trimmed.indexOf('[');
+  const arrEnd = trimmed.lastIndexOf(']');
+
+  const hasObject = objStart !== -1 && objEnd > objStart;
+  const hasArray = arrStart !== -1 && arrEnd > arrStart;
+
+  if (hasObject && hasArray) {
+    // If the array brackets encompass the object braces, use the array
+    if (arrStart <= objStart && arrEnd >= objEnd) {
+      return trimmed.slice(arrStart, arrEnd + 1);
+    }
+    // Otherwise prefer the object
+    return trimmed.slice(objStart, objEnd + 1);
+  }
+
+  if (hasArray) {
+    return trimmed.slice(arrStart, arrEnd + 1);
+  }
+
+  if (hasObject) {
+    return trimmed.slice(objStart, objEnd + 1);
+  }
+
+  // Give up, return the cleaned text
+  return noFence;
+}
+
+/**
  * Parse model configuration from environment variable.
  * Format: "provider/model" or just "model" (defaults to openai).
  */
