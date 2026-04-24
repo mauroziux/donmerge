@@ -170,16 +170,19 @@ describe('completeCheckRun', () => {
 });
 
 describe('failCheckRun', () => {
-  it('should PATCH check run with failure and error message', async () => {
+  it('should PATCH check run with failure and error code', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
 
-    await failCheckRun('owner', 'repo', 123, 'LLM timeout', 'token');
+    await failCheckRun('owner', 'repo', 123, 'DM-E001', 'Flue prompt failed for model openai/gpt-5.3-codex', 'token');
 
     const call = mockFetch.mock.calls[0][1] as any;
     const body = JSON.parse(call.body);
     expect(body.status).toBe('completed');
     expect(body.conclusion).toBe('failure');
-    expect(body.output.title).toContain('snag');
-    expect(body.output.text).toBe('LLM timeout');
+    expect(body.output.title).toBe('🤠 DonMerge hit a snag [DM-E001]');
+    expect(body.output.summary).toBe('Something went wrong during the review.');
+    expect(body.output.text).toContain('DM-E001');
+    // The text should NOT contain the raw error detail
+    expect(body.output.text).not.toContain('Flue prompt failed');
   });
 });

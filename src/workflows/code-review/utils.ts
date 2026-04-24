@@ -3,6 +3,7 @@
  */
 
 import type { ModelConfig, RepoConfig } from './types';
+import { ErrorCode, type ErrorCode as ErrorCodeType } from './error-codes';
 
 /**
  * Parse repo configurations from environment variable.
@@ -239,4 +240,30 @@ export function safeStringify(value: unknown): string {
   } catch {
     return '[unserializable error details]';
   }
+}
+
+/**
+ * Classify an error into an error code and detail message.
+ */
+export function classifyError(error: unknown): { code: ErrorCodeType; detail: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('GitHub API error')) {
+    return { code: ErrorCode.GITHUB_API, detail: message };
+  }
+  if (message.toLowerCase().includes('quota') ||
+      message.includes('insufficient_quota') ||
+      message.toLowerCase().includes('rate limit') ||
+      message.includes('429')) {
+    return { code: ErrorCode.QUOTA_LIMIT, detail: message };
+  }
+  if (message.includes('Flue prompt failed') || message.includes('SkillOutputError')) {
+    return { code: ErrorCode.LLM_FAILURE, detail: message };
+  }
+  if (message.includes('maximum attempts') || message.includes('exceeded')) {
+    return { code: ErrorCode.MAX_ATTEMPTS, detail: message };
+  }
+  if (message.includes('Invalid review output')) {
+    return { code: ErrorCode.INVALID_OUTPUT, detail: message };
+  }
+  return { code: ErrorCode.INTERNAL, detail: message };
 }

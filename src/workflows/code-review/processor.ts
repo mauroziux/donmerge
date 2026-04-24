@@ -49,7 +49,8 @@ import {
 import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
 import { matchCurrentFindingsToStored, type CurrentIssue } from './issue-matcher';
 import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
-import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse } from './utils';
+import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError } from './utils';
+import { ErrorCode, type ErrorCode as ErrorCodeType } from './error-codes';
 import { buildReviewPrompt } from './prompts';
 import {
   fetchDonmergeConfig,
@@ -170,7 +171,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
 
     // Safety: prevent infinite loops
     if (status.attempts > 5) {
-      await this.failReview(context, `Review exceeded maximum attempts (${status.attempts})`);
+      await this.failReview(context, ErrorCode.MAX_ATTEMPTS, `Review exceeded maximum attempts (${status.attempts})`);
       return;
     }
 
@@ -187,7 +188,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         // Retry in 10 seconds
         await this.state.storage.setAlarm(Date.now() + 10000);
       } else {
-        await this.failReview(context, message);
+        const { code, detail } = classifyError(error);
+        await this.failReview(context, code, detail);
       }
     }
   }
@@ -686,10 +688,10 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   /**
    * Build issues from review comments.
    */
-  private async failReview(context: ReviewContext, error: string): Promise<void> {
+  private async failReview(context: ReviewContext, code: ErrorCodeType, detail: string): Promise<void> {
     if (context.checkRunId && context.githubToken) {
       try {
-        await failCheckRun(context.owner, context.repo, context.checkRunId, error, context.githubToken);
+        await failCheckRun(context.owner, context.repo, context.checkRunId, code, detail, context.githubToken);
       } catch (e) {
         console.error('Failed to update check run on failure', { error: e });
       }
@@ -698,7 +700,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
     if (status) {
       status.state = 'failed';
-      status.error = error;
+      status.error = `[${code}] ${detail}`;
       status.completedAt = new Date().toISOString();
       await this.state.storage.put(STATE_KEYS.status, status);
     }

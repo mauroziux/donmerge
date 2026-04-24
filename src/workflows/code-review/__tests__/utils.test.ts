@@ -12,7 +12,9 @@ import {
   safeStringify,
   extractRawFlueResponse,
   extractJsonFromResponse,
+  classifyError,
 } from '../utils';
+import { ErrorCode } from '../error-codes';
 
 describe('parseRepoConfigs', () => {
   it('should return empty map for empty string', () => {
@@ -389,5 +391,56 @@ describe('extractJsonFromResponse', () => {
   it('should handle text with leading/trailing whitespace', () => {
     const input = '   {"key": "val"}   ';
     expect(extractJsonFromResponse(input)).toBe('{"key": "val"}');
+  });
+});
+
+describe('classifyError', () => {
+  it('should classify Flue prompt errors as LLM_FAILURE', () => {
+    const error = new Error("Flue prompt failed for model 'openai/gpt-5.3-codex': timeout");
+    const result = classifyError(error);
+    expect(result.code).toBe(ErrorCode.LLM_FAILURE);
+    expect(result.detail).toContain('Flue prompt failed');
+  });
+
+  it('should classify SkillOutputError as LLM_FAILURE', () => {
+    const error = new Error('SkillOutputError: delimiter not found');
+    const result = classifyError(error);
+    expect(result.code).toBe(ErrorCode.LLM_FAILURE);
+  });
+
+  it('should classify exceeded maximum attempts as MAX_ATTEMPTS', () => {
+    const error = new Error('Review exceeded maximum attempts (6)');
+    const result = classifyError(error);
+    expect(result.code).toBe(ErrorCode.MAX_ATTEMPTS);
+  });
+
+  it('should classify GitHub API errors as GITHUB_API', () => {
+    const error = new Error('GitHub API error 403: Forbidden');
+    const result = classifyError(error);
+    expect(result.code).toBe(ErrorCode.GITHUB_API);
+  });
+
+  it('should classify Invalid review output as INVALID_OUTPUT', () => {
+    const error = new Error('Invalid review output after retry: missing summary');
+    const result = classifyError(error);
+    expect(result.code).toBe(ErrorCode.INVALID_OUTPUT);
+  });
+
+  it('should classify unknown errors as INTERNAL', () => {
+    const error = new Error('Something completely unexpected');
+    const result = classifyError(error);
+    expect(result.code).toBe(ErrorCode.INTERNAL);
+  });
+
+  it('should handle non-Error input as INTERNAL', () => {
+    const result = classifyError('just a string');
+    expect(result.code).toBe(ErrorCode.INTERNAL);
+    expect(result.detail).toBe('just a string');
+  });
+
+  it('should preserve original message in detail', () => {
+    const error = new Error('Flue prompt failed for model openai/gpt-5.3-codex: No ---RESULT_START---');
+    const result = classifyError(error);
+    expect(result.detail).toContain('---RESULT_START---');
   });
 });

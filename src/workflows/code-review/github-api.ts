@@ -3,6 +3,7 @@
  */
 
 import type { PreviousComment, RepoContext, ReviewResult } from './types';
+import { ErrorCodeDescriptions, type ErrorCode } from './error-codes';
 import { attachFingerprint, computeFingerprint, parseFingerprint } from './fingerprint';
 import { normalizeEntityType, normalizeRuleId, normalizeSymbolName } from './issue-identity';
 import { deriveIssueKey } from './issue-key';
@@ -99,15 +100,22 @@ export async function completeCheckRun(
 }
 
 /**
- * Fail a check run with an error message.
+ * Fail a check run with an error code.
+ * The full detail is logged to console; only the code appears in the public check run.
  */
 export async function failCheckRun(
   owner: string,
   repo: string,
   checkRunId: number,
-  message: string,
+  code: ErrorCode,
+  detail: string,
   token: string
 ): Promise<void> {
+  console.error(`[${code}] ${detail}`);
+
+  const description =
+    ErrorCodeDescriptions[code] ?? 'Check worker logs for details.';
+
   await githubFetch(
     `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}`,
     token,
@@ -117,9 +125,9 @@ export async function failCheckRun(
       conclusion: 'failure',
       completed_at: new Date().toISOString(),
       output: {
-        title: '🤠 DonMerge hit a snag',
-        summary: 'Something went wrong during the review. Check the logs.',
-        text: message,
+        title: `🤠 DonMerge hit a snag [${code}]`,
+        summary: 'Something went wrong during the review.',
+        text: `Error code: ${code} — ${description}`,
       },
     }
   );

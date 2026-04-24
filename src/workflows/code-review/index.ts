@@ -44,7 +44,9 @@ export {
   resolveFixedComments,
 } from './github-api';
 export { resolveGitHubToken, isRepoAllowed, verifyWebhookSignature } from './github-auth';
-export { safeJsonParse, parseModelConfig, formatPromptError, safeStringify } from './utils';
+export { safeJsonParse, parseModelConfig, formatPromptError, safeStringify, classifyError } from './utils';
+export { ErrorCode, ErrorCodeDescriptions } from './error-codes';
+export type { ErrorCode as ErrorCodeType } from './error-codes';
 export { pemToArrayBuffer, base64UrlFromBuffer, timingSafeEqual } from './crypto';
 export {
   fetchDonmergeConfig,
