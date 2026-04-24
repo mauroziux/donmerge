@@ -532,7 +532,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     );
 
     const promptErrorHint =
-      'Your previous response was invalid. Return ONLY valid JSON matching the schema. ' +
+      'Your previous response was invalid. Produce valid JSON matching the schema. ' +
       'Ensure `summary` is present and 1-2 sentences. Ensure `prSummary` includes overview, keyChanges (non-empty), codeQuality, testingNotes, riskAssessment. ' +
       'If `criticalIssues` is non-empty, you MUST include `lineComments` for each issue.';
 

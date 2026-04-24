@@ -226,7 +226,7 @@ export class ReviewPromptBuilder {
       : APPROVAL_RULES;
 
     const lines = [
-      'Return ONLY valid JSON (no markdown, no code blocks) with this schema:',
+      'Produce your review as JSON matching this schema:',
       REVIEW_OUTPUT_SCHEMA,
       '',
       rules,

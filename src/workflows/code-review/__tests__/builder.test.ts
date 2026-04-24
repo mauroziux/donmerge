@@ -64,7 +64,7 @@ describe('ReviewPromptBuilder', () => {
     const prompt = new ReviewPromptBuilder()
       .withContext(createReviewPromptContext())
       .build();
-    expect(prompt).toContain('Return ONLY valid JSON');
+    expect(prompt).toContain('Produce your review as JSON');
     expect(prompt).toContain('"approved"');
     expect(prompt).toContain('"lineComments"');
   });
