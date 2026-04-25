@@ -14,7 +14,7 @@ An AI-powered code review assistant that provides automated, line-specific feedb
 - **Critical Issue Detection**: Fails PRs with security vulnerabilities, logic errors, or breaking changes
 - **Configurable Base Branch**: Works with any base branch (default: `main`)
 - **Private Repository Support**: Secure handling of private code
-- **Codex Integration**: Uses Codex-5.2 or Codex-5.3 for intelligent code analysis
+- **Codex Integration**: Uses Codex completions models for intelligent code analysis
 
 ## 🚀 Quick Start
 
@@ -287,6 +287,23 @@ Broad exclude patterns can unintentionally hide important files from review. Kee
    ```
 4. **Remember that include overrides exclude** — a file matched by both `exclude` and `include` will be **included** in the review. The `include` list always wins.
 
+### Flue Architecture
+
+DonMerge uses [Flue](https://github.com/withastro/flue) for LLM orchestration inside Cloudflare Workers:
+
+1. Each review runs in a Cloudflare **Sandbox container**
+2. Flue's `@flue/cloudflare` runtime starts an **OpenCode server** inside the container
+3. The OpenCode server proxies requests to the **OpenAI API** directly (not Cloudflare Workers AI)
+4. The `OPENAI_API_KEY` is injected into the container environment at runtime
+
+#### Output Format Instructions
+
+When `FlueClient.prompt()` is called with a `result` schema, it automatically appends `---RESULT_START---` and `---RESULT_END---` delimiter instructions to the prompt. The model is expected to wrap its output between these delimiters so Flue can extract the result.
+
+**Important for prompt authors**: Avoid writing conflicting instructions like "Return ONLY valid JSON" in your prompts, since Flue's delimiter instructions already describe the output format. Use phrasing like "Produce your review as JSON matching this schema" instead.
+
+The review processor includes a **fallback extraction** mechanism: if Flue's delimiter extraction fails, it attempts to parse the raw model response as JSON directly using multi-strategy extraction (code fences, JSON boundaries).
+
 ### Multiple Base Branches
 
 To review PRs targeting different branches:
@@ -308,10 +325,12 @@ To review PRs targeting different branches:
 
 Choose between Codex versions:
 
-| Model | Strengths | Use Case |
-|-------|-----------|----------|
-| `codex-5.2` | Balanced speed and accuracy | General code review |
-| `codex-5.3` | Enhanced security detection | Security-critical projects |
+| Model | Type | Strengths | Use Case |
+|-------|------|-----------|----------|
+| `gpt-5.2-codex` | Completions | Balanced speed and accuracy | General code review |
+| `gpt-5.3-codex` | Completions | Enhanced detection, faster | Security-critical projects |
+
+Note: `gpt-5.3-codex` uses the legacy completions API (`/v1/completions`), not the chat completions API. This affects how the model handles structured output instructions.
 
 ## 🐛 Troubleshooting
 
@@ -365,6 +384,17 @@ Choose between Codex versions:
 3. Add more files to `.donmerge` exclude patterns
 4. Consider breaking large PRs into smaller ones
 
+### Quota / Rate Limit Errors
+**Error Code**: `DM-E006`
+
+**Symptoms**: "Flue prompt failed" with "insufficient_quota", "rate limit", or "You exceeded your current quota"
+
+**Solutions**:
+1. Check your OpenAI billing dashboard for quota usage
+2. Upgrade your OpenAI plan if needed
+3. Wait for rate limit to reset (typically 1 minute for rate limits, billing cycle for quota)
+4. Reduce review frequency with larger PRs or manual triggers only
+
 ### Private Repository Issues
 
 **Symptoms**: Can't access private repo code
@@ -374,6 +404,30 @@ Choose between Codex versions:
 2. Ensure `GITHUB_TOKEN` is not restricted
 3. Check repository visibility settings
 4. Verify workflow has `contents: read` permission
+
+## 🏷️ Error Codes
+
+When DonMerge encounters an error, it shows a short error code on the PR check run instead of the raw error. Full error details are available in worker logs.
+
+| Code | Name | Description |
+|------|------|-------------|
+| `DM-E001` | LLM Failure | The AI model failed to process the review (prompt errors, model response parsing, Flue delimiter issues) |
+| `DM-E002` | Max Attempts | The review exceeded the maximum retry attempts |
+| `DM-E003` | GitHub API | A GitHub API request failed during the review |
+| `DM-E004` | Invalid Output | The model produced invalid output after all retries |
+| `DM-E005` | Internal Error | An unexpected internal error occurred |
+| `DM-E006` | Quota Limit | The AI model API quota or rate limit has been exceeded |
+
+### Code in Check Run Output
+
+Failed check runs show a compact error code instead of verbose internal details:
+
+```
+🤠 DonMerge hit a snag [DM-E001]
+Error code: DM-E001 — The AI model failed to process the review.
+```
+
+Full error details (model name, error message, stack traces) are written to `console.error` and are available in Cloudflare worker logs.
 
 ## 🔒 Security Considerations
 
@@ -410,7 +464,7 @@ Track in GitHub Actions:
 
 ### API Usage
 
-Monitor OpenAI API usage:
+Monitor OpenAI API usage to avoid quota errors (`DM-E006`):
 ```bash
 curl https://api.openai.com/v1/usage \
   -H "Authorization: Bearer $OPENAI_API_KEY"
