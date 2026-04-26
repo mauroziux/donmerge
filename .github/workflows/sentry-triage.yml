@@ -37,8 +37,6 @@ on:
         required: true
       SENTRY_AUTH_TOKEN:
         required: true
-      GITHUB_TOKEN:
-        required: true
       LINEAR_API_KEY:
         required: false
       JIRA_API_KEY:

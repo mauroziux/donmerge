@@ -35,9 +35,6 @@ on:
     secrets:
       DONMERGE_API_KEY:
         required: true
-      GITHUB_TOKEN:
-        required: true
-
 permissions:
   pull-requests: write
   contents: read
