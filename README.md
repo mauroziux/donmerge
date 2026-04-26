@@ -1,137 +1,171 @@
-# Code Review Process
+# DonMerge
 
-This document outlines the complete code review workflow for our project.
+AI-powered code review and Sentry triage as a service. DonMerge runs as a Cloudflare Worker and provides two integration modes for your team.
 
-## Process Diagram
+## Features
 
-```mermaid
-flowchart TD
-    subgraph Developer["👨‍💻 Developer"]
-        A[Create PR]
-        F1[Fix Issues]
-        AF[Address Feedback]
-        PU[Push Updates]
-        DR[Discuss & Revise]
-    end
+- **AI Code Review** — Automatic PR reviews with inline comments, issue tracking, and severity grading
+- **Sentry Triage** — Root cause analysis for production errors with auto-fix PRs and tracker integration
+- **Push API** — Trigger reviews and triage from any CI/CD pipeline via simple HTTP calls
+- **GitHub App (Webhook)** — Zero-config reviews when installed as a GitHub App
 
-    subgraph Automation["🤖 Automation"]
-        AC[Automated Checks]
-    end
+## Architecture
 
-    subgraph Review["👀 Reviewers"]
-        AR[Assign Reviewers]
-        RC[Review Code]
-    end
-
-    subgraph Decision["⚙️ Decision Points"]
-        D1{Pass?}
-        D2{Changes Required?}
-        D3{Approved?}
-    end
-
-    subgraph Complete["✅ Completion"]
-        MG[Merge PR]
-        CP([Complete])
-    end
-
-    %% Main flow
-    A -->|Submit| AC
-    AC --> D1
-    
-    %% Automated check failure path
-    D1 -->|No ❌| F1
-    F1 -->|Re-submit| AC
-    
-    %% Automated check pass path
-    D1 -->|Yes ✅| AR
-    AR -->|Notify| RC
-    
-    %% Review feedback paths
-    RC --> D2
-    D2 -->|Yes - Needs Work| AF
-    AF --> PU
-    PU -->|New Commit| RC
-    
-    D2 -->|No - Looks Good| D3
-    
-    %% Approval decision
-    D3 -->|No - Major Issues| DR
-    DR -->|Refine| PU
-    
-    D3 -->|Yes - Approved ✅| MG
-    MG --> CP
-
-    %% Styling
-    style A fill:#a5d8ff,stroke:#4a9eed,stroke-width:2px
-    style AC fill:#ffd8a8,stroke:#f59e0b,stroke-width:2px
-    style F1 fill:#ffc9c9,stroke:#ef4444,stroke-width:2px
-    style AF fill:#ffc9c9,stroke:#ef4444,stroke-width:2px
-    style PU fill:#a5d8ff,stroke:#4a9eed,stroke-width:2px
-    style AR fill:#d0bfff,stroke:#8b5cf6,stroke-width:2px
-    style RC fill:#d0bfff,stroke:#8b5cf6,stroke-width:2px
-    style D1 fill:#fff3bf,stroke:#f59e0b,stroke-width:2px
-    style D2 fill:#fff3bf,stroke:#f59e0b,stroke-width:2px
-    style D3 fill:#fff3bf,stroke:#f59e0b,stroke-width:2px
-    style DR fill:#ffd8a8,stroke:#f59e0b,stroke-width:2px
-    style MG fill:#b2f2bb,stroke:#22c55e,stroke-width:2px
-    style CP fill:#b2f2bb,stroke:#22c55e,stroke-width:2px
+```
+┌─────────────────────────────────────────────────────────┐
+│                      DonMerge                           │
+│                  (Cloudflare Worker)                     │
+│                                                         │
+│  ┌──────────┐   ┌──────────┐   ┌──────────────────┐   │
+│  │  GitHub   │   │  Push    │   │  /health         │   │
+│  │  Webhook  │   │  API     │   │  (readiness)     │   │
+│  │  /webhook │   │  /api/v1 │   │                  │   │
+│  │  /github  │   │          │   │                  │   │
+│  └────┬─────┘   └────┬─────┘   └──────────────────┘   │
+│       │              │                                  │
+│       ▼              ▼                                  │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │              Durable Objects                     │    │
+│  │  ┌─────────────┐  ┌──────────────────────┐      │    │
+│  │  │ Review      │  │ SentryTriage         │      │    │
+│  │  │ Processor   │  │ Processor            │      │    │
+│  │  └─────────────┘  └──────────────────────┘      │    │
+│  │  ┌─────────────┐  ┌──────────────────────┐      │    │
+│  │  │ RateLimiter │  │ Sandbox              │      │    │
+│  │  │             │  │ (Container)          │      │    │
+│  │  └─────────────┘  └──────────────────────┘      │    │
+│  └─────────────────────────────────────────────────┘    │
+│       │              │                                  │
+│       ▼              ▼                                  │
+│  ┌──────────┐   ┌──────────┐                            │
+│  │ GitHub   │   │ Sentry   │                            │
+│  │ API      │   │ API      │                            │
+│  └──────────┘   └──────────┘                            │
+│       │                                                  │
+│       ▼                                                  │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐            │
+│  │ GitHub   │   │ Linear   │   │ Jira     │            │
+│  │ Issues   │   │          │   │          │            │
+│  └──────────┘   └──────────┘   └──────────┘            │
+└─────────────────────────────────────────────────────────┘
 ```
 
-## Process Steps
+## Two Integration Modes
 
-### 1. Create Pull Request
-Developer creates a PR with a clear description of changes.
+### Webhook Mode (GitHub App)
 
-### 2. Automated Checks
-CI/CD pipeline runs:
-- ✅ Linting
-- ✅ Unit Tests
-- ✅ Integration Tests
-- ✅ Build Verification
+DonMerge installs as a GitHub App and automatically reviews PRs in configured repositories. No CI changes needed.
 
-### 3. Assign Reviewers
-Once automated checks pass, reviewers are assigned based on:
-- Code ownership
-- Expertise area
-- Availability
+- Triggered by `pull_request` events and `@donmerge` comments
+- Repository allowlist configured in `wrangler.jsonc`
+- See [WEBHOOK_SETUP.md](./WEBHOOK_SETUP.md) for setup instructions
 
-### 4. Code Review
-Reviewers examine:
-- Code quality & style
-- Logic correctness
-- Test coverage
-- Documentation
-- Security concerns
+### Push API
 
-### 5. Feedback Loop
-If changes are required:
-- Developer addresses feedback
-- Pushes new commits
-- Re-request review
+Trigger reviews and Sentry triage from any CI/CD pipeline via HTTP POST calls.
 
-### 6. Approval & Merge
-After approval from all required reviewers:
-- PR is merged to target branch
-- Branch cleanup (optional)
+- **Code Review:** `POST /api/v1/review`
+- **Sentry Triage:** `POST /api/v1/sentry/triage`
+- **Job Status:** `GET /api/v1/status/{job_id}`
+- Auth via `Authorization: Bearer dm_live_*` or `dm_test_*` API keys
 
-## Review Checklist
+See the full API reference at [docs/push-api.md](./docs/push-api.md).
 
-- [ ] Code follows project style guidelines
-- [ ] All tests pass
-- [ ] New code is properly tested
-- [ ] Documentation is updated
-- [ ] No security vulnerabilities
-- [ ] Performance implications considered
-- [ ] Breaking changes documented
+## Quick Start
 
-## Roles & Responsibilities
+### 1. Code Review (GitHub Actions)
 
-| Role | Responsibility |
-|------|----------------|
-| **Author** | Create quality PR, respond to feedback, keep PR updated |
-| **Reviewer** | Thoroughly review code, provide constructive feedback, approve/reject |
-| **Automation** | Run CI checks, enforce branch protection rules |
+Add the workflow to your repo:
 
----
+```bash
+mkdir -p .github/workflows
+cp templates/donmerge-review.yml .github/workflows/
+```
 
-> 📝 This diagram is also available as an Excalidraw file: `code-review-process.excalidraw`
+Add your API key as a repository secret:
+
+```
+Settings → Secrets → DONMERGE_API_KEY = dm_live_your_key_here
+```
+
+Open a PR — the review appears as a comment automatically.
+
+### 2. Sentry Triage (GitHub Actions)
+
+Add the workflow and configure Sentry:
+
+```bash
+cp templates/donmerge-sentry-triage.yml .github/workflows/
+```
+
+Add secrets: `DONMERGE_API_KEY` and `SENTRY_AUTH_TOKEN`.
+
+Set up a Sentry webhook → GitHub `repository_dispatch` bridge (see [docs/setup-guide.md](./docs/setup-guide.md) for details).
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Push API Reference](./docs/push-api.md) | Full endpoint documentation, request/response schemas, error codes |
+| [Setup Guide](./docs/setup-guide.md) | Step-by-step onboarding for new teams |
+| [Webhook Setup](./WEBHOOK_SETUP.md) | GitHub App / webhook mode configuration |
+| [Code Review Process](./README-CODE-REVIEW.md) | Detailed code review workflow and configuration |
+
+## CI/CD Templates
+
+| Template | Description |
+|----------|-------------|
+| [`templates/donmerge-review.yml`](./templates/donmerge-review.yml) | PR-triggered code review |
+| [`templates/donmerge-sentry-triage.yml`](./templates/donmerge-sentry-triage.yml) | Sentry-triggered triage with GitHub Issue creation |
+
+## Development
+
+### Prerequisites
+
+- Node.js 20+
+- Wrangler CLI (`npm install -g wrangler`)
+
+### Setup
+
+```bash
+npm install
+cp .env.example .env
+# Fill in .env with your values
+```
+
+### Type check
+
+```bash
+npm run typecheck
+```
+
+### Run tests
+
+```bash
+npm test
+```
+
+### Deploy
+
+```bash
+wrangler deploy          # production
+wrangler deploy --env staging  # staging
+```
+
+## Environment Variables
+
+See [.env.example](./.env.example) for the full list with documentation.
+
+Key variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Yes | OpenAI API key for LLM calls |
+| `DONMERGE_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
+| `GITHUB_WEBHOOK_SECRET` | Webhook mode | Webhook signature validation |
+| `GITHUB_APP_ID` | Webhook mode | GitHub App ID |
+| `GITHUB_APP_PRIVATE_KEY` | Webhook mode | GitHub App private key (PEM) |
+
+## License
+
+Private — All rights reserved.

@@ -1,0 +1,232 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# DonMerge — AI Code Review (Push API)
+#
+# Triggers an automated code review via the donmerge push API whenever a
+# pull request is opened or receives new commits.  The workflow:
+#   1. Calls POST /api/v1/review to enqueue the review job.
+#   2. Polls   GET  /api/v1/status/{job_id} every 10 s until complete/failed.
+#   3. Posts   the review result as a PR comment.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   DONMERGE_API_KEY  — your donmerge API key (dm_live_* or dm_test_*)
+#   GITHUB_TOKEN      — automatically provided by GitHub (no config needed)
+#
+# Optional variables (Settings → Variables):
+#   DONMERGE_API_URL  — override the API base URL (default: https://donmerge.dev)
+#
+# Copy this file to your repo at .github/workflows/donmerge-review.yml
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: DonMerge Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+# Prevent overlapping reviews for the same PR
+concurrency:
+  group: donmerge-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: write   # needed to post review comments
+  contents: read          # needed to read PR diff
+
+jobs:
+  review:
+    name: AI Code Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # ── 1. Trigger the review ──────────────────────────────────────────────
+      - name: Trigger DonMerge review
+        id: trigger
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+          DONMERGE_API_URL: ${{ vars.DONMERGE_API_URL || 'https://donmerge.dev' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::group::Triggering review for ${{ github.repository }}#${{ github.event.pull_request.number }}"
+
+          # Parse owner and repo from github.repository (format: owner/repo)
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          # Call the push API
+          HTTP_CODE=$(curl -s -o /tmp/donmerge-trigger.json -w "%{http_code}" \
+            "${DONMERGE_API_URL}/api/v1/review" \
+            -H "Authorization: Bearer ${DONMERGE_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"github_token\": \"${GITHUB_TOKEN}\",
+              \"owner\": \"${OWNER}\",
+              \"repo\": \"${REPO}\",
+              \"pr_number\": ${PR_NUMBER}
+            }")
+
+          echo "HTTP status: ${HTTP_CODE}"
+          cat /tmp/donmerge-trigger.json
+
+          # Accept only 202 Accepted
+          if [ "${HTTP_CODE}" != "202" ]; then
+            echo "::error::DonMerge API returned HTTP ${HTTP_CODE}"
+            echo "error_message=$(jq -r '.message // "Unknown error"' /tmp/donmerge-trigger.json)" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Extract job_id for polling
+          JOB_ID=$(jq -r '.job_id' /tmp/donmerge-trigger.json)
+          echo "job_id=${JOB_ID}" >> "$GITHUB_OUTPUT"
+          echo "Review queued: ${JOB_ID}"
+          echo "::endgroup::"
+
+      # ── 2. Poll for completion ─────────────────────────────────────────────
+      - name: Wait for review to complete
+        id: poll
+        if: success()
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+          DONMERGE_API_URL: ${{ vars.DONMERGE_API_URL || 'https://donmerge.dev' }}
+        run: |
+          JOB_ID="${{ steps.trigger.outputs.job_id }}"
+          MAX_ATTEMPTS=30   # 30 × 10 s = 5 min max
+          ATTEMPT=0
+
+          echo "Polling status for job: ${JOB_ID}"
+
+          while [ ${ATTEMPT} -lt ${MAX_ATTEMPTS} ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            sleep 10
+
+            HTTP_CODE=$(curl -s -o /tmp/donmerge-status.json -w "%{http_code}" \
+              "${DONMERGE_API_URL}/api/v1/status/${JOB_ID}" \
+              -H "Authorization: Bearer ${DONMERGE_API_KEY}")
+
+            if [ "${HTTP_CODE}" != "200" ]; then
+              echo "Status check returned HTTP ${HTTP_CODE}, retrying..."
+              continue
+            fi
+
+            STATUS=$(jq -r '.status' /tmp/donmerge-status.json)
+            echo "Attempt ${ATTEMPT}/${MAX_ATTEMPTS}: status=${STATUS}"
+
+            if [ "${STATUS}" = "complete" ]; then
+              echo "Review complete!"
+              echo "final_status=complete" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [ "${STATUS}" = "failed" ]; then
+              echo "::error::Review job failed"
+              ERROR_MSG=$(jq -r '.error // "Unknown error"' /tmp/donmerge-status.json)
+              echo "error_message=${ERROR_MSG}" >> "$GITHUB_OUTPUT"
+              echo "final_status=failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Continue polling for 'pending' or 'running'
+          done
+
+          echo "::warning::Timed out waiting for review to complete"
+          echo "final_status=timeout" >> "$GITHUB_OUTPUT"
+
+      # ── 3a. Post review result as a PR comment ─────────────────────────────
+      - name: Post review comment
+        if: steps.poll.outputs.final_status == 'complete'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const statusData = JSON.parse(fs.readFileSync('/tmp/donmerge-status.json', 'utf8'));
+            const result = statusData.result || {};
+
+            // Build the comment body from the review result
+            const summary = result.prSummary?.overview || result.summary || 'Review complete.';
+            const approved = result.approved !== false ? '✅ Approved' : '⚠️ Changes suggested';
+            const critical = (result.criticalIssues || []).length;
+            const suggestions = (result.suggestions || []).length;
+
+            let body = `## 🤠 DonMerge Code Review — ${approved}\n\n`;
+            body += `### Summary\n${summary}\n\n`;
+
+            if (result.prSummary) {
+              if (result.prSummary.keyChanges?.length) {
+                body += `### Key Changes\n`;
+                result.prSummary.keyChanges.forEach(c => { body += `- ${c}\n`; });
+                body += '\n';
+              }
+              body += `### Risk Assessment\n${result.prSummary.riskAssessment}\n\n`;
+            }
+
+            if (critical > 0) {
+              body += `### Critical Issues (${critical})\n`;
+              result.criticalIssues.forEach(i => { body += `- ${i}\n`; });
+              body += '\n';
+            }
+
+            if (suggestions > 0) {
+              body += `### Suggestions (${suggestions})\n`;
+              result.suggestions.forEach(s => { body += `- ${s}\n`; });
+              body += '\n';
+            }
+
+            if (result.lineComments?.length) {
+              body += `### Line Comments\n`;
+              body += `${result.lineComments.length} inline comment(s) posted to the PR diff.\n\n`;
+            }
+
+            if (result.fileSummaries?.length) {
+              body += `<details><summary>File Summaries (${result.fileSummaries.length} files)</summary>\n\n`;
+              result.fileSummaries.forEach(f => {
+                body += `- **${f.path}** (${f.changeType}): ${f.summary}\n`;
+              });
+              body += '\n</details>\n\n';
+            }
+
+            body += '---\n*Powered by [DonMerge](https://donmerge.dev)*';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+      # ── 3b. Post error comment if review failed ────────────────────────────
+      - name: Post error comment on failure
+        if: steps.poll.outputs.final_status == 'failed' || steps.poll.outputs.final_status == 'timeout'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const statusData = require('fs').existsSync('/tmp/donmerge-status.json')
+              ? JSON.parse(require('fs').readFileSync('/tmp/donmerge-status.json', 'utf8'))
+              : {};
+
+            const triggerData = require('fs').existsSync('/tmp/donmerge-trigger.json')
+              ? JSON.parse(require('fs').readFileSync('/tmp/donmerge-trigger.json', 'utf8'))
+              : {};
+
+            const errorMsg = statusData.error || triggerData.message || '${{ steps.poll.outputs.error_message }}' || 'Unknown error';
+            const finalStatus = '${{ steps.poll.outputs.final_status }}';
+
+            const body = [
+              '## 🤠 DonMerge Code Review — ❌ Failed',
+              '',
+              `The review could not be completed: **${finalStatus}**`,
+              '',
+              '```',
+              errorMsg,
+              '```',
+              '',
+              '---',
+              '*Powered by [DonMerge](https://donmerge.dev)*'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

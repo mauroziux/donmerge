@@ -1,0 +1,269 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# DonMerge — Sentry Triage (Push API)
+#
+# Triggered by a Sentry webhook → GitHub repository_dispatch bridge.
+# The workflow:
+#   1. Calls POST /api/v1/sentry/triage to enqueue the triage job.
+#   2. Polls   GET  /api/v1/status/{job_id} every 10 s until complete/failed.
+#   3. Creates a GitHub Issue (or comments on an existing one) with the result.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   DONMERGE_API_KEY     — your donmerge API key (dm_live_* or dm_test_*)
+#   SENTRY_AUTH_TOKEN    — Sentry auth token with org:read and project:read
+#   GITHUB_TOKEN         — automatically provided by GitHub
+#
+# Optional variables (Settings → Variables):
+#   DONMERGE_API_URL     — override the API base URL (default: https://donmerge.dev)
+#   DONMERGE_TRACKER_TEAM — team label for created issues (default: "eng")
+#   DONMERGE_TRACKER_LABELS — comma-separated labels (default: "bug,sentry")
+#
+# Copy this file to your repo at .github/workflows/donmerge-sentry-triage.yml
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: DonMerge Sentry Triage
+
+on:
+  repository_dispatch:
+    types: [sentry-issue]
+
+# Prevent overlapping triages for the same Sentry issue
+concurrency:
+  group: donmerge-sentry-${{ github.event.client_payload.sentry_issue_url || github.run_id }}
+  cancel-in-progress: false   # let the current triage finish
+
+permissions:
+  issues: write           # needed to create/link GitHub issues
+  contents: read
+
+jobs:
+  triage:
+    name: Sentry Triage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # ── 0. Validate incoming payload ───────────────────────────────────────
+      - name: Validate payload
+        id: validate
+        run: |
+          PAYLOAD='${{ toJson(github.event.client_payload) }}'
+          echo "Received payload: ${PAYLOAD}"
+
+          SENTRY_URL=$(echo "${PAYLOAD}" | jq -r '.sentry_issue_url // empty')
+          if [ -z "${SENTRY_URL}" ]; then
+            echo "::error::Missing sentry_issue_url in dispatch payload"
+            exit 1
+          fi
+
+          echo "sentry_url=${SENTRY_URL}" >> "$GITHUB_OUTPUT"
+
+          # SHA defaults to empty — the API will use the repo's default branch
+          SHA=$(echo "${PAYLOAD}" | jq -r '.sha // empty')
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      # ── 1. Trigger Sentry triage ───────────────────────────────────────────
+      - name: Trigger Sentry triage
+        id: trigger
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+          DONMERGE_API_URL: ${{ vars.DONMERGE_API_URL || 'https://donmerge.dev' }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::group::Triggering triage for ${{ github.repository }}"
+
+          REPO="${{ github.repository }}"
+          SENTRY_URL="${{ steps.validate.outputs.sentry_url }}"
+          SHA="${{ steps.validate.outputs.sha }}"
+          TRACKER_TEAM="${{ vars.DONMERGE_TRACKER_TEAM || 'eng' }}"
+
+          # Build the request body
+          # tracker is included using the caller's GITHUB_TOKEN so the triage
+          # result is posted back as a GitHub Issue in the same repo.
+          BODY=$(jq -n \
+            --arg repo "$REPO" \
+            --arg url "$SENTRY_URL" \
+            --arg sentry_token "$SENTRY_AUTH_TOKEN" \
+            --arg gh_token "$GITHUB_TOKEN" \
+            --arg sha "$SHA" \
+            --arg team "$TRACKER_TEAM" \
+            --arg dm_token "$GITHUB_TOKEN" \
+            '{
+              repo: $repo,
+              sentry_issue_url: $url,
+              sentry_auth_token: $sentry_token,
+              github_token: $gh_token,
+              sha: (if $sha == "" then "main" else $sha end),
+              tracker: {
+                type: "github",
+                token: $dm_token,
+                team: $team,
+                labels: ["bug", "sentry"]
+              },
+              options: {
+                auto_fix: true
+              }
+            }')
+
+          HTTP_CODE=$(curl -s -o /tmp/donmerge-trigger.json -w "%{http_code}" \
+            "${DONMERGE_API_URL}/api/v1/sentry/triage" \
+            -H "Authorization: Bearer ${DONMERGE_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+
+          echo "HTTP status: ${HTTP_CODE}"
+          cat /tmp/donmerge-trigger.json
+
+          if [ "${HTTP_CODE}" != "202" ]; then
+            echo "::error::DonMerge API returned HTTP ${HTTP_CODE}"
+            echo "error_message=$(jq -r '.message // "Unknown error"' /tmp/donmerge-trigger.json)" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          JOB_ID=$(jq -r '.job_id' /tmp/donmerge-trigger.json)
+          echo "job_id=${JOB_ID}" >> "$GITHUB_OUTPUT"
+          echo "Triage queued: ${JOB_ID}"
+          echo "::endgroup::"
+
+      # ── 2. Poll for completion ─────────────────────────────────────────────
+      - name: Wait for triage to complete
+        id: poll
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+          DONMERGE_API_URL: ${{ vars.DONMERGE_API_URL || 'https://donmerge.dev' }}
+        run: |
+          JOB_ID="${{ steps.trigger.outputs.job_id }}"
+          MAX_ATTEMPTS=30   # 30 × 10 s = 5 min max
+          ATTEMPT=0
+
+          echo "Polling status for job: ${JOB_ID}"
+
+          while [ ${ATTEMPT} -lt ${MAX_ATTEMPTS} ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            sleep 10
+
+            HTTP_CODE=$(curl -s -o /tmp/donmerge-status.json -w "%{http_code}" \
+              "${DONMERGE_API_URL}/api/v1/status/${JOB_ID}" \
+              -H "Authorization: Bearer ${DONMERGE_API_KEY}")
+
+            if [ "${HTTP_CODE}" != "200" ]; then
+              echo "Status check returned HTTP ${HTTP_CODE}, retrying..."
+              continue
+            fi
+
+            STATUS=$(jq -r '.status' /tmp/donmerge-status.json)
+            echo "Attempt ${ATTEMPT}/${MAX_ATTEMPTS}: status=${STATUS}"
+
+            if [ "${STATUS}" = "complete" ]; then
+              echo "Triage complete!"
+              echo "final_status=complete" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [ "${STATUS}" = "failed" ]; then
+              echo "::error::Triage job failed"
+              ERROR_MSG=$(jq -r '.error // "Unknown error"' /tmp/donmerge-status.json)
+              echo "error_message=${ERROR_MSG}" >> "$GITHUB_OUTPUT"
+              echo "final_status=failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "::warning::Timed out waiting for triage to complete"
+          echo "final_status=timeout" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Post result summary as a workflow annotation ─────────────────────
+      - name: Report triage result
+        if: always() && steps.poll.outputs.final_status != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const statusFile = '/tmp/donmerge-status.json';
+
+            if (!fs.existsSync(statusFile)) {
+              console.log('No status file found — nothing to report.');
+              return;
+            }
+
+            const data = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+            const finalStatus = '${{ steps.poll.outputs.final_status }}';
+
+            if (finalStatus === 'complete' && data.result) {
+              const r = data.result;
+              const severityEmoji = { critical: '🔴', error: '🟠', warning: '🟡' };
+              const emoji = severityEmoji[r.severity] || '⚪';
+              const confidence = r.confidence || 'unknown';
+
+              console.log(`## Triage Result`);
+              console.log(`- Severity: ${emoji} ${r.severity}`);
+              console.log(`- Confidence: ${confidence}`);
+              console.log(`- Root Cause: ${r.root_cause}`);
+              console.log(`- Affected Files: ${(r.affected_files || []).join(', ')}`);
+              if (r.fix_pr_url) console.log(`- Fix PR: ${r.fix_pr_url}`);
+              if (r.tracker_issue_url) console.log(`- Tracker Issue: ${r.tracker_issue_url}`);
+
+              core.summary.addRaw([
+                `## 🤠 DonMerge Sentry Triage Result`,
+                ``,
+                `| Field | Value |`,
+                `|-------|-------|`,
+                `| Severity | ${emoji} \`${r.severity}\` |`,
+                `| Confidence | \`${confidence}\` |`,
+                `| Root Cause | ${r.root_cause?.slice(0, 200) || 'N/A'} |`,
+                r.fix_pr_url ? `| Fix PR | [View PR](${r.fix_pr_url}) |` : '',
+                r.tracker_issue_url ? `| Tracker | [View Issue](${r.tracker_issue_url}) |` : '',
+                ``,
+                `### Affected Files`,
+                ...(r.affected_files || []).map(f => `- \`${f}\``),
+              ].filter(Boolean).join('\n'));
+            } else if (finalStatus === 'failed') {
+              const err = data.error || '${{ steps.poll.outputs.error_message }}' || 'Unknown';
+              core.setFailed(`Sentry triage failed: ${err}`);
+            } else if (finalStatus === 'timeout') {
+              core.warning('Sentry triage timed out after 5 minutes');
+            }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sentry Webhook → GitHub Dispatch Bridge
+#
+# To connect your Sentry project to this workflow, create a Sentry webhook
+# integration that forwards issue events to GitHub as repository_dispatch.
+#
+# Option A: Use a small Cloudflare Worker or AWS Lambda as a bridge:
+#
+#   // worker.js (bridge)
+#   export default {
+#     async fetch(request, env) {
+#       const sentryPayload = await request.json();
+#       const issueUrl = sentryPayload?.data?.issue?.url
+#         || `https://sentry.io/organizations/${sentryPayload?.data?.organization?.slug}/issues/${sentryPayload?.data?.issue?.id}/`;
+#
+#       await fetch(
+#         `https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`,
+#         {
+#           method: 'POST',
+#           headers: {
+#             Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+#             Accept: 'application/vnd.github+json',
+#             'Content-Type': 'application/json',
+#           },
+#           body: JSON.stringify({
+#             event_type: 'sentry-issue',
+#             client_payload: {
+#               sentry_issue_url: issueUrl,
+#               sha: 'main',  // optional: use specific commit SHA
+#             },
+#           }),
+#         }
+#       );
+#
+#       return new Response('ok', { status: 200 });
+#     }
+#   };
+#
+# Option B: Use a no-code platform like Zapier, Make, or Pipedream to bridge
+#           the Sentry webhook into a GitHub repository_dispatch event.
+#
+# In Sentry: Settings → Integrations → Webhooks → Add your bridge URL
+# ──────────────────────────────────────────────────────────────────────────────

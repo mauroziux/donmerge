@@ -2,10 +2,16 @@ import { FlueWorker } from '@flue/cloudflare/worker';
 import { processGitHubCodeReviewWebhook, validateWebhookFast } from './workflows/code-review';
 import type { WorkerEnv } from './workflows/code-review';
 import { ReviewProcessor } from './workflows/code-review/processor';
+import { SentryTriageProcessor } from './workflows/sentry-triage/processor';
+import { handlePushReview, handleSentryTriage, handleJobStatus } from './api/routes';
+import { RateLimiter } from './api/rate-limit';
 
-// Extended env type that includes the ReviewProcessor binding
+// Extended env type that includes all DO bindings
 interface AppEnv extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
+  SentryTriageProcessor: DurableObjectNamespace;
+  RateLimiter: DurableObjectNamespace;
+  DONMERGE_API_KEYS?: string;
 }
 
 const app = new FlueWorker<AppEnv>();
@@ -45,7 +51,14 @@ app.post('/webhook/github', async (c) => {
   );
 });
 
+// Push API routes
+app.post('/api/v1/review', handlePushReview);
+app.post('/api/v1/sentry/triage', handleSentryTriage);
+app.get('/api/v1/status/*', handleJobStatus);
+
 // Export Durable Objects
 export { Sandbox } from '@cloudflare/sandbox';
 export { ReviewProcessor };
+export { SentryTriageProcessor };
+export { RateLimiter };
 export default app;

@@ -1,0 +1,226 @@
+name: Sentry Triage
+
+on:
+  workflow_call:
+    inputs:
+      sentry_issue_url:
+        description: Sentry issue URL
+        required: true
+        type: string
+      sha:
+        description: Git branch or SHA to fetch code from
+        required: false
+        type: string
+        default: "main"
+      auto_fix:
+        description: Whether to attempt auto-fix
+        required: false
+        type: boolean
+        default: true
+      tracker_type:
+        description: "Tracker type: github, linear, or jira"
+        required: false
+        type: string
+        default: "github"
+      tracker_labels:
+        description: Comma-separated labels for the tracker issue
+        required: false
+        type: string
+        default: "bug,sentry"
+      api_url:
+        description: DonMerge API base URL
+        required: false
+        type: string
+        default: "https://donmerge.dev"
+    secrets:
+      DONMERGE_API_KEY:
+        required: true
+      SENTRY_AUTH_TOKEN:
+        required: true
+      GITHUB_TOKEN:
+        required: true
+      LINEAR_API_KEY:
+        required: false
+      JIRA_API_KEY:
+        required: false
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  triage:
+    name: Sentry Issue Triage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger triage
+        uses: actions/github-script@v7
+        id: trigger
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          GITHUB_TOKEN_SECRET: ${{ secrets.GITHUB_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+        with:
+          script: |
+            const apiUrl = `${{ inputs.api_url }}`;
+            const apiKey = process.env.DONMERGE_API_KEY;
+
+            // Determine tracker token based on type
+            const trackerType = `${{ inputs.tracker_type }}`;
+            let trackerToken = process.env.GITHUB_TOKEN_SECRET;
+            if (trackerType === "linear") {
+              trackerToken = process.env.LINEAR_API_KEY;
+            } else if (trackerType === "jira") {
+              trackerToken = process.env.JIRA_API_KEY;
+            }
+
+            // Parse comma-separated labels into array
+            const labels = `${{ inputs.tracker_labels }}`
+              .split(",")
+              .map(l => l.trim())
+              .filter(l => l.length > 0);
+
+            const body = {
+              repo: `${{ github.repository }}`,
+              sentry_issue_url: `${{ inputs.sentry_issue_url }}`,
+              sentry_auth_token: process.env.SENTRY_AUTH_TOKEN,
+              github_token: process.env.GITHUB_TOKEN_SECRET,
+              sha: `${{ inputs.sha }}`,
+              tracker: {
+                type: trackerType,
+                token: trackerToken,
+                team: "eng",
+                labels: labels
+              },
+              options: {
+                auto_fix: ${{ inputs.auto_fix }}
+              }
+            };
+
+            const response = await fetch(`${apiUrl}/api/v1/sentry/triage`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+              },
+              body: JSON.stringify(body)
+            });
+
+            if (response.status !== 202) {
+              const errorText = await response.text();
+              core.setFailed(`Triage trigger failed (HTTP ${response.status}): ${errorText}`);
+              return;
+            }
+
+            const data = await response.json();
+            core.setOutput("job_id", data.job_id);
+            core.info(`Triage job started: ${data.job_id}`);
+
+      - name: Poll triage status
+        uses: actions/github-script@v7
+        id: poll
+        if: steps.trigger.outputs.job_id
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+        with:
+          script: |
+            const apiUrl = `${{ inputs.api_url }}`;
+            const apiKey = process.env.DONMERGE_API_KEY;
+            const jobId = `${{ steps.trigger.outputs.job_id }}`;
+            const maxAttempts = 30;
+            const intervalMs = 10000;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              core.info(`Polling attempt ${attempt}/${maxAttempts}...`);
+
+              const response = await fetch(`${apiUrl}/api/v1/status/${jobId}`, {
+                headers: {
+                  "Authorization": `Bearer ${apiKey}`
+                }
+              });
+
+              if (!response.ok) {
+                core.warning(`Status check returned HTTP ${response.status}`);
+                await new Promise(r => setTimeout(r, intervalMs));
+                continue;
+              }
+
+              const data = await response.json();
+
+              if (data.status === "complete") {
+                core.setOutput("result", JSON.stringify(data.result));
+                core.setOutput("triage_failed", "false");
+                core.info("Triage completed successfully.");
+                return;
+              }
+
+              if (data.status === "failed") {
+                const errorMsg = data.error || data.result?.error || "Unknown error";
+                core.setOutput("result", JSON.stringify(data.result || {}));
+                core.setOutput("triage_failed", "true");
+                core.setOutput("error_message", errorMsg);
+                core.warning(`Triage failed: ${errorMsg}`);
+                return;
+              }
+
+              await new Promise(r => setTimeout(r, intervalMs));
+            }
+
+            core.setOutput("triage_failed", "true");
+            core.setOutput("error_message", "Polling timed out after 30 attempts (5 minutes)");
+            core.warning("Polling timed out — triage may still be running on the server.");
+
+      - name: Report triage result
+        uses: actions/github-script@v7
+        if: always() && steps.poll.outputs.result
+        with:
+          script: |
+            const result = JSON.parse(`${{ steps.poll.outputs.result }}`);
+            const triageFailed = `${{ steps.poll.outputs.triage_failed }}` === "true";
+            const errorMessage = `${{ steps.poll.outputs.error_message }}`;
+
+            // Build summary
+            let summary = `## 🔍 Sentry Triage Result\n\n`;
+            summary += `**Issue:** ${{ inputs.sentry_issue_url }}\n`;
+            summary += `**Repo:** ${{ github.repository }}\n`;
+            summary += `**SHA:** ${{ inputs.sha }}\n\n`;
+
+            if (result.root_cause) {
+              summary += `### Root Cause\n${result.root_cause}\n\n`;
+            }
+            if (result.severity) {
+              summary += `**Severity:** ${result.severity}\n\n`;
+            }
+            if (result.confidence) {
+              summary += `**Confidence:** ${result.confidence}\n\n`;
+            }
+            if (result.affected_files && result.affected_files.length > 0) {
+              summary += `### Affected Files\n`;
+              for (const file of result.affected_files) {
+                summary += `- \`${file}\`\n`;
+              }
+              summary += `\n`;
+            }
+            if (result.suggested_fix) {
+              summary += `### Suggested Fix\n${result.suggested_fix}\n\n`;
+            }
+            if (result.fix_pr_url) {
+              summary += `**Fix PR:** ${result.fix_pr_url}\n\n`;
+            }
+            if (result.tracker_issue_url) {
+              summary += `**Tracker Issue:** ${result.tracker_issue_url}\n\n`;
+            }
+
+            if (triageFailed) {
+              summary += `### ❌ Triage Failed\n${errorMessage}\n`;
+            } else {
+              summary += `### ✅ Triage Complete\n`;
+            }
+
+            await core.summary.addRaw(summary).write();
+
+            if (triageFailed) {
+              core.setFailed(`Triage failed: ${errorMessage}`);
+            }

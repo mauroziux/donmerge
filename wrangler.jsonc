@@ -31,6 +31,14 @@
       {
         "class_name": "ReviewProcessor",
         "name": "ReviewProcessor"
+      },
+      {
+        "class_name": "RateLimiter",
+        "name": "RateLimiter"
+      },
+      {
+        "class_name": "SentryTriageProcessor",
+        "name": "SentryTriageProcessor"
       }
     ],
   },
@@ -46,6 +54,18 @@
         "ReviewProcessor"
       ],
       "tag": "v2"
+    },
+    {
+      "new_classes": [
+        "RateLimiter"
+      ],
+      "tag": "v3"
+    },
+    {
+      "new_sqlite_classes": [
+        "SentryTriageProcessor"
+      ],
+      "tag": "v4"
     }
   ],
   "observability": {
@@ -61,6 +81,73 @@
       "enabled": false,
       "persist": true,
       "head_sampling_rate": 1
+    }
+  },
+  // Staging environment — used for push API testing; Wrangler does NOT inherit
+  // vars, durable_objects, containers, or migrations into named environments,
+  // so everything must be duplicated here.
+  "env": {
+    "staging": {
+      "name": "tableo-assitant-worker-staging",
+      "vars": {
+        "REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
+        "CODEX_MODEL": "openai/gpt-5.3-codex",
+        "MAX_REVIEW_FILES": "50",
+        "REVIEW_TRIGGER": "@donmerge"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "class_name": "Sandbox",
+            "name": "Sandbox"
+          },
+          {
+            "class_name": "ReviewProcessor",
+            "name": "ReviewProcessor"
+          },
+          {
+            "class_name": "RateLimiter",
+            "name": "RateLimiter"
+          },
+          {
+            "class_name": "SentryTriageProcessor",
+            "name": "SentryTriageProcessor"
+          }
+        ]
+      },
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "image": "./Dockerfile",
+          "instance_type": "standard-1",
+        },
+      ],
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "Sandbox"
+          ],
+          "tag": "v1"
+        },
+        {
+          "new_sqlite_classes": [
+            "ReviewProcessor"
+          ],
+          "tag": "v2"
+        },
+        {
+          "new_classes": [
+            "RateLimiter"
+          ],
+          "tag": "v3"
+        },
+        {
+          "new_sqlite_classes": [
+            "SentryTriageProcessor"
+          ],
+          "tag": "v4"
+        }
+      ]
     }
   }
 }

@@ -83,6 +83,9 @@ interface ReviewContext {
   checkRunId?: number; // Created by DO if not provided
   headSha?: string; // Fetched by DO if not provided
   githubToken?: string; // Resolved by DO if not provided
+  model?: string; // Optional: override LLM model (push API)
+  maxFiles?: number; // Optional: override max files to review (push API)
+  initiatorKeyHash?: string; // Hash of API key that initiated the review (for status auth)
 }
 
 interface ReviewStatus {
@@ -91,6 +94,7 @@ interface ReviewStatus {
   error?: string;
   startedAt?: string;
   completedAt?: string;
+  result?: ReviewResult; // Stored on completion for status queries
 }
 
 interface EnvWithBindings extends WorkerEnv {
@@ -134,9 +138,20 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   }
 
   /**
-   * Get current review status
+   * Get current review status.
+   * If callerKeyHash is provided, verifies the caller is authorized to view this job.
    */
-  async getStatus(): Promise<ReviewStatus | null> {
+  async getStatus(callerKeyHash?: string): Promise<ReviewStatus | null> {
+    const context = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
+
+    // Authorization check: if the review was started with an initiatorKeyHash,
+    // verify the caller matches
+    if (context?.initiatorKeyHash && callerKeyHash) {
+      if (context.initiatorKeyHash !== callerKeyHash) {
+        throw new Error('Unauthorized: caller does not match job initiator');
+      }
+    }
+
     return (await this.state.storage.get<ReviewStatus>(STATE_KEYS.status)) ?? null;
   }
 
@@ -342,7 +357,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       githubToken
     );
 
-    const maxFiles = Number.parseInt(this.env.MAX_REVIEW_FILES ?? '50', 10);
+    const maxFiles = context.maxFiles ?? Number.parseInt(this.env.MAX_REVIEW_FILES ?? '50', 10);
     let filesToReview = filesResponse.slice(0, maxFiles);
     if (focusFiles && focusFiles.length > 0) {
       const normalizedFocus = focusFiles.map((file) => file.trim()).filter(Boolean);
@@ -407,7 +422,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
 
     // Run LLM review
     const result = await this.runLlmReview(
-      { owner, repo, prNumber, retrigger, instruction, repoContext },
+      { owner, repo, prNumber, retrigger, instruction, repoContext, modelOverride: context.model },
       activePreviousComments,
       diffText,
       githubToken,
@@ -480,7 +495,15 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // Mark complete
     status.state = 'complete';
     status.completedAt = new Date().toISOString();
+    status.result = result;
     await this.state.storage.put(STATE_KEYS.status, status);
+
+    // Clear the GitHub token from stored context after use
+    const storedContext = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
+    if (storedContext) {
+      storedContext.githubToken = undefined;
+      await this.state.storage.put(STATE_KEYS.context, storedContext);
+    }
 
     console.log('Review completed successfully', {
       owner,
@@ -502,6 +525,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       retrigger: boolean;
       instruction?: string;
       repoContext: RepoContextType;
+      modelOverride?: string;
     },
     previousComments: PreviousComment[],
     diffText: string,
@@ -518,7 +542,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     });
     await flue.setup();
 
-    const model = parseModelConfig(this.env.CODEX_MODEL);
+    const model = input.modelOverride
+      ? parseModelConfig(input.modelOverride)
+      : parseModelConfig(this.env.CODEX_MODEL);
     const prompt = buildReviewPrompt(
       {
         owner: input.owner,
@@ -554,9 +580,10 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           if (validation.valid) {
             return normalizeReviewResult(parsed, previousComments, severityOverrides);
           }
+          // Raw response parsed but failed validation — use it for retry
           response = rawResponse;
         } catch {
-          // Raw response could not be parsed, fall through to throw
+          // Raw response couldn't be parsed, fall through to throw
         }
       }
       if (!response) {
@@ -583,9 +610,10 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           if (retryValidation.valid) {
             return normalizeReviewResult(parsed, previousComments, severityOverrides);
           }
+          // Parsed but invalid — use for final validation attempt
           response = rawResponse;
         } catch {
-          // Raw response could not be parsed, fall through to throw
+          // Raw response couldn't be parsed, fall through to throw
         }
       }
       if (!response) {
@@ -703,6 +731,13 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       status.error = `[${code}] ${detail}`;
       status.completedAt = new Date().toISOString();
       await this.state.storage.put(STATE_KEYS.status, status);
+    }
+
+    // Clear the GitHub token from stored context after use
+    const storedContext = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
+    if (storedContext) {
+      storedContext.githubToken = undefined;
+      await this.state.storage.put(STATE_KEYS.context, storedContext);
     }
   }
 

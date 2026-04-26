@@ -1,0 +1,188 @@
+name: Code Review
+
+on:
+  workflow_call:
+    inputs:
+      owner:
+        description: Repository owner (defaults to calling repo owner)
+        required: false
+        type: string
+        default: ""
+      repo:
+        description: Repository name (defaults to calling repo name)
+        required: false
+        type: string
+        default: ""
+      pr_number:
+        description: PR number to review
+        required: true
+        type: number
+      model:
+        description: LLM model override
+        required: false
+        type: string
+        default: ""
+      max_files:
+        description: Maximum number of files to review
+        required: false
+        type: number
+        default: 50
+      api_url:
+        description: DonMerge API base URL
+        required: false
+        type: string
+        default: "https://donmerge.dev"
+    secrets:
+      DONMERGE_API_KEY:
+        required: true
+      GITHUB_TOKEN:
+        required: true
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    name: DonMerge Code Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger review
+        uses: actions/github-script@v7
+        id: trigger
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+          GITHUB_TOKEN_SECRET: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const apiUrl = `${{ inputs.api_url }}`;
+            const apiKey = process.env.DONMERGE_API_KEY;
+
+            // Derive owner/repo from github.repository if not provided
+            const [defaultOwner, defaultRepo] = `${{ github.repository }}`.split("/");
+            const owner = `${{ inputs.owner }}` || defaultOwner;
+            const repo = `${{ inputs.repo }}` || defaultRepo;
+
+            const body = {
+              github_token: process.env.GITHUB_TOKEN_SECRET,
+              owner: owner,
+              repo: repo,
+              pr_number: ${{ inputs.pr_number }},
+              max_files: ${{ inputs.max_files }}
+            };
+
+            // Only include model if provided
+            const model = `${{ inputs.model }}`;
+            if (model) {
+              body.model = model;
+            }
+
+            const response = await fetch(`${apiUrl}/api/v1/review`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+              },
+              body: JSON.stringify(body)
+            });
+
+            if (response.status !== 202) {
+              const errorText = await response.text();
+              core.setFailed(`Review trigger failed (HTTP ${response.status}): ${errorText}`);
+              return;
+            }
+
+            const data = await response.json();
+            core.setOutput("job_id", data.job_id);
+            core.setOutput("owner", owner);
+            core.setOutput("repo", repo);
+            core.info(`Review job started: ${data.job_id}`);
+
+      - name: Poll review status
+        uses: actions/github-script@v7
+        id: poll
+        if: steps.trigger.outputs.job_id
+        env:
+          DONMERGE_API_KEY: ${{ secrets.DONMERGE_API_KEY }}
+        with:
+          script: |
+            const apiUrl = `${{ inputs.api_url }}`;
+            const apiKey = process.env.DONMERGE_API_KEY;
+            const jobId = `${{ steps.trigger.outputs.job_id }}`;
+            const maxAttempts = 30;
+            const intervalMs = 10000;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              core.info(`Polling attempt ${attempt}/${maxAttempts}...`);
+
+              const response = await fetch(`${apiUrl}/api/v1/status/${jobId}`, {
+                headers: {
+                  "Authorization": `Bearer ${apiKey}`
+                }
+              });
+
+              if (!response.ok) {
+                core.warning(`Status check returned HTTP ${response.status}`);
+                await new Promise(r => setTimeout(r, intervalMs));
+                continue;
+              }
+
+              const data = await response.json();
+
+              if (data.status === "complete") {
+                core.setOutput("result", JSON.stringify(data.result));
+                core.setOutput("review_failed", "false");
+                core.info("Review completed successfully.");
+                return;
+              }
+
+              if (data.status === "failed") {
+                const errorMsg = data.error || data.result?.error || "Unknown error";
+                core.setOutput("result", JSON.stringify(data.result || {}));
+                core.setOutput("review_failed", "true");
+                core.setOutput("error_message", errorMsg);
+                core.warning(`Review failed: ${errorMsg}`);
+                return;
+              }
+
+              await new Promise(r => setTimeout(r, intervalMs));
+            }
+
+            core.setOutput("review_failed", "true");
+            core.setOutput("error_message", "Polling timed out after 30 attempts (5 minutes)");
+            core.warning("Polling timed out — review may still be running on the server.");
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        if: always() && steps.poll.outputs.result
+        with:
+          script: |
+            const result = JSON.parse(`${{ steps.poll.outputs.result }}`);
+            const reviewFailed = `${{ steps.poll.outputs.review_failed }}` === "true";
+            const errorMessage = `${{ steps.poll.outputs.error_message }}`;
+            const owner = `${{ steps.trigger.outputs.owner }}`;
+            const repo = `${{ steps.trigger.outputs.repo }}`;
+            const prNumber = ${{ inputs.pr_number }};
+
+            let commentBody = `## 🤠 DonMerge Code Review\n\n`;
+
+            if (reviewFailed) {
+              commentBody += `### ❌ Review Failed\n${errorMessage}\n`;
+            } else if (result.summary) {
+              commentBody += `${result.summary}\n`;
+            } else {
+              commentBody += `${JSON.stringify(result, null, 2)}\n`;
+            }
+
+            commentBody += `\n---\n*Powered by [DonMerge](https://donmerge.dev)*\n`;
+
+            await github.rest.issues.createComment({
+              owner: owner,
+              repo: repo,
+              issue_number: prNumber,
+              body: commentBody
+            });
+
+            if (reviewFailed) {
+              core.setFailed(`Review failed: ${errorMessage}`);
+            }
