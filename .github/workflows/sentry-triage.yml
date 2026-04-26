@@ -43,8 +43,9 @@ on:
         required: false
 
 permissions:
+  contents: write
   issues: write
-  contents: read
+  pull-requests: write
 
 jobs:
   triage:
