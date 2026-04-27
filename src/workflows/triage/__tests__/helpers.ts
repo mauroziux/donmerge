@@ -1,16 +1,15 @@
 /**
- * Shared test helpers, factories, and fixtures for sentry-triage tests.
+ * Shared test helpers, factories, and fixtures for triage tests.
  */
 
 import { vi } from 'vitest';
 
 import type {
-  SentryIssueData,
-  SentryEvent,
-  SentryTriageOutput,
-  SentryTriageContext,
-  SentryTriageStatus,
-  SentryTriageResult,
+  ErrorContext,
+  TriageOutput,
+  TriageContext,
+  TriageStatus,
+  TriageResult,
   TrackerConfig,
   CallbackConfig,
   AutoFixOutput,
@@ -19,71 +18,32 @@ import type {
 import type { TriagePromptContext } from '../prompts/builder';
 import type { TrackerIssueContext } from '../trackers/types';
 
-// ─── SentryIssueData Factory ─────────────────────────────────────────
+// ─── ErrorContext Factory ─────────────────────────────────────────
 
-let issueCounter = 0;
+let errorCounter = 0;
 
-export function createSentryIssueData(
-  overrides: Partial<SentryIssueData> = {}
-): SentryIssueData {
-  issueCounter += 1;
+export function createErrorContext(
+  overrides: Partial<ErrorContext> = {}
+): ErrorContext {
+  errorCounter += 1;
   return {
-    id: `${issueCounter}`,
-    shortId: `PROJ-${issueCounter}`,
-    title: `Test Error ${issueCounter}`,
-    project: { slug: 'test-project', id: '1' },
-    firstSeen: '2025-01-01T00:00:00Z',
-    lastSeen: '2025-01-02T00:00:00Z',
-    count: '42',
-    userCount: 10,
-    platform: 'javascript',
+    title: `Test Error ${errorCounter}`,
+    description: `Description for test error ${errorCounter}`,
+    stack_trace: `Error: test\n  at handleRequest (src/index.ts:42:10)`,
+    affected_files: ['src/index.ts'],
+    severity: 'error',
     environment: 'production',
-    tags: [{ key: 'release', value: '1.0.0' }],
-    events: undefined,
+    metadata: { count: '42', userCount: 10 },
+    source_url: 'https://sentry.io/organizations/acme/issues/12345/',
     ...overrides,
   };
 }
 
-// ─── SentryEvent Factory ─────────────────────────────────────────────
-
-let eventCounter = 0;
-
-export function createSentryEvent(overrides: Partial<SentryEvent> = {}): SentryEvent {
-  eventCounter += 1;
-  return {
-    id: `event-${eventCounter}`,
-    timestamp: '2025-01-01T12:00:00Z',
-    exceptions: [
-      {
-        type: 'TypeError',
-        value: `Cannot read property 'foo' of undefined`,
-        stacktrace: {
-          frames: [
-            {
-              filename: 'src/index.ts',
-              function: 'handleRequest',
-              lineno: 42,
-              colno: 10,
-              absPath: '/app/src/index.ts',
-              inApp: true,
-            },
-          ],
-        },
-      },
-    ],
-    breadcrumbs: [
-      { timestamp: '2025-01-01T11:59:00Z', category: 'nav', message: 'navigate to /dashboard', type: 'navigation' },
-    ],
-    tags: [{ key: 'browser', value: 'Chrome' }],
-    ...overrides,
-  };
-}
-
-// ─── SentryTriageOutput Factory ──────────────────────────────────────
+// ─── TriageOutput Factory ──────────────────────────────────────────
 
 export function createValidTriageOutput(
-  overrides: Partial<SentryTriageOutput> = {}
-): SentryTriageOutput {
+  overrides: Partial<TriageOutput> = {}
+): TriageOutput {
   return {
     root_cause: 'Null pointer dereference in handleRequest',
     stack_trace_summary: 'TypeError at src/index.ts:42 in handleRequest',
@@ -101,7 +61,7 @@ export function createTriagePromptContext(
   overrides: Partial<TriagePromptContext> = {}
 ): TriagePromptContext {
   return {
-    sentryData: createSentryIssueData(),
+    errorContext: createErrorContext(),
     sourceCode: new Map([['src/index.ts', 'export function handleRequest() {}']]),
     sha: 'abc123def456',
     repo: 'tableoltd/test-repo',
@@ -109,27 +69,26 @@ export function createTriagePromptContext(
   };
 }
 
-// ─── SentryTriageContext Factory ──────────────────────────────────────
+// ─── TriageContext Factory ──────────────────────────────────────────
 
 export function createTriageContext(
-  overrides: Partial<SentryTriageContext> = {}
-): SentryTriageContext {
+  overrides: Partial<TriageContext> = {}
+): TriageContext {
   return {
     jobId: 'job-123',
     repo: 'tableoltd/test-repo',
-    sentryIssueUrl: 'https://sentry.io/organizations/acme/issues/12345/',
-    sentryAuthToken: 'sentry-token-abc',
+    errorContext: createErrorContext(),
     githubToken: 'github-token-xyz',
     sha: 'abc123def456',
     ...overrides,
   };
 }
 
-// ─── SentryTriageStatus Factory ──────────────────────────────────────
+// ─── TriageStatus Factory ──────────────────────────────────────────
 
 export function createTriageStatus(
-  overrides: Partial<SentryTriageStatus> = {}
-): SentryTriageStatus {
+  overrides: Partial<TriageStatus> = {}
+): TriageStatus {
   return {
     state: 'pending',
     attempts: 0,
@@ -138,11 +97,11 @@ export function createTriageStatus(
   };
 }
 
-// ─── SentryTriageResult Factory ──────────────────────────────────────
+// ─── TriageResult Factory ──────────────────────────────────────────
 
 export function createTriageResult(
-  overrides: Partial<SentryTriageResult> = {}
-): SentryTriageResult {
+  overrides: Partial<TriageResult> = {}
+): TriageResult {
   return {
     root_cause: 'Null pointer dereference',
     stack_trace_summary: 'TypeError at src/index.ts:42',
@@ -200,9 +159,8 @@ export function createAutoFixContext(overrides: Partial<AutoFixContext> = {}): A
     repo: 'owner/repo',
     sha: 'abc123',
     githubToken: 'ghs_test_token',
-    sentryIssueId: '12345',
-    sentryIssueUrl: 'https://sentry.io/organizations/test/issues/12345/',
-    sentryTitle: 'TypeError: Cannot read properties of undefined',
+    errorTitle: 'TypeError: Cannot read properties of undefined',
+    sourceUrl: 'https://sentry.io/organizations/test/issues/12345/',
     triageOutput: createValidTriageOutput({
       affected_files: ['src/index.ts'],
     }),
@@ -219,14 +177,14 @@ export function createTrackerIssueContext(
 ): TrackerIssueContext {
   return {
     repo: 'test-owner/test-repo',
-    sentryIssueUrl: 'https://test.sentry.io/issues/12345/',
-    sentryTitle: 'TypeError: Cannot read properties of undefined',
+    errorTitle: 'TypeError: Cannot read properties of undefined',
+    sourceUrl: 'https://test.sentry.io/issues/12345/',
     triageOutput: createValidTriageOutput(),
     tracker: {
       type: 'github',
       token: 'ghs_testtoken',
       team: 'eng',
-      labels: ['bug', 'sentry'],
+      labels: ['bug'],
     },
     fixPrUrl: null,
     ...overrides,
@@ -236,6 +194,5 @@ export function createTrackerIssueContext(
 // ─── Reset counters ───────────────────────────────────────────────────
 
 export function resetCounters(): void {
-  issueCounter = 0;
-  eventCounter = 0;
+  errorCounter = 0;
 }

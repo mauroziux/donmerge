@@ -20,8 +20,8 @@ function createFixPromptContext(overrides: Partial<FixPromptContext> = {}): FixP
     targetFile: 'src/index.ts',
     fileContent: 'export function handleRequest() {\n  return data.foo;\n}',
     allAffectedFiles: ['src/index.ts'],
-    sentryExceptionType: 'TypeError',
-    sentryExceptionValue: "Cannot read property 'foo' of undefined",
+    errorTitle: 'TypeError: Cannot read property',
+    errorDescription: 'Null pointer dereference in handleRequest',
     ...overrides,
   };
 }
@@ -87,11 +87,11 @@ describe('FixPromptBuilder', () => {
     expect(prompt).toContain('Affected Files: src/index.ts');
   });
 
-  it('should include exception type and value', () => {
+  it('should include error title', () => {
     const prompt = new FixPromptBuilder()
       .withContext(createFixPromptContext())
       .build();
-    expect(prompt).toContain('Exception: TypeError: Cannot read property');
+    expect(prompt).toContain('Error: TypeError: Cannot read property');
   });
 
   it('should include source code of target file', () => {
@@ -120,7 +120,6 @@ describe('FixPromptBuilder', () => {
     const prompt = new FixPromptBuilder()
       .withContext(createFixPromptContext({ fileContent: largeContent }))
       .build();
-    // Should not contain the 20000th 'x' since sanitizeSentryData truncates to 15000
     const longRun = 'x'.repeat(16000);
     expect(prompt).not.toContain(longRun);
   });

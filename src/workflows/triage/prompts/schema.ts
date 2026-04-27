@@ -1,5 +1,5 @@
 /**
- * JSON schema definition for Sentry triage LLM output.
+ * JSON schema definition for triage LLM output.
  */
 
 export const TRIAGE_OUTPUT_SCHEMA = `{

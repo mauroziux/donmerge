@@ -9,15 +9,15 @@ import { validateApiKey } from './auth';
 import type {
   PushReviewRequest,
   PushReviewResponse,
-  SentryTriageRequest,
-  SentryTriageResponse,
+  TriageRequest,
+  TriageResponse,
   JobStatusResponse,
   AuthenticatedRequest,
   RateLimitInfo,
   TrackerConfig,
 } from './types';
 import { getReviewProcessor } from '../workflows/code-review/processor';
-import { getSentryTriageProcessor } from '../workflows/sentry-triage/processor';
+import { getTriageProcessor } from '../workflows/triage/processor';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -55,10 +55,10 @@ function buildReviewJobId(owner: string, repo: string, prNumber: number): string
   return `review/${owner}/${repo}/${prNumber}`;
 }
 
-/** Build the job_id for a Sentry triage job. */
-function buildSentryTriageJobId(): string {
+/** Build the job_id for a triage job. */
+function buildTriageJobId(): string {
   const uuid = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-  return `sentry-triage/${uuid}`;
+  return `triage/${uuid}`;
 }
 
 /**
@@ -66,18 +66,22 @@ function buildSentryTriageJobId(): string {
  *
  * Returns:
  * - `{type: 'review', doName: string}` for review jobs
- * - `{type: 'sentry-triage', doName: string}` for sentry triage jobs
+ * - `{type: 'triage', doName: string}` for triage jobs
  * - `null` for unrecognized formats
  */
 function parseJobId(
   jobId: string
-): { type: 'review' | 'sentry-triage'; doName: string } | null {
+): { type: 'review' | 'triage'; doName: string } | null {
   if (jobId.startsWith('review/')) {
     return { type: 'review', doName: jobId.slice('review/'.length) };
   }
-  if (jobId.startsWith('sentry-triage/')) {
+  if (jobId.startsWith('triage/')) {
     // The full jobId IS the DO name (used as idFromName)
-    return { type: 'sentry-triage', doName: jobId };
+    return { type: 'triage', doName: jobId };
+  }
+  // Backward compat: old sentry-triage/ job IDs still route correctly
+  if (jobId.startsWith('sentry-triage/')) {
+    return { type: 'triage', doName: jobId };
   }
   return null;
 }
@@ -189,10 +193,10 @@ export const handlePushReview = withAuth(async (c, auth) => {
   return c.json(response, 202);
 });
 
-// ── POST /api/v1/sentry/triage — Trigger Sentry triage ────────────────────────
+// ── POST /api/v1/triage — Trigger error triage ────────────────────────────────
 
-export const handleSentryTriage = withAuth(async (c, auth) => {
-  let body: SentryTriageRequest;
+export const handleTriage = withAuth(async (c, auth) => {
+  let body: TriageRequest;
   try {
     body = await c.req.json();
   } catch {
@@ -200,12 +204,31 @@ export const handleSentryTriage = withAuth(async (c, auth) => {
   }
 
   // Validate required fields
-  if (!body.repo || !body.sentry_issue_url || !body.sentry_auth_token || !body.github_token || !body.sha) {
+  if (!body.repo || !body.github_token || !body.sha || !body.error_context) {
     return c.json(
       {
         error: 'Bad request',
-        message: 'Missing required fields: repo, sentry_issue_url, sentry_auth_token, github_token, sha',
+        message: 'Missing required fields: repo, github_token, sha, error_context',
       },
+      400
+    );
+  }
+
+  // Validate error_context sub-fields
+  const ec = body.error_context;
+  if (!ec.title || !ec.description || !ec.stack_trace || !ec.affected_files) {
+    return c.json(
+      {
+        error: 'Bad request',
+        message: 'error_context requires: title, description, stack_trace, affected_files',
+      },
+      400
+    );
+  }
+
+  if (!Array.isArray(ec.affected_files)) {
+    return c.json(
+      { error: 'Bad request', message: 'error_context.affected_files must be an array' },
       400
     );
   }
@@ -232,17 +255,9 @@ export const handleSentryTriage = withAuth(async (c, auth) => {
     }
   }
 
-  // Basic Sentry URL check
-  if (!body.sentry_issue_url.includes('sentry.io') || !body.sentry_issue_url.includes('/issues/')) {
-    return c.json(
-      { error: 'Bad request', message: 'Invalid Sentry issue URL' },
-      400
-    );
-  }
-
   // Generate job ID and get DO stub
-  const jobId = buildSentryTriageJobId();
-  const processorStub = getSentryTriageProcessor(c.env.SentryTriageProcessor, jobId);
+  const jobId = buildTriageJobId();
+  const processorStub = getTriageProcessor(c.env.TriageProcessor, jobId);
 
   // Compute the caller's key hash for authorization scoping on status queries
   const callerKeyHash = await hashKey(auth.apiKey);
@@ -252,8 +267,16 @@ export const handleSentryTriage = withAuth(async (c, auth) => {
   await (processorStub.startTriage as (ctx: {
     jobId: string;
     repo: string;
-    sentryIssueUrl: string;
-    sentryAuthToken: string;
+    errorContext: {
+      title: string;
+      description: string;
+      stack_trace: string;
+      affected_files: string[];
+      severity?: 'critical' | 'error' | 'warning';
+      environment?: string;
+      metadata?: Record<string, unknown>;
+      source_url?: string;
+    };
     githubToken: string;
     sha: string;
     tracker?: TrackerConfig;
@@ -262,8 +285,7 @@ export const handleSentryTriage = withAuth(async (c, auth) => {
   }) => Promise<void>)({
     jobId,
     repo: body.repo,
-    sentryIssueUrl: body.sentry_issue_url,
-    sentryAuthToken: body.sentry_auth_token,
+    errorContext: body.error_context,
     githubToken: body.github_token,
     sha: body.sha,
     tracker: body.tracker,
@@ -271,10 +293,10 @@ export const handleSentryTriage = withAuth(async (c, auth) => {
     initiatorKeyHash: callerKeyHash,
   });
 
-  const response: SentryTriageResponse = {
+  const response: TriageResponse = {
     job_id: jobId,
     status: 'pending',
-    message: `Sentry triage queued for ${body.repo}`,
+    message: `Triage queued for ${body.repo}`,
   };
 
   return c.json(response, 202);
@@ -308,9 +330,9 @@ export const handleJobStatus = withAuth(async (c, auth) => {
     stub = c.env.ReviewProcessor.get(id);
     callerKeyHash = await hashKey(auth.apiKey);
   } else {
-    // Sentry triage — look up by jobId (which is the DO name)
-    const id = c.env.SentryTriageProcessor.idFromName(parsed.doName);
-    stub = c.env.SentryTriageProcessor.get(id);
+    // Triage — look up by jobId (which is the DO name)
+    const id = c.env.TriageProcessor.idFromName(parsed.doName);
+    stub = c.env.TriageProcessor.get(id);
     callerKeyHash = await hashKey(auth.apiKey);
   }
 

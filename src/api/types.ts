@@ -6,10 +6,10 @@
 
 import type { ReviewResult } from '../workflows/code-review/types';
 import type {
-  SentryTriageResult as SentryTriageResultType,
+  TriageResult as TriageResultType,
   TrackerConfig as TrackerConfigType,
-  SentryTriageOptions as SentryTriageOptionsType,
-} from '../workflows/sentry-triage/types';
+  TriageOptions as TriageOptionsType,
+} from '../workflows/triage/types';
 
 // ── Request types ──────────────────────────────────────────────────────────────
 
@@ -37,32 +37,46 @@ export interface PushReviewResponse {
   message: string;
 }
 
-export interface SentryTriageRequest {
+export interface TriageRequest {
+  /** Full repository path "owner/repo" */
   repo: string;
-  sentry_issue_url: string;
-  sentry_auth_token: string;
+  /** GitHub PAT with repo scope */
   github_token: string;
+  /** Git SHA or branch name to analyze */
   sha: string;
+  /** Error context (title, description, stack trace, affected files, etc.) */
+  error_context: {
+    title: string;
+    description: string;
+    stack_trace: string;
+    affected_files: string[];
+    severity?: 'critical' | 'error' | 'warning';
+    environment?: string;
+    metadata?: Record<string, unknown>;
+    source_url?: string;
+  };
+  /** Tracker configuration (optional) */
   tracker?: TrackerConfig;
-  options?: SentryTriageOptions;
+  /** Triage options (optional) */
+  options?: TriageOptions;
 }
 
-export interface SentryTriageResponse {
+export interface TriageResponse {
   job_id: string;
   status: 'pending';
   message: string;
 }
 
-// Re-export types from sentry-triage/types so API consumers can still import from here
+// Re-export types from triage/types so API consumers can import from here
 export type TrackerConfig = TrackerConfigType;
-export type SentryTriageOptions = SentryTriageOptionsType;
-export type SentryTriageResult = SentryTriageResultType;
+export type TriageOptions = TriageOptionsType;
+export type TriageResult = TriageResultType;
 
 export interface JobStatusResponse {
   job_id: string;
   status: 'pending' | 'running' | 'complete' | 'failed';
-  /** ReviewResult or SentryTriageResult when complete */
-  result?: ReviewResult | SentryTriageResultType;
+  /** ReviewResult or TriageResult when complete */
+  result?: ReviewResult | TriageResultType;
   /** Error message when failed */
   error?: string;
   created_at: string;

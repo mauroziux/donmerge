@@ -1,43 +1,29 @@
 /**
- * Sentry Triage Workflow
+ * Triage Workflow
  *
- * This module provides automated Sentry error triage analysis,
- * fetching issue data from Sentry API, correlating with source code,
+ * This module provides automated error triage analysis,
+ * correlating caller-provided error context with source code,
  * and using LLM analysis to produce root cause diagnosis.
  */
 
 // Types
 export type {
-  SentryIssueData,
-  SentryEvent,
-  ParsedSentryUrl,
-  SentryTriageOutput,
-  SentryTriageContext,
-  SentryTriageStatus,
+  ErrorContext,
+  TriageOutput,
+  TriageContext,
+  TriageStatus,
   TrackerConfig,
-  SentryTriageOptions,
+  TriageOptions,
   CallbackConfig,
-  SentryTriageResult,
-  SentryTriageEnv,
+  TriageResult,
+  TriageEnv,
   AutoFixOutput,
   AutoFixContext,
 } from './types';
 
-// URL parser
-export { parseSentryUrl } from './sentry-url-parser';
-
-// Sentry API client
-export {
-  sentryFetch,
-  fetchSentryIssue,
-  fetchSentryEvents,
-  fetchFullSentryIssue,
-  transformEvent,
-} from './sentry-api';
-
 // Repo code fetcher
 export {
-  extractInAppPaths,
+  filterInAppPaths,
   fetchFile,
   fetchRepoCodeForTriage,
 } from './repo-fetcher';
@@ -46,20 +32,21 @@ export {
 export {
   TriagePromptBuilder,
   buildTriagePrompt,
+  sanitizeData,
+  sanitizeTitle,
   sanitizeSentryData,
   sanitizeSentryTitle,
-  formatEventForPrompt,
   TRIAGE_OUTPUT_SCHEMA,
   SYSTEM_PROMPT,
   CRITICAL_RULES,
-  SENTRY_DATA_HEADER,
+  ERROR_CONTEXT_HEADER,
   SOURCE_CODE_HEADER,
   OUTPUT_SCHEMA_HEADER,
   SEVERITY_GUIDELINES,
 } from './prompts';
 
 // Durable Object
-export { SentryTriageProcessor, getSentryTriageProcessor } from './processor';
+export { TriageProcessor, getTriageProcessor } from './processor';
 
 // Shared utilities
 export { parseModelConfig, safeJsonParse } from './utils';

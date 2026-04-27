@@ -1,10 +1,8 @@
 /**
- * Fetch repo code at a given SHA from stack trace file paths.
+ * Fetch repo code at a given SHA from affected file paths.
  *
  * Self-contained GitHub API helper (does not import from code-review module).
  */
-
-import type { SentryEvent } from './types';
 
 // ── GitHub API helper ──────────────────────────────────────────────────────────
 
@@ -25,7 +23,7 @@ async function githubFetch<T>(
       Accept: 'application/vnd.github+json',
       'Content-Type': 'application/json',
       'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'donmerge-sentry-triage',
+      'User-Agent': 'donmerge-triage',
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -38,9 +36,9 @@ async function githubFetch<T>(
   return (await response.json()) as T;
 }
 
-// ── Path extraction ────────────────────────────────────────────────────────────
+// ── Path filtering ─────────────────────────────────────────────────────────────
 
-/** Patterns to exclude from in-app file paths */
+/** Patterns to exclude from affected file paths */
 const EXCLUDE_PATTERNS = [
   /node_modules\//,
   /vendor\//,
@@ -52,30 +50,12 @@ const EXCLUDE_PATTERNS = [
 ];
 
 /**
- * Extract in-app filenames from Sentry events' stack traces.
- * Filters out node_modules, vendor, and cache paths.
+ * Filter out non-application file paths (node_modules, vendor, cache, etc.).
  */
-export function extractInAppPaths(events: SentryEvent[]): string[] {
-  const paths = new Set<string>();
-
-  for (const event of events) {
-    if (!event.exceptions) continue;
-
-    for (const exc of event.exceptions) {
-      for (const frame of exc.stacktrace.frames) {
-        if (frame.inApp && frame.filename) {
-          const excluded = EXCLUDE_PATTERNS.some((pattern) =>
-            pattern.test(frame.filename)
-          );
-          if (!excluded) {
-            paths.add(frame.filename);
-          }
-        }
-      }
-    }
-  }
-
-  return Array.from(paths);
+export function filterInAppPaths(paths: string[]): string[] {
+  return paths.filter((path) => {
+    return !EXCLUDE_PATTERNS.some((pattern) => pattern.test(path));
+  });
 }
 
 // ── File fetching ──────────────────────────────────────────────────────────────
@@ -122,14 +102,15 @@ export async function fetchFile(
 }
 
 /**
- * Fetch repo code relevant to a Sentry triage based on stack trace paths.
+ * Fetch repo code relevant to a triage based on affected file paths.
  *
+ * @param affectedFiles - List of file paths provided by the caller
  * @returns Map of filename → file content, max 30KB total
  */
 export async function fetchRepoCodeForTriage(
   repo: string,
   sha: string,
-  events: SentryEvent[],
+  affectedFiles: string[],
   githubToken: string
 ): Promise<Map<string, string>> {
   const [owner, repoName] = repo.split('/');
@@ -137,7 +118,7 @@ export async function fetchRepoCodeForTriage(
     throw new Error(`Invalid repo format: "${repo}". Expected "owner/repo".`);
   }
 
-  const inAppPaths = extractInAppPaths(events);
+  const inAppPaths = filterInAppPaths(affectedFiles);
   const result = new Map<string, string>();
 
   // Fetch all files in parallel

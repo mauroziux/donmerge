@@ -1,16 +1,21 @@
 /**
- * Sentry Triage Prompts Module
+ * Triage Prompts Module
  *
  * Provides structured, secure, and testable prompt construction
- * for Sentry error triage analysis.
+ * for error triage analysis.
  *
  * @example
  * ```typescript
  * import { buildTriagePrompt } from './prompts';
  *
  * const prompt = buildTriagePrompt({
- *   sentryData: issueData,
- *   sourceCode: new Map([['src/app.ts', fileContent]]),
+ *   errorContext: {
+ *     title: 'NullPointerException',
+ *     description: 'Error in UserService.getProfile',
+ *     stack_trace: 'at UserService.getProfile (user.ts:42)',
+ *     affected_files: ['src/services/user.ts'],
+ *   },
+ *   sourceCode: new Map([['src/services/user.ts', fileContent]]),
  *   sha: 'abc123',
  *   repo: 'org/repo',
  * });
@@ -22,7 +27,7 @@ export { TriagePromptBuilder, buildTriagePrompt } from './builder';
 export type { TriagePromptContext } from './builder';
 
 // Sanitizers
-export { sanitizeSentryData, sanitizeSentryTitle, formatEventForPrompt } from './sanitizers';
+export { sanitizeData, sanitizeTitle, sanitizeSentryData, sanitizeSentryTitle } from './sanitizers';
 
 // Schema
 export { TRIAGE_OUTPUT_SCHEMA } from './schema';
@@ -31,7 +36,7 @@ export { TRIAGE_OUTPUT_SCHEMA } from './schema';
 export {
   SYSTEM_PROMPT,
   CRITICAL_RULES,
-  SENTRY_DATA_HEADER,
+  ERROR_CONTEXT_HEADER,
   SOURCE_CODE_HEADER,
   OUTPUT_SCHEMA_HEADER,
   SEVERITY_GUIDELINES,

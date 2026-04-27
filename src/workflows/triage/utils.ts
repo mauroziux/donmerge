@@ -1,5 +1,5 @@
 /**
- * Shared utilities for the Sentry Triage workflow.
+ * Shared utilities for the Triage workflow.
  *
  * Extracted from processor.ts and auto-fix.ts to avoid duplication.
  */

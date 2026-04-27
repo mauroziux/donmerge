@@ -4,8 +4,8 @@
  * Mirrors TriagePromptBuilder pattern from the triage prompts.
  */
 
-import type { SentryTriageOutput } from '../types';
-import { sanitizeSentryData, sanitizeSentryTitle } from './sanitizers';
+import type { TriageOutput } from '../types';
+import { sanitizeData } from './sanitizers';
 import { FIX_OUTPUT_SCHEMA } from './fix-schema';
 import {
   FIX_SYSTEM_PROMPT,
@@ -16,12 +16,12 @@ import {
 } from './fix-templates';
 
 export interface FixPromptContext {
-  triageOutput: SentryTriageOutput;
+  triageOutput: TriageOutput;
   targetFile: string;
   fileContent: string;
   allAffectedFiles: string[];
-  sentryExceptionType: string;
-  sentryExceptionValue: string;
+  errorTitle: string;
+  errorDescription: string;
 }
 
 export class FixPromptBuilder {
@@ -51,12 +51,12 @@ export class FixPromptBuilder {
     this.addSection([
       FIX_CONTEXT_HEADER,
       '',
-      `Root Cause: ${sanitizeSentryData(triageOutput.root_cause)}`,
-      `Suggested Fix: ${sanitizeSentryData(triageOutput.suggested_fix)}`,
+      `Error: ${sanitizeData(this.context.errorTitle)}`,
+      `Root Cause: ${sanitizeData(triageOutput.root_cause)}`,
+      `Suggested Fix: ${sanitizeData(triageOutput.suggested_fix)}`,
       `Confidence: ${triageOutput.confidence}`,
       `Severity: ${triageOutput.severity}`,
       `Affected Files: ${this.context.allAffectedFiles.join(', ')}`,
-      `Exception: ${sanitizeSentryData(this.context.sentryExceptionType)}: ${sanitizeSentryData(this.context.sentryExceptionValue)}`,
     ].join('\n'));
 
     // 4. Source code of the target file
@@ -64,7 +64,7 @@ export class FixPromptBuilder {
     this.addSection([
       header,
       '',
-      sanitizeSentryData(this.context.fileContent, 15000),
+      sanitizeData(this.context.fileContent, 15000),
     ].join('\n'));
 
     // 5. Output schema

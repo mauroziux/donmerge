@@ -4,13 +4,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { SentryTriageOutput } from '../types';
+import type { TriageOutput } from '../types';
 import { safeJsonParse, parseModelConfig } from '../utils';
 
 /**
- * Equivalent to SentryTriageProcessor.validateTriageOutput
+ * Equivalent to TriageProcessor.validateTriageOutput
  */
-function validateTriageOutput(output: unknown): output is SentryTriageOutput {
+function validateTriageOutput(output: unknown): output is TriageOutput {
   if (!output || typeof output !== 'object') return false;
   const obj = output as Record<string, unknown>;
 
@@ -89,7 +89,7 @@ describe('safeJsonParse', () => {
       confidence: 'high',
       severity: 'error',
     });
-    const result = safeJsonParse<SentryTriageOutput>(input);
+    const result = safeJsonParse<TriageOutput>(input);
     expect(result.root_cause).toBe('Null dereference');
     expect(result.affected_files).toHaveLength(2);
   });

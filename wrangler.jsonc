@@ -37,8 +37,8 @@
         "name": "RateLimiter"
       },
       {
-        "class_name": "SentryTriageProcessor",
-        "name": "SentryTriageProcessor"
+        "class_name": "TriageProcessor",
+        "name": "TriageProcessor"
       }
     ],
   },
@@ -66,6 +66,15 @@
         "SentryTriageProcessor"
       ],
       "tag": "v4"
+    },
+    {
+      "new_sqlite_classes": [
+        "TriageProcessor"
+      ],
+      "tag": "v5",
+      "renamed_classes": [
+        { "from": "SentryTriageProcessor", "to": "TriageProcessor" }
+      ]
     }
   ],
   "observability": {
@@ -111,8 +120,8 @@
             "name": "RateLimiter"
           },
           {
-            "class_name": "SentryTriageProcessor",
-            "name": "SentryTriageProcessor"
+            "class_name": "TriageProcessor",
+            "name": "TriageProcessor"
           }
         ]
       },
@@ -147,6 +156,15 @@
             "SentryTriageProcessor"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "TriageProcessor"
+          ],
+          "tag": "v5",
+          "renamed_classes": [
+            { "from": "SentryTriageProcessor", "to": "TriageProcessor" }
+          ]
         }
       ]
     }

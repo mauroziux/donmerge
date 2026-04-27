@@ -1,34 +1,34 @@
 /**
- * TriagePromptBuilder - Fluent API for constructing Sentry triage prompts.
+ * TriagePromptBuilder - Fluent API for constructing triage prompts.
  *
  * Mirrors ReviewPromptBuilder pattern from code-review workflow.
  */
 
-import type { SentryIssueData, SentryTriageOptions } from '../types';
-import { sanitizeSentryData, sanitizeSentryTitle, formatEventForPrompt } from './sanitizers';
+import type { ErrorContext, TriageOptions } from '../types';
+import { sanitizeData, sanitizeTitle } from './sanitizers';
 import { TRIAGE_OUTPUT_SCHEMA } from './schema';
 import {
   SYSTEM_PROMPT,
   CRITICAL_RULES,
-  SENTRY_DATA_HEADER,
+  ERROR_CONTEXT_HEADER,
   SOURCE_CODE_HEADER,
   OUTPUT_SCHEMA_HEADER,
   SEVERITY_GUIDELINES,
 } from './templates';
 
 /**
- * Context for building a Sentry triage prompt.
+ * Context for building a triage prompt.
  */
 export interface TriagePromptContext {
-  sentryData: SentryIssueData;
+  errorContext: ErrorContext;
   sourceCode: Map<string, string>;
   sha: string;
   repo: string;
-  options?: SentryTriageOptions;
+  options?: TriageOptions;
 }
 
 /**
- * Builder class for constructing Sentry triage prompts.
+ * Builder class for constructing triage prompts.
  */
 export class TriagePromptBuilder {
   private sections: string[] = [];
@@ -58,8 +58,8 @@ export class TriagePromptBuilder {
     // 2. Critical rules
     this.addSection(CRITICAL_RULES);
 
-    // 3. Sentry data section
-    this.addSentryDataSection();
+    // 3. Error context section
+    this.addErrorContextSection();
 
     // 4. Source code section
     this.addSourceCodeSection();
@@ -81,35 +81,37 @@ export class TriagePromptBuilder {
   }
 
   /**
-   * Build the Sentry data section with issue metadata and formatted events.
+   * Build the error context section with title, description, stack trace, and metadata.
    */
-  private addSentryDataSection(): void {
-    const { sentryData } = this.context!;
-    const lines: string[] = [SENTRY_DATA_HEADER, ''];
+  private addErrorContextSection(): void {
+    const { errorContext } = this.context!;
+    const lines: string[] = [ERROR_CONTEXT_HEADER, ''];
 
-    lines.push(`Title: ${sanitizeSentryTitle(sentryData.title)}`);
-    lines.push(`Platform: ${sentryData.platform}`);
-    if (sentryData.environment) {
-      lines.push(`Environment: ${sentryData.environment}`);
+    lines.push(`Title: ${sanitizeTitle(errorContext.title)}`);
+    lines.push(`Description: ${sanitizeData(errorContext.description, 5000)}`);
+    lines.push(`Stack Trace:\n${sanitizeData(errorContext.stack_trace, 10000)}`);
+    lines.push(`Affected Files: ${errorContext.affected_files.join(', ')}`);
+
+    if (errorContext.severity) {
+      lines.push(`Severity: ${errorContext.severity}`);
     }
-    lines.push(`Event Count: ${sentryData.count}`);
-    lines.push(`Users Affected: ${sentryData.userCount}`);
-    lines.push(`First Seen: ${sentryData.firstSeen}`);
-    lines.push(`Last Seen: ${sentryData.lastSeen}`);
-
-    // Tags
-    if (sentryData.tags && sentryData.tags.length > 0) {
-      lines.push(`Tags: ${sentryData.tags.map((t) => `${t.key}=${t.value}`).join(', ')}`);
+    if (errorContext.environment) {
+      lines.push(`Environment: ${errorContext.environment}`);
     }
 
-    // Events
-    if (sentryData.events && sentryData.events.length > 0) {
-      lines.push('');
-      lines.push('Events:');
-      for (const event of sentryData.events) {
-        const formatted = formatEventForPrompt(event);
-        lines.push(sanitizeSentryData(formatted, 10000));
+    // Include any additional metadata
+    if (errorContext.metadata) {
+      const metaEntries = Object.entries(errorContext.metadata);
+      if (metaEntries.length > 0) {
+        lines.push('Metadata:');
+        for (const [key, value] of metaEntries) {
+          lines.push(`  ${key}: ${sanitizeData(String(value), 500)}`);
+        }
       }
+    }
+
+    if (errorContext.source_url) {
+      lines.push(`Source URL: ${errorContext.source_url}`);
     }
 
     this.addSection(lines.join('\n'));
@@ -134,7 +136,7 @@ export class TriagePromptBuilder {
       if (totalSize >= 25000) break;
       const truncated = content.length > 5000 ? content.slice(0, 5000) + '\n... [truncated]' : content;
       lines.push(`--- ${path} ---`);
-      lines.push(sanitizeSentryData(truncated, 5000));
+      lines.push(sanitizeData(truncated, 5000));
       lines.push('');
       totalSize += truncated.length;
     }
@@ -155,7 +157,7 @@ export class TriagePromptBuilder {
 }
 
 /**
- * Build a Sentry triage prompt using the default configuration.
+ * Build a triage prompt using the default configuration.
  * Convenience function for the common case.
  */
 export function buildTriagePrompt(context: TriagePromptContext): string {

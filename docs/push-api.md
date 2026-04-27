@@ -4,7 +4,9 @@
 
 ## Overview
 
-The DonMerge Push API lets you trigger **AI-powered code reviews** and **Sentry issue triage** from any environment — CI/CD pipelines, scripts, or automation tools. Unlike the webhook mode (which requires a GitHub App installation), the push model is **credential-bearing**: you provide your own GitHub and Sentry tokens alongside your DonMerge API key, and DonMerge handles the compute.
+The DonMerge Push API lets you trigger **AI-powered code reviews** and **error triage** from any environment — CI/CD pipelines, scripts, or automation tools. Unlike the webhook mode (which requires a GitHub App installation), the push model is **credential-bearing**: you provide your own GitHub tokens alongside your DonMerge API key, and DonMerge handles the compute.
+
+DonMerge is ticket-system-agnostic: the caller provides error context (title, description, stack trace, affected files), and DonMerge provides LLM triage, auto-fix PR generation, and tracker issue creation. Works with errors from Sentry, Datadog, Rollbar, New Relic, GitHub Issues, or any source.
 
 ### Key differences from webhook mode
 
@@ -133,21 +135,33 @@ curl -X POST https://donmerge.dev/api/v1/review \
 
 ---
 
-### `POST /api/v1/sentry/triage` — Trigger Sentry triage
+### `POST /api/v1/triage` — Trigger error triage
 
-Triggers an AI analysis of a Sentry issue against your codebase. Optionally generates a fix PR and creates a tracker issue.
+Triggers an AI analysis of an error against your codebase. The caller provides error context (title, description, stack trace, affected files); DonMerge does not fetch from any external error tracking service. Optionally generates a fix PR and creates a tracker issue.
 
 #### Request body
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `repo` | `string` | Yes | Full repository path `"owner/repo"` |
-| `sentry_issue_url` | `string` | Yes | Full Sentry issue URL |
-| `sentry_auth_token` | `string` | Yes | Sentry auth token with `org:read` and `project:read` |
 | `github_token` | `string` | Yes | GitHub PAT with `repo` scope |
 | `sha` | `string` | Yes | Git SHA or branch name to analyze (e.g. `"main"`, `"a1b2c3d"`) |
+| `error_context` | `object` | Yes | Error context (see below) |
 | `tracker` | `object` | No | Tracker configuration (see [Tracker Integration](#tracker-integration)) |
 | `options` | `object` | No | Triage options (see below) |
+
+**`error_context` sub-object:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | `string` | Yes | Short summary of the error |
+| `description` | `string` | Yes | Detailed description of the error |
+| `stack_trace` | `string` | Yes | Stack trace as a single string |
+| `affected_files` | `string[]` | Yes | List of file paths implicated by the error |
+| `severity` | `string` | No | Assessed severity: `"critical"` \| `"error"` \| `"warning"` (LLM infers if omitted) |
+| `environment` | `string` | No | Environment where the error occurred (e.g. `"production"`) |
+| `metadata` | `object` | No | Additional metadata from the caller (e.g. event count, user count, tags) |
+| `source_url` | `string` | No | Original URL of the error/ticket in the source system |
 
 **`options` sub-object:**
 
@@ -159,9 +173,9 @@ Triggers an AI analysis of a Sentry issue against your codebase. Optionally gene
 
 ```json
 {
-  "job_id": "sentry-triage/a1b2c3d4e5f6",
+  "job_id": "triage/a1b2c3d4e5f6",
   "status": "pending",
-  "message": "Sentry triage queued for tableoltd/my-project"
+  "message": "Triage queued for tableoltd/my-project"
 }
 ```
 
@@ -169,28 +183,37 @@ Triggers an AI analysis of a Sentry issue against your codebase. Optionally gene
 
 | Status | Code | When |
 |--------|------|------|
-| 400 | `Bad request` | Missing required fields, invalid repo format, invalid Sentry URL, invalid tracker config |
+| 400 | `Bad request` | Missing required fields, invalid repo format, invalid tracker config |
 | 401 | `Unauthorized` | Invalid or missing API key |
 | 429 | `Rate limit exceeded` | Too many requests |
 | 500 | `Internal error` | Unexpected server error |
 
 #### Example
 
+Full request with tracker:
+
 ```bash
-curl -X POST https://donmerge.dev/api/v1/sentry/triage \
+curl -X POST https://donmerge.dev/api/v1/triage \
   -H "Authorization: Bearer dm_live_abc123def456" \
   -H "Content-Type: application/json" \
   -d '{
     "repo": "tableoltd/my-project",
-    "sentry_issue_url": "https://sentry.io/organizations/tableoltd/issues/123456/",
-    "sentry_auth_token": "sntryu_xxxxxxxxxxxxxxxxxxxx",
     "github_token": "ghp_xxxxxxxxxxxxxxxxxxxx",
     "sha": "main",
+    "error_context": {
+      "title": "NullPointerException in UserService.getProfile",
+      "description": "User profile is accessed without a null check after the database query returns a partial record",
+      "stack_trace": "Error originated in UserService.getProfile (line 42) when accessing user.profile.email\n  at UserService.getProfile (src/services/user.ts:42:15)\n  at ProfileRouter.get (src/routes/profile.ts:18:22)",
+      "affected_files": ["src/services/user.ts", "src/routes/profile.ts"],
+      "severity": "critical",
+      "environment": "production",
+      "source_url": "https://sentry.io/organizations/tableoltd/issues/123456/"
+    },
     "tracker": {
       "type": "github",
       "token": "ghp_xxxxxxxxxxxxxxxxxxxx",
       "team": "eng",
-      "labels": ["bug", "sentry"]
+      "labels": ["bug"]
     },
     "options": {
       "auto_fix": true
@@ -201,15 +224,19 @@ curl -X POST https://donmerge.dev/api/v1/sentry/triage \
 Minimal request (no tracker, auto_fix defaults to true):
 
 ```bash
-curl -X POST https://donmerge.dev/api/v1/sentry/triage \
+curl -X POST https://donmerge.dev/api/v1/triage \
   -H "Authorization: Bearer dm_live_abc123def456" \
   -H "Content-Type: application/json" \
   -d '{
     "repo": "tableoltd/my-project",
-    "sentry_issue_url": "https://sentry.io/organizations/tableoltd/issues/123456/",
-    "sentry_auth_token": "sntryu_xxxxxxxxxxxxxxxxxxxx",
     "github_token": "ghp_xxxxxxxxxxxxxxxxxxxx",
-    "sha": "main"
+    "sha": "main",
+    "error_context": {
+      "title": "TypeError: Cannot read property of undefined",
+      "description": "Property foo accessed on undefined object",
+      "stack_trace": "at handleRequest (src/index.ts:42:10)",
+      "affected_files": ["src/index.ts"]
+    }
   }'
 ```
 
@@ -226,7 +253,7 @@ Polls the status of a previously submitted review or triage job.
 | `job_id` | The job identifier returned by the trigger endpoint |
 
 **Review job IDs** have the format `review/{owner}/{repo}/{pr_number}`.
-**Sentry triage job IDs** have the format `sentry-triage/{uuid}`.
+**Triage job IDs** have the format `triage/{uuid}`.
 
 #### Response — 200 OK
 
@@ -391,14 +418,14 @@ When `status` is `"complete"` for a review job, the `result` object contains:
 
 ---
 
-## Sentry Triage Result
+## Triage Result
 
-When `status` is `"complete"` for a sentry-triage job, the `result` object contains:
+When `status` is `"complete"` for a triage job, the `result` object contains:
 
 ```json
 {
   "root_cause": "NullReferenceException: user.profile is accessed without a null check after the database query returns a partial record.",
-  "stack_trace_summary": "Error originated in UserService.getProfile (line 42) when accessing user.profile.email.\n  at UserService.getProfile (src/services/user.ts:42:15)\n  at ProfileRouter.get (/src/routes/profile.ts:18:22)\n  at Layer.handle (node_modules/express/lib/router/layer.js:95:5)",
+  "stack_trace_summary": "Error originated in UserService.getProfile (line 42) when accessing user.profile.email.\n  at UserService.getProfile (src/services/user.ts:42:15)\n  at ProfileRouter.get (/src/routes/profile.ts:18:22)",
   "affected_files": [
     "src/services/user.ts",
     "src/routes/profile.ts"
@@ -437,9 +464,9 @@ When `options.auto_fix` is `true` (the default), DonMerge attempts to generate a
 
 ### PR format
 
-- **Branch name:** `donmerge/fix/sentry-{issueId}-{random}`
-- **PR title:** `fix(sentry): {sentry issue title}` (truncated to 80 chars)
-- **PR body:** Includes Sentry issue link, root cause, fix description, and stack trace summary
+- **Branch name:** `donmerge/fix/{sanitized-title}-{random}`
+- **PR title:** `fix: {error title}` (truncated to 80 chars)
+- **PR body:** Includes error link, root cause, fix description, and stack trace summary
 
 ### When auto-fix is skipped
 
@@ -474,7 +501,7 @@ Trackers create an issue in your project management tool when a triage completes
     "type": "github",
     "token": "ghp_xxxxxxxxxxxxxxxxxxxx",
     "team": "eng",
-    "labels": ["bug", "sentry"]
+    "labels": ["bug"]
   }
 }
 ```
@@ -486,7 +513,7 @@ Trackers create an issue in your project management tool when a triage completes
 | `team` | Yes | Team label (used in issue metadata) |
 | `labels` | No | Array of label strings to apply to the created issue |
 
-The issue is created in the same repository specified by `repo`. Issue title format: `[Sentry] {sentry issue title}`.
+The issue is created in the same repository specified by `repo`.
 
 ### Linear
 
@@ -496,7 +523,7 @@ The issue is created in the same repository specified by `repo`. Issue title for
     "type": "linear",
     "token": "lin_api_xxxxxxxxxxxxxxxxxxxx",
     "team": "ENG",
-    "labels": ["bug", "sentry"]
+    "labels": ["bug"]
   }
 }
 ```
@@ -516,7 +543,7 @@ The issue is created in the same repository specified by `repo`. Issue title for
     "type": "jira",
     "token": "jira-api-token-here",
     "team": "PROJ",
-    "labels": ["bug", "sentry"],
+    "labels": ["bug"],
     "jira_base_url": "https://yourcompany.atlassian.net"
   }
 }
@@ -548,7 +575,7 @@ The issue is created in the same repository specified by `repo`. Issue title for
 | 400 | `Invalid owner or repo format` | Non-alphanumeric characters in owner/repo | Use valid GitHub owner/repo names |
 | 400 | `pr_number must be a positive integer` | Non-integer or negative PR number | Pass a valid PR number |
 | 400 | `Invalid repo format. Expected "owner/repo"` | Missing slash in repo field | Use `owner/repo` format |
-| 400 | `Invalid Sentry issue URL` | URL doesn't match Sentry format | Use full URL like `https://sentry.io/organizations/{org}/issues/{id}/` |
+| 400 | `error_context requires: title, description, stack_trace, affected_files` | Missing error_context fields | Provide all required error_context fields |
 | 400 | `Tracker requires: type, token, team` | Partial tracker config | Provide all required tracker fields |
 | 400 | `Tracker type must be: github, linear, or jira` | Unsupported tracker type | Use one of the supported types |
 | 400 | `Jira tracker requires jira_base_url in config` | Missing Jira base URL | Add `jira_base_url` to tracker config |
@@ -564,6 +591,6 @@ The first request to a Durable Object may take 1–3 seconds due to cold start. 
 
 ### Token security
 
-- All tokens (GitHub, Sentry, tracker) are **redacted** from storage after the job completes
+- All tokens (GitHub, tracker) are **redacted** from storage after the job completes
 - Tokens are never logged or included in API responses
 - Use `dm_test_*` keys in CI/staging environments to isolate production usage

@@ -1,77 +1,43 @@
 /**
- * Type definitions for the Sentry Triage workflow.
+ * Type definitions for the Triage workflow.
+ *
+ * DonMerge receives error context from the caller (any ticket/error source)
+ * and provides LLM triage, auto-fix, and tracker integration.
  */
 
 import type { FlueRuntime } from '@flue/cloudflare';
 
-// ── Sentry API response types ──────────────────────────────────────────────────
+// ── Caller-provided error context ──────────────────────────────────────────────
 
-export interface SentryIssueData {
-  id: string;
-  shortId: string;
+/**
+ * Error context provided by the caller.
+ *
+ * DonMerge does not fetch from any external error tracking service.
+ * The caller supplies all relevant error context; DonMerge provides the compute
+ * (LLM triage, auto-fix PR, tracker issue creation).
+ */
+export interface ErrorContext {
+  /** Short summary of the error (e.g. "NullPointerException in UserService.getProfile") */
   title: string;
-  project: {
-    slug: string;
-    id: string;
-  };
-  firstSeen: string;
-  lastSeen: string;
-  count: string;
-  userCount: number;
-  platform: string;
-  environment: string | null;
-  tags: Array<{ key: string; value: string }>;
-  events?: SentryEvent[];
-}
-
-export interface SentryEvent {
-  id: string;
-  timestamp: string;
-  exceptions?: Array<{
-    type: string;
-    value: string;
-    stacktrace: {
-      frames: Array<{
-        filename: string;
-        function: string;
-        lineno: number;
-        colno: number;
-        absPath: string;
-        context?: Array<[number, string]>;
-        inApp: boolean;
-        module?: string;
-        package?: string;
-      }>;
-    };
-  }>;
-  breadcrumbs?: Array<{
-    timestamp: string;
-    category: string;
-    message: string;
-    type: string;
-    data?: Record<string, unknown>;
-  }>;
-  request?: {
-    url?: string;
-    method?: string;
-    headers?: Record<string, string>;
-  };
-  contexts?: Record<string, unknown>;
-  extra?: Record<string, unknown>;
-  tags?: Array<{ key: string; value: string }>;
-}
-
-// ── URL parsing ────────────────────────────────────────────────────────────────
-
-export interface ParsedSentryUrl {
-  org: string;
-  issueId: string;
-  originalUrl: string;
+  /** Detailed description of the error */
+  description: string;
+  /** Stack trace as a single string (may contain multiple frames) */
+  stack_trace: string;
+  /** List of file paths implicated by the error */
+  affected_files: string[];
+  /** Assessed severity (optional — LLM will infer if omitted) */
+  severity?: 'critical' | 'error' | 'warning';
+  /** Environment where the error occurred (e.g. "production", "staging") */
+  environment?: string;
+  /** Additional metadata from the caller (e.g. event count, user count, tags) */
+  metadata?: Record<string, unknown>;
+  /** Original URL of the error/ticket in the source system (e.g. Sentry, GitHub Issue) */
+  source_url?: string;
 }
 
 // ── Triage output ──────────────────────────────────────────────────────────────
 
-export interface SentryTriageOutput {
+export interface TriageOutput {
   root_cause: string;
   stack_trace_summary: string;
   affected_files: string[];
@@ -95,10 +61,9 @@ export interface AutoFixContext {
   repo: string;
   sha: string;
   githubToken: string;
-  sentryIssueId: string;
-  sentryIssueUrl: string;
-  sentryTitle: string;
-  triageOutput: SentryTriageOutput;
+  errorTitle: string;
+  sourceUrl: string;
+  triageOutput: TriageOutput;
   sourceCode: Map<string, string>;
   flue: FlueRuntime;
 }
@@ -113,7 +78,7 @@ export interface TrackerConfig {
   jira_base_url?: string;
 }
 
-export interface SentryTriageOptions {
+export interface TriageOptions {
   auto_fix?: boolean;
 }
 
@@ -122,34 +87,32 @@ export interface CallbackConfig {
   callback_secret: string;
 }
 
-export interface SentryTriageContext {
+export interface TriageContext {
   jobId: string;
   repo: string;
-  sentryIssueUrl: string;
-  sentryAuthToken: string;
+  errorContext: ErrorContext;
   githubToken: string;
   sha: string;
-  tracker?: TrackerConfig; // Phase D: tracker integration
-  options?: SentryTriageOptions;
-  callback?: CallbackConfig; // Phase C: callback invocation
-  sentryData?: SentryIssueData;
+  tracker?: TrackerConfig;
+  options?: TriageOptions;
+  callback?: CallbackConfig;
   initiatorKeyHash?: string;
 }
 
 // ── Status tracking ────────────────────────────────────────────────────────────
 
-export interface SentryTriageStatus {
+export interface TriageStatus {
   state: 'pending' | 'running' | 'complete' | 'failed';
   attempts: number;
   error?: string;
   startedAt?: string;
   completedAt?: string;
-  result?: SentryTriageResult;
+  result?: TriageResult;
 }
 
 // ── Result ─────────────────────────────────────────────────────────────────────
 
-export interface SentryTriageResult {
+export interface TriageResult {
   root_cause: string;
   stack_trace_summary: string;
   affected_files: string[];
@@ -162,9 +125,9 @@ export interface SentryTriageResult {
 
 // ── Environment ────────────────────────────────────────────────────────────────
 
-export interface SentryTriageEnv {
+export interface TriageEnv {
   Sandbox: unknown;
   OPENAI_API_KEY: string;
   CODEX_MODEL?: string;
-  SentryTriageProcessor: DurableObjectNamespace;
+  TriageProcessor: DurableObjectNamespace;
 }

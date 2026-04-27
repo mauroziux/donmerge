@@ -1,4 +1,4 @@
-import type { TrackerConfig, SentryTriageOutput } from '../types';
+import type { TrackerConfig, TriageOutput } from '../types';
 
 export interface TrackerIssueParams {
   title: string;
@@ -19,9 +19,9 @@ export interface TrackerClient {
 
 export interface TrackerIssueContext {
   repo: string;
-  sentryIssueUrl: string;
-  sentryTitle: string;
-  triageOutput: SentryTriageOutput;
+  errorTitle: string;
+  sourceUrl: string;
+  triageOutput: TriageOutput;
   tracker: TrackerConfig;
   fixPrUrl: string | null;
 }

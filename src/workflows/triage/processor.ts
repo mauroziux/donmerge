@@ -1,8 +1,11 @@
 /**
- * SentryTriageProcessor Durable Object
+ * TriageProcessor Durable Object
  *
- * Handles long-running Sentry triage analysis using alarms for reliable execution.
+ * Handles long-running error triage analysis using alarms for reliable execution.
  * Mirrors the ReviewProcessor pattern: alarm-based lifecycle, retry logic, token redaction.
+ *
+ * DonMerge receives error context from the caller — it does NOT fetch from Sentry
+ * or any other external service. The caller provides all context; DonMerge provides compute.
  */
 
 import { DurableObject } from 'cloudflare:workers';
@@ -11,14 +14,12 @@ import { FlueRuntime } from '@flue/cloudflare';
 import * as v from 'valibot';
 
 import type {
-  SentryTriageEnv,
-  SentryTriageContext,
-  SentryTriageStatus,
-  SentryTriageResult,
-  SentryIssueData,
-  SentryTriageOutput,
+  TriageEnv,
+  TriageContext,
+  TriageStatus,
+  TriageResult,
+  TriageOutput,
 } from './types';
-import { fetchFullSentryIssue } from './sentry-api';
 import { fetchRepoCodeForTriage } from './repo-fetcher';
 import { buildTriagePrompt } from './prompts';
 import { runAutoFix } from './auto-fix';
@@ -34,11 +35,11 @@ const STATE_KEYS = {
 const MAX_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 10000;
 
-interface EnvWithBindings extends SentryTriageEnv {
-  SentryTriageProcessor: DurableObjectNamespace;
+interface EnvWithBindings extends TriageEnv {
+  TriageProcessor: DurableObjectNamespace;
 }
 
-export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
+export class TriageProcessor extends DurableObject<EnvWithBindings> {
   private state: DurableObjectState;
   private env: EnvWithBindings;
 
@@ -49,13 +50,13 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
   }
 
   /**
-   * Start a new Sentry triage. Called from the API route handler.
+   * Start a new triage. Called from the API route handler.
    */
-  async startTriage(context: SentryTriageContext): Promise<void> {
+  async startTriage(context: TriageContext): Promise<void> {
     // Check if there's already a triage in progress
-    const existingStatus = await this.state.storage.get<SentryTriageStatus>(STATE_KEYS.status);
+    const existingStatus = await this.state.storage.get<TriageStatus>(STATE_KEYS.status);
     if (existingStatus?.state === 'running') {
-      console.log('Sentry triage already in progress, skipping');
+      console.log('Triage already in progress, skipping');
       return;
     }
 
@@ -63,7 +64,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
     await this.state.storage.put(STATE_KEYS.context, context);
 
     // Initialize status
-    const status: SentryTriageStatus = {
+    const status: TriageStatus = {
       state: 'pending',
       attempts: 0,
       startedAt: new Date().toISOString(),
@@ -79,31 +80,31 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
    * If callerKeyHash is provided and an initiatorKeyHash was stored,
    * they must match — otherwise throws to prevent unauthorized access.
    */
-  async getStatus(callerKeyHash?: string): Promise<SentryTriageStatus | null> {
+  async getStatus(callerKeyHash?: string): Promise<TriageStatus | null> {
     if (callerKeyHash) {
-      const context = await this.state.storage.get<SentryTriageContext>(STATE_KEYS.context);
+      const context = await this.state.storage.get<TriageContext>(STATE_KEYS.context);
       if (context?.initiatorKeyHash && context.initiatorKeyHash !== callerKeyHash) {
         throw new Error('not found: caller key hash does not match initiator');
       }
     }
-    return (await this.state.storage.get<SentryTriageStatus>(STATE_KEYS.status)) ?? null;
+    return (await this.state.storage.get<TriageStatus>(STATE_KEYS.status)) ?? null;
   }
 
   /**
    * Alarm handler - runs the triage in a fresh execution context.
    */
   async alarm(): Promise<void> {
-    const context = await this.state.storage.get<SentryTriageContext>(STATE_KEYS.context);
-    const status = await this.state.storage.get<SentryTriageStatus>(STATE_KEYS.status);
+    const context = await this.state.storage.get<TriageContext>(STATE_KEYS.context);
+    const status = await this.state.storage.get<TriageStatus>(STATE_KEYS.status);
 
     if (!context || !status) {
-      console.error('SentryTriageProcessor: No context or status found');
+      console.error('TriageProcessor: No context or status found');
       return;
     }
 
     // Skip if already complete or failed
     if (status.state === 'complete' || status.state === 'failed') {
-      console.log('Sentry triage already terminal', { state: status.state });
+      console.log('Triage already terminal', { state: status.state });
       return;
     }
 
@@ -112,7 +113,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
     status.attempts += 1;
     await this.state.storage.put(STATE_KEYS.status, status);
 
-    console.log('SentryTriageProcessor alarm fired', {
+    console.log('TriageProcessor alarm fired', {
       attempt: status.attempts,
       jobId: context.jobId,
     });
@@ -127,7 +128,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
       await this.runTriage(context, status);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'unknown error';
-      console.error('SentryTriageProcessor error', { attempt: status.attempts, error: message });
+      console.error('TriageProcessor error', { attempt: status.attempts, error: message });
 
       // Check if we should retry
       if (this.shouldRetry(error) && status.attempts < MAX_ATTEMPTS) {
@@ -142,46 +143,40 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
   }
 
   /**
-   * Run the full Sentry triage process.
+   * Run the full triage process.
    */
   private async runTriage(
-    context: SentryTriageContext,
-    status: SentryTriageStatus
+    context: TriageContext,
+    status: TriageStatus
   ): Promise<void> {
-    // 1. Fetch Sentry issue data
-    console.log('Fetching Sentry issue data', { url: context.sentryIssueUrl });
-    const sentryData = await fetchFullSentryIssue(
-      context.sentryIssueUrl,
-      context.sentryAuthToken
-    );
+    const { errorContext } = context;
 
-    // 2. Cache sentryData in context
-    context.sentryData = sentryData;
-    await this.state.storage.put(STATE_KEYS.context, context);
-
-    // 3. Fetch repo code from stack trace paths
-    const events = sentryData.events ?? [];
-    console.log('Fetching repo code', { repo: context.repo, sha: context.sha, events: events.length });
+    // 1. Fetch repo code from affected file paths (provided by caller)
+    console.log('Fetching repo code', {
+      repo: context.repo,
+      sha: context.sha,
+      affectedFiles: errorContext.affected_files.length,
+    });
     const sourceCode = await fetchRepoCodeForTriage(
       context.repo,
       context.sha,
-      events,
+      errorContext.affected_files,
       context.githubToken
     );
 
-    // 4. Create shared sandbox+flue for both triage and auto-fix
-    const sessionId = `sentry-triage-${context.jobId}`;
+    // 2. Create shared sandbox+flue for both triage and auto-fix
+    const sessionId = `triage-${context.jobId}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
     const flue = new FlueRuntime({ sandbox, sessionId, workdir: '/home/user' });
     await sandbox.setEnvVars({ OPENAI_API_KEY: this.env.OPENAI_API_KEY });
     await flue.setup();
 
-    // 5. Run LLM triage
+    // 3. Run LLM triage
     console.log('Running LLM triage', { sourceFiles: sourceCode.size });
-    const output = await this.runLlmTriage(context, sentryData, sourceCode, flue);
+    const output = await this.runLlmTriage(context, sourceCode, flue);
 
-    // 6. Build result
-    const result: SentryTriageResult = {
+    // 4. Build result
+    const result: TriageResult = {
       root_cause: output.root_cause,
       stack_trace_summary: output.stack_trace_summary,
       affected_files: output.affected_files,
@@ -192,7 +187,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
       tracker_issue_url: null,
     };
 
-    // 6b. Auto-fix (Phase C) — non-blocking (defaults to true)
+    // 5. Auto-fix — non-blocking (defaults to true)
     if (context.options?.auto_fix !== false) {
       try {
         const prUrl = await runAutoFix(
@@ -200,9 +195,8 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
             repo: context.repo,
             sha: context.sha,
             githubToken: context.githubToken,
-            sentryIssueId: sentryData.id,
-            sentryIssueUrl: context.sentryIssueUrl,
-            sentryTitle: sentryData.title,
+            errorTitle: errorContext.title,
+            sourceUrl: errorContext.source_url ?? '',
             triageOutput: output,
             sourceCode,
             flue,
@@ -221,12 +215,12 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
       }
     }
 
-    // 5c. Tracker issue creation (Phase D) — always when tracker configured
+    // 6. Tracker issue creation — always when tracker configured
     if (context.tracker) {
       const issueUrl = await runCreateIssue({
         repo: context.repo,
-        sentryIssueUrl: context.sentryIssueUrl,
-        sentryTitle: sentryData.title,
+        errorTitle: errorContext.title,
+        sourceUrl: errorContext.source_url ?? '',
         triageOutput: output,
         tracker: context.tracker,
         fixPrUrl: result.fix_pr_url ?? null,
@@ -245,9 +239,9 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
     // 8. Redact tokens
     await this.redactTokens();
 
-    // Phase C: callback invocation — invoke context.callback here if present
+    // callback invocation — invoke context.callback here if present
 
-    console.log('Sentry triage completed successfully', {
+    console.log('Triage completed successfully', {
       jobId: context.jobId,
       severity: output.severity,
       confidence: output.confidence,
@@ -259,14 +253,13 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
    * Run the LLM triage using Flue.
    */
   private async runLlmTriage(
-    context: SentryTriageContext,
-    sentryData: SentryIssueData,
+    context: TriageContext,
     sourceCode: Map<string, string>,
     flue: FlueRuntime
-  ): Promise<SentryTriageOutput> {
+  ): Promise<TriageOutput> {
     const model = parseModelConfig(this.env.CODEX_MODEL);
     const prompt = buildTriagePrompt({
-      sentryData,
+      errorContext: context.errorContext,
       sourceCode,
       sha: context.sha,
       repo: context.repo,
@@ -285,7 +278,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
       throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
     }
 
-    let parsed = safeJsonParse<SentryTriageOutput>(response);
+    let parsed = safeJsonParse<TriageOutput>(response);
     if (this.validateTriageOutput(parsed)) {
       return parsed;
     }
@@ -298,7 +291,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
       throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
     }
 
-    parsed = safeJsonParse<SentryTriageOutput>(response);
+    parsed = safeJsonParse<TriageOutput>(response);
     if (this.validateTriageOutput(parsed)) {
       return parsed;
     }
@@ -312,9 +305,8 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
    * Redact all tokens from stored context.
    */
   private async redactTokens(): Promise<void> {
-    const storedContext = await this.state.storage.get<SentryTriageContext>(STATE_KEYS.context);
+    const storedContext = await this.state.storage.get<TriageContext>(STATE_KEYS.context);
     if (storedContext) {
-      storedContext.sentryAuthToken = '[REDACTED]';
       storedContext.githubToken = '[REDACTED]';
       if (storedContext.tracker) {
         storedContext.tracker.token = '[REDACTED]';
@@ -330,10 +322,10 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
    * Mark the triage as failed and redact tokens.
    */
   private async failTriage(
-    context: SentryTriageContext,
+    context: TriageContext,
     error: string
   ): Promise<void> {
-    const status = await this.state.storage.get<SentryTriageStatus>(STATE_KEYS.status);
+    const status = await this.state.storage.get<TriageStatus>(STATE_KEYS.status);
     if (status) {
       status.state = 'failed';
       status.error = error;
@@ -344,7 +336,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
     // Redact tokens
     await this.redactTokens();
 
-    console.error('Sentry triage failed', { jobId: context.jobId, error });
+    console.error('Triage failed', { jobId: context.jobId, error });
   }
 
   /**
@@ -374,7 +366,7 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
   /**
    * Validate that the triage output has all required fields with correct types.
    */
-  private validateTriageOutput(output: unknown): output is SentryTriageOutput {
+  private validateTriageOutput(output: unknown): output is TriageOutput {
     if (!output || typeof output !== 'object') return false;
     const obj = output as Record<string, unknown>;
 
@@ -408,12 +400,12 @@ export class SentryTriageProcessor extends DurableObject<EnvWithBindings> {
 }
 
 /**
- * Get a SentryTriageProcessor stub for a specific job ID.
+ * Get a TriageProcessor stub for a specific job ID.
  */
-export function getSentryTriageProcessor(
+export function getTriageProcessor(
   namespace: DurableObjectNamespace,
   jobId: string
-): DurableObjectStub<SentryTriageProcessor> {
+): DurableObjectStub<TriageProcessor> {
   const id = namespace.idFromName(jobId);
-  return namespace.get(id) as DurableObjectStub<SentryTriageProcessor>;
+  return namespace.get(id) as DurableObjectStub<TriageProcessor>;
 }
