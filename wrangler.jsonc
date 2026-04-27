@@ -68,9 +68,6 @@
       "tag": "v4"
     },
     {
-      "new_sqlite_classes": [
-        "TriageProcessor"
-      ],
       "tag": "v5",
       "renamed_classes": [
         { "from": "SentryTriageProcessor", "to": "TriageProcessor" }
@@ -158,9 +155,6 @@
           "tag": "v4"
         },
         {
-          "new_sqlite_classes": [
-            "TriageProcessor"
-          ],
           "tag": "v5",
           "renamed_classes": [
             { "from": "SentryTriageProcessor", "to": "TriageProcessor" }
