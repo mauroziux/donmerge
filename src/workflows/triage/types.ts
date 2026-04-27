@@ -5,8 +5,6 @@
  * and provides LLM triage, auto-fix, and tracker integration.
  */
 
-import type { FlueRuntime } from '@flue/cloudflare';
-
 // ── Caller-provided error context ──────────────────────────────────────────────
 
 /**
@@ -75,7 +73,6 @@ export interface AutoFixContext {
   sourceUrl: string;
   triageOutput: TriageOutput;
   sourceCode: Map<string, string>;
-  flue: FlueRuntime;
 }
 
 // ── Triage context ─────────────────────────────────────────────────────────────

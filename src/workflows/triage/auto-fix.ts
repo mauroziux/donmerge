@@ -6,6 +6,8 @@
  */
 
 import * as v from 'valibot';
+import { getSandbox } from '@cloudflare/sandbox';
+import { FlueRuntime } from '@flue/cloudflare';
 
 import type { AutoFixOutput, AutoFixContext, TriageEnv } from './types';
 import { buildFixPrompt } from './prompts';
@@ -174,7 +176,6 @@ function tryApplyEdits(
 
 async function generateFix(
   context: AutoFixContext,
-  flue: AutoFixContext['flue'],
   env: TriageEnv
 ): Promise<GenerateFixResult | null> {
   // Pick the first affected file that exists in sourceCode
@@ -188,6 +189,13 @@ async function generateFix(
 
   const fileContent = context.sourceCode.get(targetFile)!;
   const normalizedTarget = targetFile.replace(/^\/+/, '');
+
+  // Create a dedicated sandbox session for the fix prompt
+  const fixSessionId = `fix-${context.repo.replace('/', '-')}-${Date.now()}`;
+  const fixSandbox = getSandbox(env.Sandbox, fixSessionId, { sleepAfter: '30m' });
+  const fixFlue = new FlueRuntime({ sandbox: fixSandbox, sessionId: fixSessionId, workdir: '/home/user' });
+  await fixSandbox.setEnvVars({ OPENAI_API_KEY: env.OPENAI_API_KEY });
+  await fixFlue.setup();
 
   const model = parseModelConfig(env.CODEX_MODEL);
   const prompt = buildFixPrompt({
@@ -205,7 +213,7 @@ async function generateFix(
 
   let response: string | undefined;
   try {
-    response = await flue.client.prompt(prompt, { model, result: v.string() });
+    response = await fixFlue.client.prompt(prompt, { model, result: v.string() });
   } catch (error) {
     const raw = extractRawFlueResponse(error);
     if (raw) {
@@ -255,7 +263,7 @@ async function generateFix(
   if (validationReason) {
     const retryPrompt = `${prompt}\n\nYour previous response was invalid. Produce valid JSON matching the schema exactly.\nReason: ${validationReason}`;
     try {
-      response = await flue.client.prompt(retryPrompt, { model, result: v.string() });
+      response = await fixFlue.client.prompt(retryPrompt, { model, result: v.string() });
     } catch (error) {
       const raw = extractRawFlueResponse(error);
       if (raw) {
@@ -302,7 +310,7 @@ export async function runAutoFix(
 
   try {
     // Step 1: Generate fix via LLM
-    const fixResult = await generateFix(context, context.flue, env);
+    const fixResult = await generateFix(context, env);
     if (!fixResult) {
       return null;
     }

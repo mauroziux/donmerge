@@ -199,7 +199,6 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
             sourceUrl: errorContext.source_url ?? '',
             triageOutput: output,
             sourceCode,
-            flue,
           },
           this.env
         );

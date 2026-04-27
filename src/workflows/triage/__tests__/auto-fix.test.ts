@@ -1,7 +1,9 @@
 /**
  * Tests for auto-fix.ts
  *
- * flue is provided via context.flue (shared sandbox pattern).
+ * generateFix creates its own sandbox+flue session internally.
+ * vi.mock('@cloudflare/sandbox') and vi.mock('@flue/cloudflare') provide mocks
+ * wired to mockPrompt so tests control LLM responses.
  * vi.stubGlobal('fetch') for GitHub API calls.
  */
 
@@ -13,6 +15,21 @@ import { createAutoFixContext, createAutoFixOutput, createValidTriageOutput } fr
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
 const mockPrompt = vi.fn();
+
+// Mock @cloudflare/sandbox and @flue/cloudflare so generateFix creates
+// a flue whose client.prompt is wired to mockPrompt.
+vi.mock('@cloudflare/sandbox', () => ({
+  getSandbox: () => ({
+    setEnvVars: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
+vi.mock('@flue/cloudflare', () => ({
+  FlueRuntime: vi.fn().mockImplementation(() => ({
+    setup: vi.fn().mockResolvedValue(undefined),
+    client: { prompt: mockPrompt },
+  })),
+}));
 
 // Mock crypto.randomUUID for deterministic branch names
 const mockUUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -34,12 +51,9 @@ const testEnv = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Shared mock flue wired to mockPrompt so tests control LLM responses. */
-const mockFlue = { client: { prompt: mockPrompt } } as any;
-
-/** Create an AutoFixContext with the shared mockFlue (and optional overrides). */
+/** Create an AutoFixContext with optional overrides. */
 function makeContext(overrides: Partial<AutoFixContext> = {}): AutoFixContext {
-  return createAutoFixContext({ flue: mockFlue, ...overrides });
+  return createAutoFixContext(overrides);
 }
 
 /** Create a mock fetch response for a successful GitHub API call. */

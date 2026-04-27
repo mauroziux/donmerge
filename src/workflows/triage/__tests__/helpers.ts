@@ -2,8 +2,6 @@
  * Shared test helpers, factories, and fixtures for triage tests.
  */
 
-import { vi } from 'vitest';
-
 import type {
   ErrorContext,
   TriageOutput,
@@ -181,7 +179,6 @@ export function createAutoFixContext(overrides: Partial<AutoFixContext> = {}): A
       affected_files: ['src/index.ts'],
     }),
     sourceCode: new Map([['src/index.ts', 'export function handleRequest() {\n  return data.foo;\n}']]),
-    flue: { client: { prompt: vi.fn() } } as any,
     ...overrides,
   };
 }
