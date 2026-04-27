@@ -65,8 +65,107 @@ jobs:
           script: |
             const apiUrl = `${{ inputs.api_url }}`;
             const apiKey = process.env.DONMERGE_API_KEY;
+            const sentryToken = process.env.SENTRY_AUTH_TOKEN;
+            const sentryIssueUrl = `${{ inputs.sentry_issue_url }}`;
 
-            // Determine tracker token based on type
+            // --- Step 1: Parse Sentry URL to extract org and issue ID ---
+            // Expected format: https://sentry.io/organizations/{org}/issues/{id}/
+            const urlPattern = /organizations\/([^/]+)\/issues\/(\d+)/;
+            const match = sentryIssueUrl.match(urlPattern);
+            if (!match) {
+              core.setFailed(`Could not parse Sentry URL: ${sentryIssueUrl}`);
+              return;
+            }
+            const org = match[1];
+            const issueId = match[2];
+            core.info(`Parsed Sentry URL — org: ${org}, issue ID: ${issueId}`);
+
+            // --- Step 2: Fetch Sentry issue data ---
+            const sentryBase = "https://sentry.io/api/0";
+
+            const issueRes = await fetch(
+              `${sentryBase}/organizations/${org}/issues/${issueId}/`,
+              { headers: { "Authorization": `Bearer ${sentryToken}` } }
+            );
+            if (!issueRes.ok) {
+              core.setFailed(`Sentry issue fetch failed (HTTP ${issueRes.status}): ${await issueRes.text()}`);
+              return;
+            }
+            const issue = await issueRes.json();
+
+            // Fetch latest events for stack trace data
+            const eventsRes = await fetch(
+              `${sentryBase}/organizations/${org}/issues/${issueId}/events/?limit=5`,
+              { headers: { "Authorization": `Bearer ${sentryToken}` } }
+            );
+            const events = eventsRes.ok ? (await eventsRes.json()) : [];
+            if (!eventsRes.ok) {
+              core.warning(`Sentry events fetch returned HTTP ${eventsRes.status}, proceeding without events`);
+            }
+
+            // --- Step 3: Build error_context from Sentry data ---
+            function formatStackFromEvents(evts) {
+              if (!evts || evts.length === 0) return "";
+              // Collect exception stack frames from the most recent event
+              const evt = evts[0];
+              const entries = evt.entries || [];
+              for (const entry of entries) {
+                if (entry.type === "exception" && entry.data?.values) {
+                  for (const ex of entry.data.values) {
+                    if (ex.stacktrace?.frames) {
+                      return ex.stacktrace.frames
+                        .map(f => `  at ${f.function || "<anonymous>"} (${f.filename}:${f.lineno || "?"}:${f.colno || "?"})`)
+                        .join("\n");
+                    }
+                  }
+                }
+              }
+              return "";
+            }
+
+            function extractInAppPathsFromEvents(evts) {
+              const paths = new Set();
+              for (const evt of (evts || [])) {
+                const entries = evt.entries || [];
+                for (const entry of entries) {
+                  if (entry.type === "exception" && entry.data?.values) {
+                    for (const ex of entry.data.values) {
+                      for (const frame of (ex.stacktrace?.frames || [])) {
+                        if (frame.inApp && frame.filename) {
+                          paths.add(frame.filename);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              return [...paths];
+            }
+
+            function mapSeverity(level) {
+              const map = { fatal: "critical", error: "high", warning: "medium", info: "low", debug: "low" };
+              return map[level] || "medium";
+            }
+
+            const errorContext = {
+              title: issue.title || "Unknown Sentry Error",
+              description: `Error in ${issue.platform || "unknown"} environment ${issue.environment || "unknown"}`,
+              stack_trace: formatStackFromEvents(events),
+              affected_files: extractInAppPathsFromEvents(events),
+              severity: mapSeverity(issue.level),
+              environment: issue.environment || "unknown",
+              metadata: {
+                sentry_issue_id: String(issue.id),
+                sentry_short_id: issue.shortId || "",
+                occurrences: String(issue.count || 0),
+                users_affected: String(issue.userCount || 0)
+              },
+              source_url: sentryIssueUrl
+            };
+
+            core.info(`Built error_context — title: "${errorContext.title}", severity: ${errorContext.severity}, affected_files: ${errorContext.affected_files.length}`);
+
+            // --- Step 4: Determine tracker token and POST to /api/v1/triage ---
             const trackerType = `${{ inputs.tracker_type }}`;
             let trackerToken = process.env.GITHUB_TOKEN_SECRET;
             if (trackerType === "linear") {
@@ -75,7 +174,6 @@ jobs:
               trackerToken = process.env.JIRA_API_KEY;
             }
 
-            // Parse comma-separated labels into array
             const labels = `${{ inputs.tracker_labels }}`
               .split(",")
               .map(l => l.trim())
@@ -83,8 +181,7 @@ jobs:
 
             const body = {
               repo: `${{ github.repository }}`,
-              sentry_issue_url: `${{ inputs.sentry_issue_url }}`,
-              sentry_auth_token: process.env.SENTRY_AUTH_TOKEN,
+              error_context: errorContext,
               github_token: process.env.GITHUB_TOKEN_SECRET,
               sha: `${{ inputs.sha }}`,
               tracker: {
@@ -98,7 +195,7 @@ jobs:
               }
             };
 
-            const response = await fetch(`${apiUrl}/api/v1/sentry/triage`, {
+            const response = await fetch(`${apiUrl}/api/v1/triage`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
