@@ -10,7 +10,7 @@ import * as v from 'valibot';
 import type { AutoFixOutput, AutoFixContext, TriageEnv } from './types';
 import { buildFixPrompt } from './prompts';
 import { sanitizeTitle, sanitizeData } from './prompts/sanitizers';
-import { parseModelConfig, safeJsonParse } from './utils';
+import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, validateFixOutput } from './utils';
 
 // ── GitHub API Operations ──────────────────────────────────────────────────────
 // Self-contained helpers — same pattern as repo-fetcher.ts, no cross-module imports.
@@ -135,6 +135,7 @@ async function generateFix(
   }
 
   const fileContent = context.sourceCode.get(targetFile)!;
+  const normalizedTarget = targetFile.replace(/^\/+/, '');
 
   const model = parseModelConfig(env.CODEX_MODEL);
   const prompt = buildFixPrompt({
@@ -146,55 +147,106 @@ async function generateFix(
     errorDescription: context.triageOutput.root_cause,
   });
 
-  let response: string;
+  let validationReason: string | undefined;
+
+  // ── Tier 1: Initial prompt with raw extraction ────────────────────────────────
+
+  let response: string | undefined;
   try {
     response = await flue.client.prompt(prompt, { model, result: v.string() });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'unknown';
-    console.error('Auto-fix LLM prompt failed', { error: msg });
-    return null;
+    const raw = extractRawFlueResponse(error);
+    if (raw) {
+      try {
+        const json = extractJsonFromResponse(raw);
+        const parsed = safeJsonParse<AutoFixOutput>(json);
+        const validation = validateFixOutput(parsed);
+        if (validation.valid) {
+          // Check file_path matches target
+          const normalizedPath = parsed.file_path.replace(/^\/+/, '');
+          if (normalizedPath === normalizedTarget && parsed.patched_content) {
+            // No-op check
+            if (parsed.patched_content.trim() !== fileContent.trim()) {
+              return { ...parsed, patched_content: parsed.patched_content };
+            }
+          }
+        }
+        response = raw; // Keep for retry
+      } catch { /* fall through */ }
+    }
+    if (!response) {
+      const msg = error instanceof Error ? error.message : 'unknown';
+      console.error('Auto-fix LLM prompt failed', { error: msg });
+      return null;
+    }
   }
 
-  let parsed: AutoFixOutput;
-  try {
-    parsed = safeJsonParse<AutoFixOutput>(response);
-  } catch {
-    console.error('Auto-fix: LLM returned invalid JSON');
-    return null;
+  // ── Tier 2: Parse and validate successful response ────────────────────────────
+
+  if (response) {
+    try {
+      const json = extractJsonFromResponse(response);
+      const parsed = safeJsonParse<AutoFixOutput>(json);
+      const validation = validateFixOutput(parsed);
+      if (validation.valid) {
+        const normalizedPath = parsed.file_path.replace(/^\/+/, '');
+        if (normalizedPath !== normalizedTarget) {
+          console.error('Auto-fix: LLM returned different file_path', { expected: normalizedTarget, got: normalizedPath });
+          validationReason = `file_path mismatch: expected ${normalizedTarget}, got ${normalizedPath}`;
+        } else if (!parsed.patched_content) {
+          console.log('Auto-fix: LLM returned null patched_content (no confident fix)');
+          return null; // LLM genuinely can't fix
+        } else if (parsed.patched_content.trim() === fileContent.trim()) {
+          console.log('Auto-fix: patched content identical to current (no-op)');
+          return null;
+        } else {
+          return { ...parsed, patched_content: parsed.patched_content };
+        }
+      } else {
+        validationReason = validation.reason ?? 'unknown validation error';
+      }
+    } catch (e) {
+      validationReason = `JSON parse error: ${e instanceof Error ? e.message : 'unknown'}`;
+    }
   }
 
-  // Validate output
-  if (!parsed.file_path || typeof parsed.description !== 'string') {
-    console.error('Auto-fix: invalid output structure');
-    return null;
+  // ── Tier 3: Retry with corrective prompt ──────────────────────────────────────
+
+  if (validationReason) {
+    const retryPrompt = `${prompt}\n\nYour previous response was invalid. Produce valid JSON matching the schema exactly.\nReason: ${validationReason}`;
+    try {
+      response = await flue.client.prompt(retryPrompt, { model, result: v.string() });
+    } catch (error) {
+      const raw = extractRawFlueResponse(error);
+      if (raw) {
+        response = raw;
+      } else {
+        const msg = error instanceof Error ? error.message : 'unknown';
+        console.error('Auto-fix: retry prompt failed', { error: msg });
+        return null;
+      }
+    }
+
+    try {
+      const json = extractJsonFromResponse(response);
+      const parsed = safeJsonParse<AutoFixOutput>(json);
+      const validation = validateFixOutput(parsed);
+      if (validation.valid) {
+        const normalizedPath = parsed.file_path.replace(/^\/+/, '');
+        if (normalizedPath !== normalizedTarget) return null;
+        if (!parsed.patched_content) return null;
+        if (parsed.patched_content.trim() === fileContent.trim()) return null;
+        return { ...parsed, patched_content: parsed.patched_content };
+      }
+      console.error('Auto-fix: invalid output after retry', { reason: validation.reason });
+      return null;
+    } catch {
+      console.error('Auto-fix: failed to parse retry response');
+      return null;
+    }
   }
 
-  // Validate that LLM returned the same file we asked it to fix
-  // Normalize paths for comparison (strip leading slashes)
-  const normalizedTarget = targetFile.replace(/^\/+/, '');
-  const normalizedPath = parsed.file_path.replace(/^\/+/, '');
-  if (normalizedPath !== normalizedTarget) {
-    console.error('Auto-fix: LLM returned different file_path', {
-      expected: normalizedTarget,
-      got: normalizedPath,
-    });
-    return null;
-  }
-
-  // LLM says it can't confidently fix
-  const content = parsed.patched_content;
-  if (!content) {
-    console.log('Auto-fix: LLM returned null patched_content (no confident fix)');
-    return null;
-  }
-
-  // No-op check: patched content identical to current
-  if (content.trim() === fileContent.trim()) {
-    console.log('Auto-fix: patched content identical to current (no-op)');
-    return null;
-  }
-
-  return { ...parsed, patched_content: content };
+  return null;
 }
 
 // ── Orchestrator ───────────────────────────────────────────────────────────────

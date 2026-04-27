@@ -24,7 +24,7 @@ import { fetchRepoCodeForTriage } from './repo-fetcher';
 import { buildTriagePrompt } from './prompts';
 import { runAutoFix } from './auto-fix';
 import { runCreateIssue } from './trackers';
-import { parseModelConfig, safeJsonParse } from './utils';
+import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse } from './utils';
 
 // State keys
 const STATE_KEYS = {
@@ -271,11 +271,24 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
       'Ensure root_cause, stack_trace_summary, affected_files (array), suggested_fix, confidence (high|medium|low), ' +
       'and severity (critical|error|warning) are all present and correctly typed.';
 
-    let response: string;
+    let response: string | undefined;
     try {
       response = await flue.client.prompt(prompt, { model, result: v.string() });
     } catch (error) {
-      throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      const raw = extractRawFlueResponse(error);
+      if (raw) {
+        try {
+          const json = extractJsonFromResponse(raw);
+          const parsed = safeJsonParse<TriageOutput>(json);
+          if (this.validateTriageOutput(parsed)) {
+            return parsed;
+          }
+          response = raw;
+        } catch { /* fall through */ }
+      }
+      if (!response) {
+        throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      }
     }
 
     let parsed = safeJsonParse<TriageOutput>(response);
@@ -288,7 +301,20 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     try {
       response = await flue.client.prompt(retryPrompt, { model, result: v.string() });
     } catch (error) {
-      throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      const raw = extractRawFlueResponse(error);
+      if (raw) {
+        try {
+          const json = extractJsonFromResponse(raw);
+          const retryParsed = safeJsonParse<TriageOutput>(json);
+          if (this.validateTriageOutput(retryParsed)) {
+            return retryParsed;
+          }
+          response = raw;
+        } catch { /* fall through */ }
+      }
+      if (!response) {
+        throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
+      }
     }
 
     parsed = safeJsonParse<TriageOutput>(response);
