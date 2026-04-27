@@ -18,6 +18,7 @@ export type {
   TriageResult,
   TriageEnv,
   AutoFixOutput,
+  AutoFixEdit,
   AutoFixContext,
 } from './types';
 

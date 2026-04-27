@@ -40,7 +40,7 @@ describe('FixPromptBuilder', () => {
       .build();
     expect(prompt).toContain('DonMerge');
     expect(prompt).toContain('Fix Engineer');
-    expect(prompt).toContain('COMPLETE patched file content');
+    expect(prompt).toContain('surgical edits');
   });
 
   it('should include critical rules', () => {
@@ -110,7 +110,9 @@ describe('FixPromptBuilder', () => {
     expect(prompt).toContain('Produce your fix as JSON');
     expect(prompt).toContain('file_path');
     expect(prompt).toContain('description');
-    expect(prompt).toContain('patched_content');
+    expect(prompt).toContain('edits');
+    expect(prompt).toContain('search');
+    expect(prompt).toContain('replace');
   });
 
   // ── Edge cases ──────────────────────────────────────────────────────

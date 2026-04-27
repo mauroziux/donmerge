@@ -10,7 +10,7 @@ import * as v from 'valibot';
 import type { AutoFixOutput, AutoFixContext, TriageEnv } from './types';
 import { buildFixPrompt } from './prompts';
 import { sanitizeTitle, sanitizeData } from './prompts/sanitizers';
-import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, validateFixOutput } from './utils';
+import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, validateFixOutput, applyEdits } from './utils';
 
 // ── GitHub API Operations ──────────────────────────────────────────────────────
 // Self-contained helpers — same pattern as repo-fetcher.ts, no cross-module imports.
@@ -120,11 +120,63 @@ async function createPullRequest(
 
 // ── Fix Generation (LLM) ───────────────────────────────────────────────────────
 
+/** Return type for generateFix — includes both the parsed output and the patched content. */
+interface GenerateFixResult {
+  output: AutoFixOutput;
+  patchedContent: string;
+}
+
+/**
+ * Try to apply surgical edits from a parsed LLM output.
+ * Returns null if edits can't be applied or result is a no-op.
+ */
+function tryApplyEdits(
+  parsed: AutoFixOutput,
+  normalizedTarget: string,
+  fileContent: string
+): GenerateFixResult | null {
+  // Check file_path matches target
+  const normalizedPath = parsed.file_path.replace(/^\/+/, '');
+  if (normalizedPath !== normalizedTarget) {
+    console.error('Auto-fix: LLM returned different file_path', {
+      expected: normalizedTarget,
+      got: normalizedPath,
+    });
+    return null;
+  }
+
+  // Empty edits = LLM can't fix
+  if (!parsed.edits || parsed.edits.length === 0) {
+    console.log('Auto-fix: LLM returned empty edits (no confident fix)');
+    return null;
+  }
+
+  // Apply edits
+  const result = applyEdits(fileContent, parsed.edits);
+  if (!result) {
+    console.error('Auto-fix: majority of edits failed to match');
+    return null;
+  }
+
+  if (result.applied === 0) {
+    console.error('Auto-fix: no edits applied');
+    return null;
+  }
+
+  // No-op check
+  if (result.content.trim() === fileContent.trim()) {
+    console.log('Auto-fix: patched content identical to current (no-op)');
+    return null;
+  }
+
+  return { output: parsed, patchedContent: result.content };
+}
+
 async function generateFix(
   context: AutoFixContext,
   flue: AutoFixContext['flue'],
   env: TriageEnv
-): Promise<AutoFixOutput | null> {
+): Promise<GenerateFixResult | null> {
   // Pick the first affected file that exists in sourceCode
   const targetFile = context.triageOutput.affected_files.find(
     (f) => context.sourceCode.has(f)
@@ -162,14 +214,8 @@ async function generateFix(
         const parsed = safeJsonParse<AutoFixOutput>(json);
         const validation = validateFixOutput(parsed);
         if (validation.valid) {
-          // Check file_path matches target
-          const normalizedPath = parsed.file_path.replace(/^\/+/, '');
-          if (normalizedPath === normalizedTarget && parsed.patched_content) {
-            // No-op check
-            if (parsed.patched_content.trim() !== fileContent.trim()) {
-              return { ...parsed, patched_content: parsed.patched_content };
-            }
-          }
+          const result = tryApplyEdits(parsed, normalizedTarget, fileContent);
+          if (result) return result;
         }
         response = raw; // Keep for retry
       } catch { /* fall through */ }
@@ -189,18 +235,12 @@ async function generateFix(
       const parsed = safeJsonParse<AutoFixOutput>(json);
       const validation = validateFixOutput(parsed);
       if (validation.valid) {
+        const result = tryApplyEdits(parsed, normalizedTarget, fileContent);
+        if (result) return result;
+        // If tryApplyEdits returned null due to file_path mismatch, set validationReason
         const normalizedPath = parsed.file_path.replace(/^\/+/, '');
         if (normalizedPath !== normalizedTarget) {
-          console.error('Auto-fix: LLM returned different file_path', { expected: normalizedTarget, got: normalizedPath });
           validationReason = `file_path mismatch: expected ${normalizedTarget}, got ${normalizedPath}`;
-        } else if (!parsed.patched_content) {
-          console.log('Auto-fix: LLM returned null patched_content (no confident fix)');
-          return null; // LLM genuinely can't fix
-        } else if (parsed.patched_content.trim() === fileContent.trim()) {
-          console.log('Auto-fix: patched content identical to current (no-op)');
-          return null;
-        } else {
-          return { ...parsed, patched_content: parsed.patched_content };
         }
       } else {
         validationReason = validation.reason ?? 'unknown validation error';
@@ -232,11 +272,8 @@ async function generateFix(
       const parsed = safeJsonParse<AutoFixOutput>(json);
       const validation = validateFixOutput(parsed);
       if (validation.valid) {
-        const normalizedPath = parsed.file_path.replace(/^\/+/, '');
-        if (normalizedPath !== normalizedTarget) return null;
-        if (!parsed.patched_content) return null;
-        if (parsed.patched_content.trim() === fileContent.trim()) return null;
-        return { ...parsed, patched_content: parsed.patched_content };
+        const result = tryApplyEdits(parsed, normalizedTarget, fileContent);
+        return result;
       }
       console.error('Auto-fix: invalid output after retry', { reason: validation.reason });
       return null;
@@ -265,8 +302,8 @@ export async function runAutoFix(
 
   try {
     // Step 1: Generate fix via LLM
-    const fixOutput = await generateFix(context, context.flue, env);
-    if (!fixOutput) {
+    const fixResult = await generateFix(context, context.flue, env);
+    if (!fixResult) {
       return null;
     }
 
@@ -286,19 +323,17 @@ export async function runAutoFix(
     branchCreated = true;
 
     // Step 6: Get file blob SHA — normalize path (GitHub rejects leading /)
-    const filePath = fixOutput.file_path.replace(/^\/+/, '');
+    const filePath = fixResult.output.file_path.replace(/^\/+/, '');
     const fileSha = await getFileBlobSha(context.repo, filePath, baseBranch, context.githubToken);
 
     // Step 7: Commit the fix
     const rawMessage = context.triageOutput.suggested_fix.slice(0, 72);
     const commitMessage = `fix: ${rawMessage.replace(/\n/g, ' ')}`;
 
-    // patched_content is guaranteed non-null after generateFix validation
-    const patchedContent = fixOutput.patched_content!;
     await updateFile(
       context.repo,
       filePath,
-      patchedContent,
+      fixResult.patchedContent,
       commitMessage,
       branchName,
       fileSha,
@@ -307,7 +342,7 @@ export async function runAutoFix(
 
     // Step 8: Create PR
     const prTitle = `fix: ${sanitizeTitle(context.errorTitle).slice(0, 80)}`;
-    const prBody = buildPrBody(context, fixOutput);
+    const prBody = buildPrBody(context, fixResult.output);
     const prUrl = await createPullRequest(
       context.repo,
       prTitle,

@@ -13,6 +13,7 @@ import type {
   TrackerConfig,
   CallbackConfig,
   AutoFixOutput,
+  AutoFixEdit,
   AutoFixContext,
 } from '../types';
 import type { TriagePromptContext } from '../prompts/builder';
@@ -147,7 +148,22 @@ export function createAutoFixOutput(overrides: Partial<AutoFixOutput> = {}): Aut
   return {
     file_path: '/app/Jobs/ExampleJob.php',
     description: 'Add URL validation before HTTP request',
-    patched_content: '<?php\n// fixed code\n',
+    edits: [
+      {
+        search: '$url = $request->url;',
+        replace: "if (!filter_var($request->url, FILTER_VALIDATE_URL)) {\n    throw new InvalidArgumentException('Invalid URL');\n}\n$url = $request->url;",
+        description: 'Add URL validation check',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+export function createAutoFixEdit(overrides: Partial<AutoFixEdit> = {}): AutoFixEdit {
+  return {
+    search: 'return data.foo;',
+    replace: 'if (!data) return null;\n  return data.foo;',
+    description: 'Add null check before accessing property',
     ...overrides,
   };
 }

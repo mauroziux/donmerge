@@ -71,6 +71,26 @@ const DEFAULT_TARGET_FILE = 'src/index.ts';
 const DEFAULT_ORIGINAL_CONTENT = 'export function handleRequest() {\n  return data.foo;\n}';
 const DEFAULT_FIXED_CONTENT = 'export function handleRequest() {\n  if (!data) return null;\n  return data.foo;\n}';
 
+/** Build an edits-based LLM fix response. */
+function llmFixEdits(overrides?: {
+  file_path?: string;
+  description?: string;
+  edits?: Array<{ search: string; replace: string; description: string }>;
+}) {
+  const o = overrides ?? {};
+  return {
+    file_path: o.file_path ?? DEFAULT_TARGET_FILE,
+    description: o.description ?? 'Add null check before accessing property',
+    edits: o.edits ?? [
+      {
+        search: '  return data.foo;',
+        replace: '  if (!data) return null;\n  return data.foo;',
+        description: 'Add null check before accessing property',
+      },
+    ],
+  };
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -83,11 +103,7 @@ describe('runAutoFix', () => {
   it('should return PR URL on success', async () => {
     // Mock LLM response
     mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Add null check before accessing property',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      })
+      llmFixJson(llmFixEdits())
     );
 
     // Mock GitHub API calls in order:
@@ -112,12 +128,12 @@ describe('runAutoFix', () => {
     expect(mockFetch).toHaveBeenCalledTimes(6);
   });
 
-  it('should return null when LLM produces null patched_content', async () => {
+  it('should return null when LLM produces empty edits array', async () => {
     mockPrompt.mockResolvedValueOnce(
       llmFixJson({
         file_path: DEFAULT_TARGET_FILE,
         description: 'Cannot confidently fix',
-        patched_content: null,
+        edits: [],
       })
     );
 
@@ -141,14 +157,20 @@ describe('runAutoFix', () => {
     expect(mockPrompt).not.toHaveBeenCalled();
   });
 
-  it('should return null when patched_content is identical to current', async () => {
+  it('should return null when edits result in identical content', async () => {
     const originalContent = 'export function handleRequest() {\n  return data.foo;\n}';
 
     mockPrompt.mockResolvedValueOnce(
       llmFixJson({
         file_path: DEFAULT_TARGET_FILE,
         description: 'No change',
-        patched_content: originalContent,
+        edits: [
+          {
+            search: '  return data.foo;',
+            replace: '  return data.foo;',
+            description: 'No-op edit',
+          },
+        ],
       })
     );
 
@@ -163,11 +185,7 @@ describe('runAutoFix', () => {
 
   it('should return null when GitHub API fails at createBranch step', async () => {
     mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Add null check',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      })
+      llmFixJson(llmFixEdits())
     );
 
     mockFetch
@@ -183,11 +201,7 @@ describe('runAutoFix', () => {
 
   it('should return null when GitHub API fails at createPullRequest step', async () => {
     mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Add null check',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      })
+      llmFixJson(llmFixEdits())
     );
 
     mockFetch
@@ -224,11 +238,7 @@ describe('runAutoFix', () => {
 
   it('should produce correct branch name format', async () => {
     mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Fix',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      })
+      llmFixJson(llmFixEdits())
     );
 
     mockFetch
@@ -251,11 +261,7 @@ describe('runAutoFix', () => {
 
   it('should sanitize PR title', async () => {
     mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Fix',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      })
+      llmFixJson(llmFixEdits())
     );
 
     mockFetch
@@ -281,11 +287,7 @@ describe('runAutoFix', () => {
 
   it('should include expected sections in PR body', async () => {
     mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Add null check before accessing property',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      })
+      llmFixJson(llmFixEdits())
     );
 
     mockFetch
@@ -324,7 +326,7 @@ describe('runAutoFix', () => {
     mockPrompt.mockResolvedValueOnce(
       llmFixJson({
         description: 'A fix',
-        patched_content: 'code',
+        edits: [{ search: 'code', replace: 'fixed', description: 'fix' }],
       })
     );
 
@@ -338,7 +340,7 @@ describe('runAutoFix', () => {
     mockPrompt.mockResolvedValueOnce(
       llmFixJson({
         file_path: DEFAULT_TARGET_FILE,
-        patched_content: 'code',
+        edits: [{ search: 'code', replace: 'fixed', description: 'fix' }],
       })
     );
 
@@ -350,11 +352,7 @@ describe('runAutoFix', () => {
 
   it('should parse JSON wrapped in markdown code blocks', async () => {
     mockPrompt.mockResolvedValueOnce(
-      '```json\n' + llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Add null check before accessing property',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      }) + '\n```'
+      '```json\n' + llmFixJson(llmFixEdits()) + '\n```'
     );
 
     mockFetch
@@ -373,11 +371,7 @@ describe('runAutoFix', () => {
 
   it('should use non-default branch when repo default is develop', async () => {
     mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Fix',
-        patched_content: DEFAULT_FIXED_CONTENT,
-      })
+      llmFixJson(llmFixEdits())
     );
 
     mockFetch
@@ -397,5 +391,70 @@ describe('runAutoFix', () => {
     const prCall = mockFetch.mock.calls[5];
     const body = JSON.parse(prCall[1].body);
     expect(body.base).toBe('develop');
+  });
+
+  it('should return null when majority of edits fail to match', async () => {
+    mockPrompt.mockResolvedValueOnce(
+      llmFixJson({
+        file_path: DEFAULT_TARGET_FILE,
+        description: 'Attempted fix',
+        edits: [
+          {
+            search: 'this code does not exist in the file at all',
+            replace: 'replacement 1',
+            description: 'Edit 1 - will fail',
+          },
+          {
+            search: 'also not found anywhere',
+            replace: 'replacement 2',
+            description: 'Edit 2 - will fail',
+          },
+          {
+            search: '  return data.foo;',
+            replace: '  if (!data) return null;\n  return data.foo;',
+            description: 'Edit 3 - will succeed',
+          },
+        ],
+      })
+    );
+
+    const context = makeContext();
+    const result = await runAutoFix(context, testEnv);
+
+    expect(result).toBeNull();
+  });
+
+  it('should apply matching edits and warn about failures', async () => {
+    mockPrompt.mockResolvedValueOnce(
+      llmFixJson({
+        file_path: DEFAULT_TARGET_FILE,
+        description: 'Fix with some bad edits',
+        edits: [
+          {
+            search: '  return data.foo;',
+            replace: '  if (!data) return null;\n  return data.foo;',
+            description: 'Valid edit',
+          },
+          {
+            search: 'this does not exist',
+            replace: 'whatever',
+            description: 'Invalid edit - should be skipped',
+          },
+        ],
+      })
+    );
+
+    mockFetch
+      .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
+      .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
+      .mockResolvedValueOnce(githubOk({}))
+      .mockResolvedValueOnce(githubOk({ sha: 'blobsha123' }))
+      .mockResolvedValueOnce(githubOk({ commit: { sha: 'commitsha123' } }))
+      .mockResolvedValueOnce(githubOk({ html_url: 'https://github.com/owner/repo/pull/1' }));
+
+    const context = makeContext();
+    const result = await runAutoFix(context, testEnv);
+
+    expect(result).toBe('https://github.com/owner/repo/pull/1');
   });
 });

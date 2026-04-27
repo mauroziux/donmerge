@@ -46,14 +46,24 @@ export interface TriageOutput {
   severity: 'critical' | 'error' | 'warning';
 }
 
+/** A single surgical edit operation. */
+export interface AutoFixEdit {
+  /** 2-5 lines of context from the original file to locate the edit site */
+  search: string;
+  /** The replacement text (empty string to delete) */
+  replace: string;
+  /** Human-readable description of this edit */
+  description: string;
+}
+
 /** Output from the LLM fix-generation prompt. */
 export interface AutoFixOutput {
   /** Path of the file to modify (must match a file in sourceCode) */
   file_path: string;
   /** Human-readable description of what the fix does */
   description: string;
-  /** Complete patched file content (not a diff — the full new file) */
-  patched_content: string | null;
+  /** One or more surgical edit operations (empty = no confident fix) */
+  edits: AutoFixEdit[];
 }
 
 /** Input context for the auto-fix pipeline. */

@@ -147,9 +147,64 @@ export function validateFixOutput(output: unknown): { valid: boolean; reason?: s
     return { valid: false, reason: 'description must be a non-empty string' };
   }
 
-  if (obj.patched_content !== null && typeof obj.patched_content !== 'string') {
-    return { valid: false, reason: 'patched_content must be a string or null' };
+  if (!Array.isArray(obj.edits)) {
+    return { valid: false, reason: 'edits must be an array' };
+  }
+
+  for (let i = 0; i < obj.edits.length; i++) {
+    const edit = obj.edits[i] as Record<string, unknown>;
+    if (!edit || typeof edit !== 'object') {
+      return { valid: false, reason: `edits[${i}] must be an object` };
+    }
+    if (typeof edit.search !== 'string' || !edit.search) {
+      return { valid: false, reason: `edits[${i}].search must be a non-empty string` };
+    }
+    if (typeof edit.replace !== 'string') {
+      return { valid: false, reason: `edits[${i}].replace must be a string` };
+    }
+    if (typeof edit.description !== 'string' || !edit.description) {
+      return { valid: false, reason: `edits[${i}].description must be a non-empty string` };
+    }
   }
 
   return { valid: true };
+}
+
+// ── Edit application ──────────────────────────────────────────────────────────
+
+export interface ApplyEditsResult {
+  content: string;
+  applied: number;
+  failed: number;
+}
+
+/**
+ * Apply surgical search/replace edits to a file's content.
+ *
+ * Returns null when the majority of edits fail to match,
+ * indicating the LLM output likely doesn't align with the source.
+ */
+export function applyEdits(
+  content: string,
+  edits: Array<{ search: string; replace: string }>
+): ApplyEditsResult | null {
+  let result = content;
+  let applied = 0;
+  let failed = 0;
+
+  for (const edit of edits) {
+    const searchTrimmed = edit.search.trim();
+    if (searchTrimmed && result.includes(searchTrimmed)) {
+      result = result.replace(searchTrimmed, edit.replace.trim());
+      applied++;
+    } else {
+      console.warn('Edit search string not found, skipping', {
+        search: searchTrimmed.slice(0, 100),
+      });
+      failed++;
+    }
+  }
+
+  if (failed > applied) return null;
+  return { content: result, applied, failed };
 }
