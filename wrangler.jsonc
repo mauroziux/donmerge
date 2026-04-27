@@ -90,6 +90,7 @@
     "staging": {
       "name": "tableo-assitant-worker-staging",
       "vars": {
+        "DONMERGE_API_KEYS": "dm_test_2cd266c2995a8db0a2270eddded52fec28d7f2ed99e7157d,dm_live_f5b0a81a5aff7ec415158a1092658f2eeb9a0ad1ce6064b4",
         "REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
         "CODEX_MODEL": "openai/gpt-5.3-codex",
         "MAX_REVIEW_FILES": "50",

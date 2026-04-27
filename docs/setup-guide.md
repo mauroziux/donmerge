@@ -112,48 +112,30 @@ Add these secrets to your repository:
 
 ### Step 4 — Set up the Sentry → GitHub bridge
 
-You need a bridge to convert Sentry webhooks into GitHub `repository_dispatch` events. The simplest approach is a small Cloudflare Worker:
+You need a bridge to convert Sentry webhooks into GitHub `repository_dispatch` events. Use the production-ready Cloudflare Worker template with signature verification:
 
-```javascript
-// bridge-worker.js
-export default {
-  async fetch(request, env) {
-    const payload = await request.json();
-    const issueUrl = payload?.data?.issue?.url
-      || `https://sentry.io/organizations/${payload?.data?.organization?.slug}/issues/${payload?.data?.issue?.id}/`;
+👉 **[`templates/sentry-webhook-bridge/`](../templates/sentry-webhook-bridge/)**
 
-    await fetch(
-      `https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-          Accept: 'application/vnd.github+json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          event_type: 'sentry-issue',
-          client_payload: {
-            sentry_issue_url: issueUrl,
-            sha: 'main',
-          },
-        }),
-      }
-    );
+The template includes:
 
-    return new Response('ok', { status: 200 });
-  }
-};
+- **HMAC-SHA256 signature verification** to validate requests come from Sentry
+- Payload validation and Sentry issue URL extraction
+- Configurable secrets for `SENTRY_WEBHOOK_SECRET`, `GITHUB_TOKEN`, and `GITHUB_REPO`
+- Full setup instructions in the template's README
+
+Quick start:
+
+```bash
+cp -r templates/sentry-webhook-bridge sentry-bridge
+cd sentry-bridge
+npx wrangler login
+npx wrangler secret put SENTRY_WEBHOOK_SECRET
+npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put GITHUB_REPO
+npx wrangler deploy
 ```
 
-Set these environment variables on the bridge worker:
-
-| Variable | Value |
-|----------|-------|
-| `GITHUB_REPO` | `owner/repo` (your repository) |
-| `GITHUB_TOKEN` | GitHub PAT with `repo` scope |
-
-In Sentry, go to **Settings → Integrations → Webhooks** and add your bridge worker URL.
+Then in Sentry, go to **Settings → Integrations → Webhooks** and add your deployed worker URL. Select **Issue Created** as the only event.
 
 ### Step 5 — Test it
 
