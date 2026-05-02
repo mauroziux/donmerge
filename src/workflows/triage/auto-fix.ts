@@ -5,14 +5,10 @@
  * Self-contained GitHub API helpers (same pattern as repo-fetcher.ts).
  */
 
-import * as v from 'valibot';
-import { getSandbox } from '@cloudflare/sandbox';
-import { FlueRuntime } from '@flue/cloudflare';
-
 import type { AutoFixOutput, AutoFixContext, TriageEnv } from './types';
 import { buildFixPrompt } from './prompts';
 import { sanitizeTitle, sanitizeData } from './prompts/sanitizers';
-import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, validateFixOutput, applyEdits } from './utils';
+import { parseModelConfig, safeJsonParse, extractJsonFromResponse, validateFixOutput, applyEdits, utf8ToBase64 } from './utils';
 
 // ── GitHub API Operations ──────────────────────────────────────────────────────
 // Self-contained helpers — same pattern as repo-fetcher.ts, no cross-module imports.
@@ -93,7 +89,7 @@ async function updateFile(
   fileSha: string,
   token: string
 ): Promise<string> {
-  const encoded = btoa(content);
+  const encoded = utf8ToBase64(content);
   const result = await githubApiCall<{ commit: { sha: string } }>(
     `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(filePath)}`,
     token,
@@ -118,6 +114,46 @@ async function createPullRequest(
     { title, body, head: headBranch, base: baseBranch }
   );
   return result.html_url;
+}
+
+// ── OpenAI API (direct) ─────────────────────────────────────────────────────────
+
+/**
+ * Call OpenAI API directly (no OpenRouter / Flue overhead).
+ * Used for simple text-to-JSON tasks like fix generation.
+ */
+async function callOpenAI(
+  apiKey: string,
+  prompt: string,
+  modelConfig: { providerID: string; modelID: string }
+): Promise<string> {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: modelConfig.modelID,
+      messages: [
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.2,
+      max_tokens: 4096,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenAI API error ${response.status}: ${body.slice(0, 500)}`);
+  }
+
+  const data = await response.json() as { choices: Array<{ message: { content: string } }> };
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('Empty response from OpenAI API');
+  }
+  return content;
 }
 
 // ── Fix Generation (LLM) ───────────────────────────────────────────────────────
@@ -178,6 +214,12 @@ async function generateFix(
   context: AutoFixContext,
   env: TriageEnv
 ): Promise<GenerateFixResult | null> {
+  // V1 requires sourceCode — V2 (auto-fix-v2.ts) works without it
+  if (!context.sourceCode) {
+    console.log('Auto-fix V1: no sourceCode provided (use V2 for sandbox-based fixes)');
+    return null;
+  }
+
   // Pick the first affected file that exists in sourceCode
   const targetFile = context.triageOutput.affected_files.find(
     (f) => context.sourceCode.has(f)
@@ -189,13 +231,7 @@ async function generateFix(
 
   const fileContent = context.sourceCode.get(targetFile)!;
   const normalizedTarget = targetFile.replace(/^\/+/, '');
-
-  // Create a dedicated sandbox session for the fix prompt
-  const fixSessionId = `fix-${context.repo.replace('/', '-')}-${Date.now()}`;
-  const fixSandbox = getSandbox(env.Sandbox, fixSessionId, { sleepAfter: '30m' });
-  const fixFlue = new FlueRuntime({ sandbox: fixSandbox, sessionId: fixSessionId, workdir: '/home/user' });
-  await fixSandbox.setEnvVars({ OPENAI_API_KEY: env.OPENAI_API_KEY });
-  await fixFlue.setup();
+  console.log('[DEBUG generateFix] Target file path:', targetFile, '| Content length:', fileContent.length);
 
   const model = parseModelConfig(env.CODEX_MODEL);
   const prompt = buildFixPrompt({
@@ -207,55 +243,38 @@ async function generateFix(
     errorDescription: context.triageOutput.root_cause,
   });
 
-  let validationReason: string | undefined;
-
-  // ── Tier 1: Initial prompt with raw extraction ────────────────────────────────
+  // ── Tier 1: Initial prompt ────────────────────────────────────────────────────
 
   let response: string | undefined;
   try {
-    response = await fixFlue.client.prompt(prompt, { model, result: v.string() });
+    response = await callOpenAI(env.OPENAI_API_KEY, prompt, model);
+    console.log('[DEBUG generateFix] Tier 1 succeeded | Response length:', response.length);
   } catch (error) {
-    const raw = extractRawFlueResponse(error);
-    if (raw) {
-      try {
-        const json = extractJsonFromResponse(raw);
-        const parsed = safeJsonParse<AutoFixOutput>(json);
-        const validation = validateFixOutput(parsed);
-        if (validation.valid) {
-          const result = tryApplyEdits(parsed, normalizedTarget, fileContent);
-          if (result) return result;
-        }
-        response = raw; // Keep for retry
-      } catch { /* fall through */ }
-    }
-    if (!response) {
-      const msg = error instanceof Error ? error.message : 'unknown';
-      console.error('Auto-fix LLM prompt failed', { error: msg });
-      return null;
-    }
+    const msg = error instanceof Error ? error.message : 'unknown';
+    console.error('[DEBUG generateFix] Tier 1 failed', { error: msg });
+    return null;
   }
 
-  // ── Tier 2: Parse and validate successful response ────────────────────────────
+  // ── Tier 2: Parse and validate ────────────────────────────────────────────────
 
-  if (response) {
-    try {
-      const json = extractJsonFromResponse(response);
-      const parsed = safeJsonParse<AutoFixOutput>(json);
-      const validation = validateFixOutput(parsed);
-      if (validation.valid) {
-        const result = tryApplyEdits(parsed, normalizedTarget, fileContent);
-        if (result) return result;
-        // If tryApplyEdits returned null due to file_path mismatch, set validationReason
-        const normalizedPath = parsed.file_path.replace(/^\/+/, '');
-        if (normalizedPath !== normalizedTarget) {
-          validationReason = `file_path mismatch: expected ${normalizedTarget}, got ${normalizedPath}`;
-        }
-      } else {
-        validationReason = validation.reason ?? 'unknown validation error';
+  let validationReason: string | undefined;
+  try {
+    const json = extractJsonFromResponse(response);
+    const parsed = safeJsonParse<AutoFixOutput>(json);
+    const validation = validateFixOutput(parsed);
+    if (validation.valid) {
+      console.log('[DEBUG generateFix] Tier 2 parse succeeded | Edits count:', parsed.edits?.length ?? 0);
+      const result = tryApplyEdits(parsed, normalizedTarget, fileContent);
+      if (result) return result;
+      const normalizedPath = parsed.file_path.replace(/^\/+/, '');
+      if (normalizedPath !== normalizedTarget) {
+        validationReason = `file_path mismatch: expected ${normalizedTarget}, got ${normalizedPath}`;
       }
-    } catch (e) {
-      validationReason = `JSON parse error: ${e instanceof Error ? e.message : 'unknown'}`;
+    } else {
+      validationReason = validation.reason ?? 'unknown validation error';
     }
+  } catch (e) {
+    validationReason = `JSON parse error: ${e instanceof Error ? e.message : 'unknown'}`;
   }
 
   // ── Tier 3: Retry with corrective prompt ──────────────────────────────────────
@@ -263,16 +282,11 @@ async function generateFix(
   if (validationReason) {
     const retryPrompt = `${prompt}\n\nYour previous response was invalid. Produce valid JSON matching the schema exactly.\nReason: ${validationReason}`;
     try {
-      response = await fixFlue.client.prompt(retryPrompt, { model, result: v.string() });
+      response = await callOpenAI(env.OPENAI_API_KEY, retryPrompt, model);
     } catch (error) {
-      const raw = extractRawFlueResponse(error);
-      if (raw) {
-        response = raw;
-      } else {
-        const msg = error instanceof Error ? error.message : 'unknown';
-        console.error('Auto-fix: retry prompt failed', { error: msg });
-        return null;
-      }
+      const msg = error instanceof Error ? error.message : 'unknown';
+      console.error('Auto-fix: retry API call failed', { error: msg });
+      return null;
     }
 
     try {
@@ -310,6 +324,7 @@ export async function runAutoFix(
 
   try {
     // Step 1: Generate fix via LLM
+    console.log('[DEBUG runAutoFix] Starting generateFix | repo:', context.repo, '| errorTitle:', context.errorTitle);
     const fixResult = await generateFix(context, env);
     if (!fixResult) {
       return null;

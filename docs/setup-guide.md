@@ -110,32 +110,38 @@ Add these secrets to your repository:
 | `DONMERGE_API_KEY` | Your DonMerge API key |
 | `SENTRY_AUTH_TOKEN` | Sentry auth token from Step 1 |
 
-### Step 4 — Set up the Sentry → GitHub bridge
+### Step 4 — Configure Sentry webhook (direct integration)
 
-You need a bridge to convert Sentry webhooks into GitHub `repository_dispatch` events. Use the production-ready Cloudflare Worker template with signature verification:
+DonMerge can receive Sentry webhooks directly — no bridge or GitHub Actions required. Configure a Sentry Internal Integration pointing to your DonMerge instance.
 
-👉 **[`templates/sentry-webhook-bridge/`](../templates/sentry-webhook-bridge/)**
+**In DonMerge (environment variables):**
 
-The template includes:
+Set these environment variables on your DonMerge Cloudflare Worker:
 
-- **HMAC-SHA256 signature verification** to validate requests come from Sentry
-- Payload validation and Sentry issue URL extraction
-- Configurable secrets for `SENTRY_WEBHOOK_SECRET`, `GITHUB_TOKEN`, and `GITHUB_REPO`
-- Full setup instructions in the template's README
+| Variable | Description |
+|----------|-------------|
+| `SENTRY_WEBHOOK_SECRET` | Secret used to verify Sentry webhook signatures (HMAC-SHA256) |
+| `SENTRY_REPO_MAP` | Maps Sentry org/project slugs to GitHub repos. Format: `"org-slug:owner/repo:branch,org-slug/project:owner/repo:branch"` |
+| `SENTRY_GITHUB_TOKEN` | GitHub token (PAT or App token) used to fetch repo code during triage |
 
-Quick start:
-
-```bash
-cp -r templates/sentry-webhook-bridge sentry-bridge
-cd sentry-bridge
-npx wrangler login
-npx wrangler secret put SENTRY_WEBHOOK_SECRET
-npx wrangler secret put GITHUB_TOKEN
-npx wrangler secret put GITHUB_REPO
-npx wrangler deploy
+Example `SENTRY_REPO_MAP`:
+```
+my-org:my-org/my-app:main,my-org/backend-api:my-org/api:develop
 ```
 
-Then in Sentry, go to **Settings → Integrations → Webhooks** and add your deployed worker URL. Select **Issue Created** as the only event.
+This maps:
+- All Sentry projects under `my-org` → `my-org/my-app` (branch: `main`)
+- Specifically `my-org/backend-api` → `my-org/api` (branch: `develop`)
+
+**In Sentry:**
+
+1. Go to **Settings → Integrations → Internal Integration → New Integration**
+2. Set the webhook URL to: `POST https://your-donmerge-instance.example.com/webhook/sentry`
+3. Under "Alert Rules", select **Issue Alert** as the resource
+4. Copy the **Client Secret** (or generate one) and set it as `SENTRY_WEBHOOK_SECRET` on your DonMerge worker
+5. Create an alert rule that triggers on `event_alert` and sends to this integration
+
+The webhook endpoint verifies the Sentry signature, extracts error context (stack trace, affected files), resolves the target repo from the org slug, and enqueues a triage job automatically.
 
 ### Step 5 — Test it
 
@@ -147,9 +153,30 @@ Then in Sentry, go to **Settings → Integrations → Webhooks** and add your de
 
 ## Tracker Setup
 
-Trackers automatically create issues in your project management tool when Sentry triage completes. Configure the `tracker` field in your triage request.
+Trackers automatically create issues in your project management tool when Sentry triage completes. There are two ways to configure trackers depending on your integration path.
 
-### GitHub Issues
+### D1 tenants (webhook path)
+
+For multi-tenant D1 setups, tracker config is stored in the database and applied automatically. Configure `tracker_config` (JSON) and a `tracker_token` secret in the D1 project row:
+
+```sql
+-- Example: set tracker_config on a project
+UPDATE projects
+SET tracker_config = '{"type":"github","team":"acme","labels":["bug","sentry"]}'
+WHERE id = 1;
+
+-- Add tracker token as encrypted secret
+-- (use the encrypt helper from src/lib/aes-gcm.ts)
+INSERT INTO secrets (project_id, key, value_encrypted) VALUES (1, 'tracker_token', '<encrypted_value>');
+```
+
+The webhook handler validates the config shape and injects it into the triage job automatically. If `tracker_config` is set but `tracker_token` is missing, the webhook returns HTTP 500 (hard-fail) to prevent silent misconfiguration.
+
+### Push API (GitHub Actions path)
+
+Configure the `tracker` field in your triage request body.
+
+#### GitHub Issues
 
 The triage workflow template already includes GitHub tracker configuration by default. It creates issues in the same repository with labels `bug` and `sentry`.
 
@@ -166,9 +193,9 @@ To customize, edit the `tracker` section in `.github/workflows/donmerge-sentry-t
 }
 ```
 
-### Linear
+#### Linear
 
-To use Linear as your tracker:
+To use Linear as your tracker via the push API:
 
 1. Create a Linear API key at **Settings → API → New API Key**
 2. Note your team key (e.g., `ENG`, `INFRA`)
@@ -186,9 +213,9 @@ To use Linear as your tracker:
 }
 ```
 
-### Jira
+#### Jira
 
-To use Jira as your tracker:
+To use Jira as your tracker via the push API:
 
 1. Create an API token at **Atlassian Account Settings → Security → API Tokens**
 2. Note your project key (e.g., `PROJ`)

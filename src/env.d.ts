@@ -67,8 +67,6 @@ declare function fetch(
   init?: RequestInit
 ): Promise<Response>;
 
-declare const crypto: Crypto;
-
 declare class TextEncoder {
   encode(input?: string): Uint8Array;
   encodeInto(input: string, dest: Uint8Array): { read: number; written: number };
@@ -82,6 +80,55 @@ declare function atob(encoded: string): string;
 declare function btoa(raw: string): string;
 
 declare var console: Console;
+
+// ── Web Crypto types ─────────────────────────────────────────────────────────
+
+declare class CryptoKey {
+  readonly type: KeyType;
+  readonly extractable: boolean;
+  readonly algorithm: Record<string, unknown>;
+  readonly usages: KeyUsage[];
+}
+
+type KeyType = 'public' | 'private' | 'secret';
+type KeyUsage = 'encrypt' | 'decrypt' | 'sign' | 'verify' | 'deriveKey' | 'deriveBits' | 'wrapKey' | 'unwrapKey';
+
+interface Crypto {
+  readonly subtle: SubtleCrypto;
+  getRandomValues<T extends ArrayBufferView>(array: T): T;
+  randomUUID(): string;
+}
+
+interface SubtleCrypto {
+  importKey(
+    format: 'raw' | 'pkcs8' | 'spki' | 'jwk',
+    keyData: BufferSource | JsonWebKey,
+    algorithm: AlgorithmIdentifier | RsaHashedImportParams | EcKeyImportParams | HmacImportParams | AesKeyAlgorithm,
+    extractable: boolean,
+    keyUsages: KeyUsage[]
+  ): Promise<CryptoKey>;
+  encrypt(
+    algorithm: AlgorithmIdentifier | AesCbcParams | AesGcmParams | RsaOaepParams,
+    key: CryptoKey,
+    data: BufferSource
+  ): Promise<ArrayBuffer>;
+  decrypt(
+    algorithm: AlgorithmIdentifier | AesCbcParams | AesGcmParams | RsaOaepParams,
+    key: CryptoKey,
+    data: BufferSource
+  ): Promise<ArrayBuffer>;
+  sign(
+    algorithm: AlgorithmIdentifier | RsaPssParams | EcdsaParams,
+    key: CryptoKey,
+    data: BufferSource
+  ): Promise<ArrayBuffer>;
+  digest(
+    algorithm: AlgorithmIdentifier,
+    data: BufferSource
+  ): Promise<ArrayBuffer>;
+}
+
+declare var crypto: Crypto;
 
 // ── Cloudflare Workers-specific types ────────────────────────────────────────
 interface DurableObjectNamespace<T = unknown> {
@@ -170,6 +217,35 @@ declare module 'cloudflare:workers' {
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
+}
+
+// ── Cloudflare D1 Database types ──────────────────────────────────────────────
+
+interface D1Database {
+  prepare(sql: string): D1PreparedStatement;
+  dump(): Promise<ArrayBuffer>;
+  batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
+  exec(query: string): Promise<D1ExecResult>;
+}
+
+interface D1PreparedStatement {
+  bind(...values: unknown[]): D1PreparedStatement;
+  first<T = Record<string, unknown>>(colName?: string): Promise<T | null>;
+  all<T = Record<string, unknown>>(): Promise<D1Result<T>>;
+  raw<T = unknown[]>(): Promise<T[]>;
+  run(): Promise<D1Result>;
+}
+
+interface D1Result<T = Record<string, unknown>> {
+  results?: T[];
+  success: boolean;
+  error?: string;
+  meta?: Record<string, unknown>;
+}
+
+interface D1ExecResult {
+  count: number;
+  duration: number;
 }
 
 // ── @cloudflare/sandbox shim ─────────────────────────────────────────────────

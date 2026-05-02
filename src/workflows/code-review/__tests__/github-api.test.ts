@@ -173,7 +173,7 @@ describe('failCheckRun', () => {
   it('should PATCH check run with failure and error code', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
 
-    await failCheckRun('owner', 'repo', 123, 'DM-E001', 'Flue prompt failed for model openai/gpt-5.3-codex', 'token');
+    await failCheckRun('owner', 'repo', 123, 'DM-E001', 'Flue prompt failed for model openai/gpt-4o', 'token');
 
     const call = mockFetch.mock.calls[0][1] as any;
     const body = JSON.parse(call.body);

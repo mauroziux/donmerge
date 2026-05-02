@@ -5,6 +5,7 @@ import { ReviewProcessor } from './workflows/code-review/processor';
 import { TriageProcessor } from './workflows/triage/processor';
 import { handlePushReview, handleTriage, handleJobStatus } from './api/routes';
 import { RateLimiter } from './api/rate-limit';
+import { handleSentryWebhook } from './webhooks/sentry';
 
 // Extended env type that includes all DO bindings
 interface AppEnv extends WorkerEnv {
@@ -12,6 +13,12 @@ interface AppEnv extends WorkerEnv {
   TriageProcessor: DurableObjectNamespace;
   RateLimiter: DurableObjectNamespace;
   DONMERGE_API_KEYS?: string;
+  SENTRY_WEBHOOK_SECRET?: string;
+  SENTRY_REPO_MAP?: string;
+  SENTRY_GITHUB_TOKEN?: string;
+  // Multi-tenant D1 database (Phase 1)
+  DB?: D1Database;
+  TENANT_ENCRYPTION_KEY?: string;
 }
 
 const app = new FlueWorker<AppEnv>();
@@ -55,6 +62,9 @@ app.post('/webhook/github', async (c) => {
 app.post('/api/v1/review', handlePushReview);
 app.post('/api/v1/triage', handleTriage);
 app.get('/api/v1/status/*', handleJobStatus);
+
+// Sentry webhook — receives Sentry event_alert webhooks directly
+app.post('/webhook/sentry', handleSentryWebhook);
 
 // Export Durable Objects
 export { Sandbox } from '@cloudflare/sandbox';

@@ -22,9 +22,9 @@ import type {
 } from './types';
 import { fetchRepoCodeForTriage } from './repo-fetcher';
 import { buildTriagePrompt } from './prompts';
-import { runAutoFix } from './auto-fix';
+import { runAutoFixV2 } from './auto-fix-v2';
 import { runCreateIssue } from './trackers';
-import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse } from './utils';
+import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, unwrapFlueResponse } from './utils';
 
 // State keys
 const STATE_KEYS = {
@@ -190,7 +190,7 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     // 5. Auto-fix — non-blocking (defaults to true)
     if (context.options?.auto_fix !== false) {
       try {
-        const prUrl = await runAutoFix(
+        const prUrl = await runAutoFixV2(
           {
             repo: context.repo,
             sha: context.sha,
@@ -198,9 +198,9 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
             errorTitle: errorContext.title,
             sourceUrl: errorContext.source_url ?? '',
             triageOutput: output,
-            sourceCode,
           },
-          this.env
+          this.env,
+          { sandbox, flue },
         );
         if (prUrl) {
           result.fix_pr_url = prUrl;
@@ -276,21 +276,22 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     } catch (error) {
       const raw = extractRawFlueResponse(error);
       if (raw) {
+        // Preserve raw text immediately so downstream retry logic always has it
+        response = raw;
         try {
           const json = extractJsonFromResponse(raw);
-          const parsed = safeJsonParse<TriageOutput>(json);
+          const parsed = unwrapFlueResponse<TriageOutput>(safeJsonParse<TriageOutput>(json));
           if (this.validateTriageOutput(parsed)) {
             return parsed;
           }
-          response = raw;
-        } catch { /* fall through */ }
+        } catch { /* parse/validate failed — response already set to raw */ }
       }
       if (!response) {
         throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
       }
     }
 
-    let parsed = safeJsonParse<TriageOutput>(response);
+    let parsed = unwrapFlueResponse<TriageOutput>(safeJsonParse<TriageOutput>(response));
     if (this.validateTriageOutput(parsed)) {
       return parsed;
     }
@@ -302,21 +303,22 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     } catch (error) {
       const raw = extractRawFlueResponse(error);
       if (raw) {
+        // Preserve raw text immediately so downstream retry logic always has it
+        response = raw;
         try {
           const json = extractJsonFromResponse(raw);
-          const retryParsed = safeJsonParse<TriageOutput>(json);
+          const retryParsed = unwrapFlueResponse<TriageOutput>(safeJsonParse<TriageOutput>(json));
           if (this.validateTriageOutput(retryParsed)) {
             return retryParsed;
           }
-          response = raw;
-        } catch { /* fall through */ }
+        } catch { /* parse/validate failed — response already set to raw */ }
       }
       if (!response) {
         throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
       }
     }
 
-    parsed = safeJsonParse<TriageOutput>(response);
+    parsed = unwrapFlueResponse<TriageOutput>(safeJsonParse<TriageOutput>(response));
     if (this.validateTriageOutput(parsed)) {
       return parsed;
     }

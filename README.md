@@ -5,49 +5,51 @@ AI-powered code review and Sentry triage as a service. DonMerge runs as a Cloudf
 ## Features
 
 - **AI Code Review** — Automatic PR reviews with inline comments, issue tracking, and severity grading
-- **Sentry Triage** — Root cause analysis for production errors with auto-fix PRs and tracker integration
+- **Error Triage** — Root cause analysis for production errors (Sentry, Datadog, Rollbar, or any source) with auto-fix PRs and tracker integration
 - **Push API** — Trigger reviews and triage from any CI/CD pipeline via simple HTTP calls
+- **Sentry Webhook** — Receive Sentry alerts directly via `POST /webhook/sentry` (no bridge or GitHub Actions required)
 - **GitHub App (Webhook)** — Zero-config reviews when installed as a GitHub App
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      DonMerge                           │
-│                  (Cloudflare Worker)                     │
-│                                                         │
-│  ┌──────────┐   ┌──────────┐   ┌──────────────────┐   │
-│  │  GitHub   │   │  Push    │   │  /health         │   │
-│  │  Webhook  │   │  API     │   │  (readiness)     │   │
-│  │  /webhook │   │  /api/v1 │   │                  │   │
-│  │  /github  │   │          │   │                  │   │
-│  └────┬─────┘   └────┬─────┘   └──────────────────┘   │
-│       │              │                                  │
-│       ▼              ▼                                  │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │              Durable Objects                     │    │
-│  │  ┌─────────────┐  ┌──────────────────────┐      │    │
-│  │  │ Review      │  │ SentryTriage         │      │    │
-│  │  │ Processor   │  │ Processor            │      │    │
-│  │  └─────────────┘  └──────────────────────┘      │    │
-│  │  ┌─────────────┐  ┌──────────────────────┐      │    │
-│  │  │ RateLimiter │  │ Sandbox              │      │    │
-│  │  │             │  │ (Container)          │      │    │
-│  │  └─────────────┘  └──────────────────────┘      │    │
-│  └─────────────────────────────────────────────────┘    │
-│       │              │                                  │
-│       ▼              ▼                                  │
-│  ┌──────────┐   ┌──────────┐                            │
-│  │ GitHub   │   │ Sentry   │                            │
-│  │ API      │   │ API      │                            │
-│  └──────────┘   └──────────┘                            │
-│       │                                                  │
-│       ▼                                                  │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐            │
-│  │ GitHub   │   │ Linear   │   │ Jira     │            │
-│  │ Issues   │   │          │   │          │            │
-│  └──────────┘   └──────────┘   └──────────┘            │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                         DonMerge                            │
+│                   (Cloudflare Worker)                        │
+│                                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │  GitHub   │  │  Push    │  │  Sentry  │  │ /health  │   │
+│  │  Webhook  │  │  API     │  │  Webhook │  │ (ready)  │   │
+│  │  /webhook │  │  /api/v1 │  │ /webhook │  │          │   │
+│  │  /github  │  │          │  │ /sentry  │  │          │   │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────────┘   │
+│       │              │              │                        │
+│       ▼              ▼              ▼                        │
+│  ┌───────────────────────────────────────────────────┐      │
+│  │              Durable Objects                      │      │
+│  │  ┌─────────────┐  ┌──────────────────────┐       │      │
+│  │  │ Review      │  │ TriageProcessor      │       │      │
+│  │  │ Processor   │  │ (error-agnostic)     │       │      │
+│  │  └─────────────┘  └──────────────────────┘       │      │
+│  │  ┌─────────────┐  ┌──────────────────────┐       │      │
+│  │  │ RateLimiter │  │ Sandbox              │       │      │
+│  │  │             │  │ (Container)          │       │      │
+│  │  └─────────────┘  └──────────────────────┘       │      │
+│  └───────────────────────────────────────────────────┘      │
+│       │              │                                      │
+│       ▼              ▼                                      │
+│  ┌──────────┐   ┌──────────┐                                │
+│  │ GitHub   │   │ LLM      │                                │
+│  │ API      │   │ (OpenAI/ │                                │
+│  │          │   │ Anthropic)│                                │
+│  └──────────┘   └──────────┘                                │
+│       │                                                     │
+│       ▼                                                     │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐                │
+│  │ GitHub   │   │ Linear   │   │ Jira     │                │
+│  │ Issues   │   │          │   │          │                │
+│  └──────────┘   └──────────┘   └──────────┘                │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Two Integration Modes
@@ -65,7 +67,7 @@ DonMerge installs as a GitHub App and automatically reviews PRs in configured re
 Trigger reviews and Sentry triage from any CI/CD pipeline via HTTP POST calls.
 
 - **Code Review:** `POST /api/v1/review`
-- **Sentry Triage:** `POST /api/v1/sentry/triage`
+- **Sentry Triage:** `POST /api/v1/triage`
 - **Job Status:** `GET /api/v1/status/{job_id}`
 - Auth via `Authorization: Bearer dm_live_*` or `dm_test_*` API keys
 
@@ -100,7 +102,7 @@ cp templates/donmerge-sentry-triage.yml .github/workflows/
 
 Add secrets: `DONMERGE_API_KEY` and `SENTRY_AUTH_TOKEN`.
 
-Set up a Sentry webhook → GitHub `repository_dispatch` bridge (see [docs/setup-guide.md](./docs/setup-guide.md) for details).
+For direct Sentry integration, configure the `POST /webhook/sentry` endpoint (see [docs/setup-guide.md](./docs/setup-guide.md)).
 
 ## Documentation
 
@@ -161,10 +163,14 @@ Key variables:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENAI_API_KEY` | Yes | OpenAI API key for LLM calls |
+| `ANTHROPIC_API_KEY` | No | Anthropic API key (enables Claude models for auto-fix V2) |
 | `DONMERGE_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
 | `GITHUB_WEBHOOK_SECRET` | Webhook mode | Webhook signature validation |
 | `GITHUB_APP_ID` | Webhook mode | GitHub App ID |
 | `GITHUB_APP_PRIVATE_KEY` | Webhook mode | GitHub App private key (PEM) |
+| `SENTRY_WEBHOOK_SECRET` | Sentry webhook | Comma-separated HMAC secrets for verifying Sentry webhook signatures |
+| `SENTRY_REPO_MAP` | Sentry webhook | Maps Sentry org slugs to GitHub repos (e.g. `"org:owner/repo:branch"`) |
+| `SENTRY_GITHUB_TOKEN` | Sentry webhook | GitHub token for fetching repo code during Sentry-triggered triage |
 
 ## License
 

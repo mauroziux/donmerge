@@ -64,6 +64,21 @@ export interface AutoFixOutput {
   edits: AutoFixEdit[];
 }
 
+/** Sandbox interface used by auto-fix V2 — matches the Cloudflare Sandbox exec() API. */
+export interface AutoFixSandbox {
+  exec(command: string, options?: {
+    timeout?: number;
+    cwd?: string;
+    env?: Record<string, string | undefined>;
+  }): Promise<{
+    success: boolean;
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+  }>;
+  setEnvVars(vars: Record<string, string | undefined>): Promise<void>;
+}
+
 /** Input context for the auto-fix pipeline. */
 export interface AutoFixContext {
   repo: string;
@@ -72,7 +87,8 @@ export interface AutoFixContext {
   errorTitle: string;
   sourceUrl: string;
   triageOutput: TriageOutput;
-  sourceCode: Map<string, string>;
+  /** Source code map (required for V1, optional for V2 which clones the repo). */
+  sourceCode?: Map<string, string>;
 }
 
 // ── Triage context ─────────────────────────────────────────────────────────────
@@ -135,6 +151,7 @@ export interface TriageResult {
 export interface TriageEnv {
   Sandbox: unknown;
   OPENAI_API_KEY: string;
+  ANTHROPIC_API_KEY?: string;
   CODEX_MODEL?: string;
   TriageProcessor: DurableObjectNamespace;
 }

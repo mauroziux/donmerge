@@ -9,14 +9,14 @@
  * Format: "provider/model" or just "model" (defaults to openai).
  */
 export function parseModelConfig(raw?: string): { providerID: string; modelID: string } {
-  const value = (raw ?? 'openai/gpt-5.3-codex').trim();
+  const value = (raw ?? 'openai/gpt-4o').trim();
   if (!value.includes('/')) {
     return { providerID: 'openai', modelID: value };
   }
   const [providerID, ...rest] = value.split('/');
   const modelID = rest.join('/').trim();
   if (!providerID.trim() || !modelID) {
-    return { providerID: 'openai', modelID: 'gpt-5.3-codex' };
+    return { providerID: 'openai', modelID: 'gpt-4o' };
   }
   return { providerID: providerID.trim(), modelID };
 }
@@ -39,11 +39,17 @@ export function safeJsonParse<T>(jsonText: string): T {
 
 // TODO: consolidate with code-review/utils.ts
 /**
- * Extract raw model response from a Flue SkillOutputError.
+ * Extract raw model response from a Flue error.
  *
  * When Flue's delimiter extraction fails (e.g. the model ignores
  * ---RESULT_START---/---RESULT_END--- instructions), the full model
- * response is available on error.data.rawOutput.
+ * response may be available in several locations depending on the
+ * error shape:
+ *
+ *  1. error.data.rawOutput   — canonical SkillOutputError (current)
+ *  2. error.rawOutput         — some Flue versions expose it at top level
+ *  3. error.data.output       — alternate property name
+ *  4. error.cause.data.rawOutput — nested cause chain
  *
  * Returns the raw output string if present, or null otherwise.
  */
@@ -54,18 +60,41 @@ export function extractRawFlueResponse(error: unknown): string | null {
 
   const err = error as Record<string, unknown>;
 
-  // Check for SkillOutputError by name and data.rawOutput presence
-  if (err.name !== 'SkillOutputError') {
+  // Helper: extract a non-empty trimmed string from a candidate value
+  const asString = (v: unknown): string | null => {
+    if (typeof v === 'string') {
+      const trimmed = v.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
     return null;
-  }
+  };
 
+  // 1. Canonical: error.data.rawOutput (SkillOutputError shape)
   const data = err.data as Record<string, unknown> | undefined;
-  if (!data || typeof data.rawOutput !== 'string') {
-    return null;
+  if (data && typeof data === 'object') {
+    const fromDataRawOutput = asString(data.rawOutput);
+    if (fromDataRawOutput) return fromDataRawOutput;
+
+    // 3. Alternate: error.data.output
+    const fromDataOutput = asString(data.output);
+    if (fromDataOutput) return fromDataOutput;
   }
 
-  const rawOutput = (data.rawOutput as string).trim();
-  return rawOutput.length > 0 ? rawOutput : null;
+  // 2. Top-level: error.rawOutput
+  const fromTopLevel = asString(err.rawOutput);
+  if (fromTopLevel) return fromTopLevel;
+
+  // 4. Nested cause: error.cause.data.rawOutput
+  const cause = err.cause as Record<string, unknown> | undefined;
+  if (cause && typeof cause === 'object') {
+    const causeData = cause.data as Record<string, unknown> | undefined;
+    if (causeData && typeof causeData === 'object') {
+      const fromCause = asString(causeData.rawOutput);
+      if (fromCause) return fromCause;
+    }
+  }
+
+  return null;
 }
 
 // TODO: consolidate with code-review/utils.ts
@@ -128,6 +157,59 @@ export function extractJsonFromResponse(text: string): string {
 }
 
 /**
+ * Unwrap Flue's `{"type": "<json_string>"}` response wrapper.
+ *
+ * Flue wraps LLM output in `{"type":"..."}` where the value is a
+ * JSON-serialized string of the actual payload.  This helper detects
+ * that pattern and recursively unwraps it so downstream validation
+ * sees the real object at the top level.
+ *
+ * Safe to call on any parsed value — non-objects or objects without
+ * a `type` field are returned unchanged.
+ */
+export function unwrapFlueResponse<T>(parsed: unknown): T {
+  // Handle case where parsed is a string that looks like JSON (double-encoded).
+  // Flue can return a JSON-encoded string instead of a parsed object, e.g.
+  //   safeJsonParse('"\"{\\\"root_cause\\\":\\\"...\\\"}\""') → "{\"root_cause\":\"...\"}"
+  if (typeof parsed === 'string') {
+    const trimmed = parsed.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const innerParsed = JSON.parse(trimmed);
+        return unwrapFlueResponse<T>(innerParsed);
+      } catch {
+        // Not valid JSON, return as-is
+      }
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return parsed as T;
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const keys = Object.keys(obj);
+
+  // Only unwrap when the object looks like Flue's wrapper:
+  // exactly one key named "type" whose value is a string that parses as JSON.
+  if (keys.length === 1 && keys[0] === 'type' && typeof obj.type === 'string') {
+    const inner = obj.type.trim();
+    // Quick check: must look like JSON (starts with { or [)
+    if (inner.startsWith('{') || inner.startsWith('[')) {
+      try {
+        const innerParsed = JSON.parse(inner);
+        // Recurse in case of double-wrapping
+        return unwrapFlueResponse<T>(innerParsed);
+      } catch {
+        // Not valid JSON inside — return as-is
+      }
+    }
+  }
+
+  return parsed as T;
+}
+
+/**
  * Validate AutoFixOutput structure.
  *
  * Returns `{ valid: true }` when the output has the expected shape,
@@ -168,6 +250,27 @@ export function validateFixOutput(output: unknown): { valid: boolean; reason?: s
   }
 
   return { valid: true };
+}
+
+// ── Base64 helpers (UTF-8 safe) ──────────────────────────────────────────────
+
+/**
+ * Encode a UTF-8 string to base64.
+ *
+ * Uses Buffer (available under nodejs_compat) instead of btoa(), which
+ * throws on characters outside the Latin1 range (e.g. Spanish accents, emojis).
+ */
+export function utf8ToBase64(str: string): string {
+  return Buffer.from(str, 'utf-8').toString('base64');
+}
+
+/**
+ * Decode a base64 string back to a UTF-8 string.
+ *
+ * Uses Buffer instead of atob() so multi-byte characters round-trip correctly.
+ */
+export function base64ToUtf8(b64: string): string {
+  return Buffer.from(b64, 'base64').toString('utf-8');
 }
 
 // ── Edit application ──────────────────────────────────────────────────────────

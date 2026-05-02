@@ -1,166 +1,209 @@
 {
-  "name": "tableo-assitant-worker",
-  "main": "src/app.ts",
-  "compatibility_date": "2025-01-01",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
-  "containers": [
-    {
-      "class_name": "Sandbox",
-      "image": "./Dockerfile",
-      "instance_type": "standard-1",
-    },
-  ],
-  "vars": {
-    // Format: "owner/repo:baseBranch" - branch is optional (no branch = review all PRs)
-    // Examples:
-    //   "org/repo1:main,org/repo2:develop" - repo1 only reviews PRs to main, repo2 only to develop
-    //   "org/repo1,org/repo2:main" - repo1 reviews all PRs, repo2 only reviews PRs to main
-    "REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
-    "CODEX_MODEL": "openai/gpt-5.3-codex",
-    "MAX_REVIEW_FILES": "50",
-    "REVIEW_TRIGGER": "@donmerge"
-  },
-  "durable_objects": {
-    "bindings": [
-      {
-        "class_name": "Sandbox",
-        "name": "Sandbox"
-      },
-      {
-        "class_name": "ReviewProcessor",
-        "name": "ReviewProcessor"
-      },
-      {
-        "class_name": "RateLimiter",
-        "name": "RateLimiter"
-      },
-      {
-        "class_name": "TriageProcessor",
-        "name": "TriageProcessor"
-      }
-    ],
-  },
-  "migrations": [
-    {
-      "new_sqlite_classes": [
-        "Sandbox"
-      ],
-      "tag": "v1"
-    },
-    {
-      "new_sqlite_classes": [
-        "ReviewProcessor"
-      ],
-      "tag": "v2"
-    },
-    {
-      "new_classes": [
-        "RateLimiter"
-      ],
-      "tag": "v3"
-    },
-    {
-      "new_sqlite_classes": [
-        "SentryTriageProcessor"
-      ],
-      "tag": "v4"
-    },
-    {
-      "tag": "v5",
-      "renamed_classes": [
-        { "from": "SentryTriageProcessor", "to": "TriageProcessor" }
-      ]
-    }
-  ],
-  "observability": {
-    "enabled": false,
-    "head_sampling_rate": 1,
-    "logs": {
-      "enabled": true,
-      "head_sampling_rate": 1,
-      "persist": true,
-      "invocation_logs": true
-    },
-    "traces": {
-      "enabled": false,
-      "persist": true,
-      "head_sampling_rate": 1
-    }
-  },
-  // Staging environment — used for push API testing; Wrangler does NOT inherit
-  // vars, durable_objects, containers, or migrations into named environments,
-  // so everything must be duplicated here.
-  "env": {
-    "staging": {
-      "name": "tableo-assitant-worker-staging",
-      "vars": {
-        "DONMERGE_API_KEYS": "dm_test_2cd266c2995a8db0a2270eddded52fec28d7f2ed99e7157d,dm_live_f5b0a81a5aff7ec415158a1092658f2eeb9a0ad1ce6064b4",
-        "REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
-        "CODEX_MODEL": "openai/gpt-5.3-codex",
-        "MAX_REVIEW_FILES": "50",
-        "REVIEW_TRIGGER": "@donmerge"
-      },
-      "durable_objects": {
-        "bindings": [
-          {
-            "class_name": "Sandbox",
-            "name": "Sandbox"
-          },
-          {
-            "class_name": "ReviewProcessor",
-            "name": "ReviewProcessor"
-          },
-          {
-            "class_name": "RateLimiter",
-            "name": "RateLimiter"
-          },
-          {
-            "class_name": "TriageProcessor",
-            "name": "TriageProcessor"
-          }
-        ]
-      },
-      "containers": [
-        {
-          "class_name": "Sandbox",
-          "image": "./Dockerfile",
-          "instance_type": "standard-1",
-        },
-      ],
-      "migrations": [
-        {
-          "new_sqlite_classes": [
-            "Sandbox"
-          ],
-          "tag": "v1"
-        },
-        {
-          "new_sqlite_classes": [
-            "ReviewProcessor"
-          ],
-          "tag": "v2"
-        },
-        {
-          "new_classes": [
-            "RateLimiter"
-          ],
-          "tag": "v3"
-        },
-        {
-          "new_sqlite_classes": [
-            "SentryTriageProcessor"
-          ],
-          "tag": "v4"
-        },
-        {
-          "tag": "v5",
-          "renamed_classes": [
-            { "from": "SentryTriageProcessor", "to": "TriageProcessor" }
-          ]
-        }
-      ]
-    }
-  }
+	"name": "tableo-assitant-worker",
+	"main": "src/app.ts",
+	"compatibility_date": "2025-01-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"containers": [
+		{
+			"class_name": "Sandbox",
+			"image": "./Dockerfile",
+			"instance_type": "standard-1",
+		},
+	],
+	"vars": {
+		"DONMERGE_API_KEYS": "dm_test_2cd266c2995a8db0a2270eddded52fec28d7f2ed99e7157d,dm_live_f5b0a81a5aff7ec415158a1092658f2eeb9a0ad1ce6064b4",
+		// Format: "owner/repo:baseBranch" - branch is optional (no branch = review all PRs)
+		// Examples:
+		//   "org/repo1:main,org/repo2:develop" - repo1 only reviews PRs to main, repo2 only to develop
+		//   "org/repo1,org/repo2:main" - repo1 reviews all PRs, repo2 only reviews PRs to main
+		"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
+		"CODEX_MODEL": "openai/gpt-4o",
+		"MAX_REVIEW_FILES": "50",
+		"REVIEW_TRIGGER": "@donmerge",
+		// Sentry webhook integration (optional)
+		// SENTRY_WEBHOOK_SECRET: HMAC-SHA256 secret for verifying Sentry webhook signatures
+		// SENTRY_REPO_MAP: Maps Sentry org/project slugs to GitHub repos
+		//   Format: "org-slug:owner/repo:branch,org-slug/project:owner/repo:branch"
+		// SENTRY_GITHUB_TOKEN: GitHub token for fetching repo code during triage
+		"SENTRY_WEBHOOK_SECRET": "",
+		"SENTRY_REPO_MAP": "",
+		"SENTRY_GITHUB_TOKEN": ""
+	},
+	// Multi-tenant D1 database binding.
+	// Apply migrations with:
+	//   wrangler d1 migrations apply donmerge-db --remote
+	//   wrangler d1 migrations apply donmerge-db --remote --env staging
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "donmerge-db",
+			"database_id": "3e00ed86-6fde-4a63-8d26-c298a248855c",
+			"migrations_dir": "migrations"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "Sandbox",
+				"name": "Sandbox"
+			},
+			{
+				"class_name": "ReviewProcessor",
+				"name": "ReviewProcessor"
+			},
+			{
+				"class_name": "RateLimiter",
+				"name": "RateLimiter"
+			},
+			{
+				"class_name": "TriageProcessor",
+				"name": "TriageProcessor"
+			}
+		],
+	},
+	"migrations": [
+		{
+			"new_sqlite_classes": [
+				"Sandbox"
+			],
+			"tag": "v1"
+		},
+		{
+			"new_sqlite_classes": [
+				"ReviewProcessor"
+			],
+			"tag": "v2"
+		},
+		{
+			"new_classes": [
+				"RateLimiter"
+			],
+			"tag": "v3"
+		},
+		{
+			"new_sqlite_classes": [
+				"SentryTriageProcessor"
+			],
+			"tag": "v4"
+		},
+		{
+			"tag": "v5",
+			"renamed_classes": [
+				{
+					"from": "SentryTriageProcessor",
+					"to": "TriageProcessor"
+				}
+			]
+		}
+	],
+	"observability": {
+		"enabled": false,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"persist": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": false,
+			"persist": true,
+			"head_sampling_rate": 1
+		}
+	},
+	// Staging environment — used for push API testing; Wrangler does NOT inherit
+	// vars, durable_objects, containers, or migrations into named environments,
+	// so everything must be duplicated here.
+	"env": {
+		"staging": {
+			"name": "tableo-assitant-worker-staging",
+			"vars": {
+				"DONMERGE_API_KEYS": "dm_test_2cd266c2995a8db0a2270eddded52fec28d7f2ed99e7157d,dm_live_f5b0a81a5aff7ec415158a1092658f2eeb9a0ad1ce6064b4",
+				"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
+				"CODEX_MODEL": "openai/gpt-4o",
+				"MAX_REVIEW_FILES": "50",
+				"REVIEW_TRIGGER": "@donmerge",
+				"SENTRY_WEBHOOK_SECRET": "8985db9836f18ca919fc75803b49051ae776ffb8f473add014763c789aeec52b,2eeca971c16e6018b0e40bcb9111378324c3ae62d2933a91a46162107bbf634f",
+				"SENTRY_REPO_MAP": "mantto:mauroziux/mantto:main,contapp-ct:contappCo/contapp:master",
+				"SENTRY_GITHUB_TOKEN": "",
+				// TEMPORARY: Allow plaintext secrets in D1 for early staging testing.
+				// Remove after TENANT_ENCRYPTION_KEY is set for staging.
+				"ALLOW_PLAINTEXT_SECRETS": "true"
+			},
+			// Multi-tenant D1 database binding (staging).
+			// Uses the same donmerge-db — named envs do NOT inherit top-level d1_databases.
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "donmerge-db",
+					"database_id": "3e00ed86-6fde-4a63-8d26-c298a248855c",
+					"migrations_dir": "migrations"
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{
+						"class_name": "Sandbox",
+						"name": "Sandbox"
+					},
+					{
+						"class_name": "ReviewProcessor",
+						"name": "ReviewProcessor"
+					},
+					{
+						"class_name": "RateLimiter",
+						"name": "RateLimiter"
+					},
+					{
+						"class_name": "TriageProcessor",
+						"name": "TriageProcessor"
+					}
+				]
+			},
+			"containers": [
+				{
+					"class_name": "Sandbox",
+					"image": "./Dockerfile",
+					"instance_type": "standard-1",
+				},
+			],
+			"migrations": [
+				{
+					"new_sqlite_classes": [
+						"Sandbox"
+					],
+					"tag": "v1"
+				},
+				{
+					"new_sqlite_classes": [
+						"ReviewProcessor"
+					],
+					"tag": "v2"
+				},
+				{
+					"new_classes": [
+						"RateLimiter"
+					],
+					"tag": "v3"
+				},
+				{
+					"new_sqlite_classes": [
+						"SentryTriageProcessor"
+					],
+					"tag": "v4"
+				},
+				{
+					"tag": "v5",
+					"renamed_classes": [
+						{
+							"from": "SentryTriageProcessor",
+							"to": "TriageProcessor"
+						}
+					]
+				}
+			]
+		}
+	}
 }

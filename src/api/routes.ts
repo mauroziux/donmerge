@@ -69,18 +69,28 @@ function buildTriageJobId(): string {
  * - `{type: 'triage', doName: string}` for triage jobs
  * - `null` for unrecognized formats
  */
-function parseJobId(
+export function parseJobId(
   jobId: string
 ): { type: 'review' | 'triage'; doName: string } | null {
   if (jobId.startsWith('review/')) {
     return { type: 'review', doName: jobId.slice('review/'.length) };
   }
   if (jobId.startsWith('triage/')) {
-    // The full jobId IS the DO name (used as idFromName)
+    // The triage/ API creates jobs like "triage/{uuid}" — full jobId IS the DO name.
+    // But sentry-webhook/ and sentry-triage/ jobs routed here via /status/triage/sentry-webhook/...
+    // need the triage/ prefix stripped to match the actual DO name.
+    const inner = jobId.slice('triage/'.length);
+    if (inner.startsWith('sentry-webhook/') || inner.startsWith('sentry-triage/')) {
+      return { type: 'triage', doName: inner };
+    }
     return { type: 'triage', doName: jobId };
   }
   // Backward compat: old sentry-triage/ job IDs still route correctly
   if (jobId.startsWith('sentry-triage/')) {
+    return { type: 'triage', doName: jobId };
+  }
+  // Sentry webhook handler creates job IDs with sentry-webhook/ prefix
+  if (jobId.startsWith('sentry-webhook/')) {
     return { type: 'triage', doName: jobId };
   }
   return null;

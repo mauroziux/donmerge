@@ -307,6 +307,62 @@ While running:
 
 ---
 
+### `POST /webhook/sentry` — Sentry webhook receiver
+
+Receives Sentry `event_alert` webhooks directly. Verifies HMAC-SHA256 signatures, extracts error context, resolves the target repo, and enqueues a triage job. No API key required — authentication is via Sentry webhook signature.
+
+> **Note:** This endpoint is for receiving Sentry alerts into DonMerge. To trigger triage programmatically with your own error data, use `POST /api/v1/triage` instead.
+
+#### Configuration (DonMerge environment variables)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SENTRY_WEBHOOK_SECRET` | Yes | HMAC-SHA256 secret (comma-separated for multiple Sentry orgs). Stored in `vars` per [ADR-001](../.planning/ADR-001-secrets-vs-vars.md). |
+| `SENTRY_REPO_MAP` | Yes | Maps Sentry org/project slugs to GitHub repos. Format: `"org-slug:owner/repo:branch,org-slug/project:owner/repo:branch"` |
+| `SENTRY_GITHUB_TOKEN` | Yes | GitHub token for fetching repo code during triage. Use `wrangler secret put`. |
+
+#### Sentry setup
+
+1. Go to **Settings → Integrations → Internal Integration → New Integration**
+2. Set the webhook URL to: `POST https://your-donmerge-instance.example.com/webhook/sentry`
+3. Under "Alert Rules", select **Issue Alert** as the resource
+4. Copy the **Client Secret** and set it as `SENTRY_WEBHOOK_SECRET` on your DonMerge worker
+5. Create an alert rule that triggers on `event_alert` and sends to this integration
+
+#### Tracker auto-creation (D1 tenants)
+
+For multi-tenant D1 setups, tracker issues can be created automatically without caller configuration. When a D1 tenant has `tracker_config` (JSON) and a `tracker_token` secret configured in the database, the webhook handler:
+
+1. Validates the tracker config shape at runtime
+2. Injects the validated tracker into the triage job
+3. The triage engine creates an issue in the configured tracker (GitHub Issues, Linear, or Jira)
+
+This means D1 tenants get tracker integration for free — no changes needed in Sentry or the webhook payload.
+
+If `tracker_config` is set but `tracker_token` is missing or failed to decrypt, the webhook returns **500** (hard-fail) to alert that tracker issues won't be created. This is intentional: silent skipping would mask a misconfiguration.
+
+#### Response — 200 OK
+
+```json
+{
+  "ok": true,
+  "job_id": "sentry-webhook/a1b2c3d4e5f6"
+}
+```
+
+Use the returned `job_id` with `GET /api/v1/status/{job_id}` to poll for triage results.
+
+#### Error responses
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `Bad request` | Invalid JSON, missing Sentry org, no repo mapping for org |
+| 401 | `Unauthorized` | Invalid or missing webhook signature |
+| 500 | `Server misconfigured` | `SENTRY_WEBHOOK_SECRET`, `SENTRY_REPO_MAP`, or `SENTRY_GITHUB_TOKEN` not set |
+| 500 | `Server error` | D1 tenant has `tracker_config` but `tracker_token` is missing or failed to decrypt |
+
+---
+
 ## Job Lifecycle
 
 All push API jobs follow the same state machine:
@@ -455,27 +511,29 @@ When `status` is `"complete"` for a triage job, the `result` object contains:
 
 When `options.auto_fix` is `true` (the default), DonMerge attempts to generate a code fix after triage analysis.
 
-### How it works
+### How it works (V2 — Agent Loop)
 
 1. **Triage analysis** identifies the root cause and affected files
-2. **Source code** for the affected files is fetched from your repository at the specified `sha`
-3. **LLM generates a patch** — the full patched file content (not a diff)
-4. **Branch + PR created** on your repository with the fix
+2. **Repository is cloned** (shallow) into a sandboxed container
+3. **Agent loop** — the LLM explores the codebase, runs shell commands, and applies fixes autonomously (up to 15 steps)
+4. **Branch + PR created** on your repository with the changes
+
+The agent can read files, run tests, edit code, and commit — all inside an isolated sandbox. Dangerous commands (`rm -rf /`, `git push`, `curl | sh`) are blocked.
 
 ### PR format
 
-- **Branch name:** `donmerge/fix/{sanitized-title}-{random}`
-- **PR title:** `fix: {error title}` (truncated to 80 chars)
-- **PR body:** Includes error link, root cause, fix description, and stack trace summary
+- **Branch name:** `donmerge/fix-v2/{sanitized-title}-{random}`
+- **PR title:** `fix(v2): {error title}` (truncated to 80 chars)
+- **PR body:** Includes error link, root cause, agent summary, files changed, and stack trace summary
 
 ### When auto-fix is skipped
 
 Auto-fix returns `null` (and the triage still succeeds) when:
 
-- No affected file is found in the fetched source code
-- The LLM cannot confidently generate a fix (`patched_content` is null)
-- The patched content is identical to the current file (no-op)
-- The LLM returns an invalid file path
+- The LLM agent decides it cannot fix the issue (`cannot_fix` action)
+- The agent loop completes without producing file changes
+- Sandbox clone or GitHub API operations fail
+- The maximum step limit is reached without meaningful changes
 
 ### Disabling auto-fix
 

@@ -1,10 +1,8 @@
 /**
  * Tests for auto-fix.ts
  *
- * generateFix creates its own sandbox+flue session internally.
- * vi.mock('@cloudflare/sandbox') and vi.mock('@flue/cloudflare') provide mocks
- * wired to mockPrompt so tests control LLM responses.
- * vi.stubGlobal('fetch') for GitHub API calls.
+ * generateFix calls OpenAI's API directly via global fetch.
+ * vi.stubGlobal('fetch') is used for both OpenAI LLM calls and GitHub API calls.
  */
 
 import type { AutoFixContext } from '../types';
@@ -14,30 +12,13 @@ import { createAutoFixContext, createAutoFixOutput, createValidTriageOutput } fr
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
-const mockPrompt = vi.fn();
-
-// Mock @cloudflare/sandbox and @flue/cloudflare so generateFix creates
-// a flue whose client.prompt is wired to mockPrompt.
-vi.mock('@cloudflare/sandbox', () => ({
-  getSandbox: () => ({
-    setEnvVars: vi.fn().mockResolvedValue(undefined),
-  }),
-}));
-
-vi.mock('@flue/cloudflare', () => ({
-  FlueRuntime: vi.fn().mockImplementation(() => ({
-    setup: vi.fn().mockResolvedValue(undefined),
-    client: { prompt: mockPrompt },
-  })),
-}));
-
 // Mock crypto.randomUUID for deterministic branch names
 const mockUUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 vi.stubGlobal('crypto', {
   randomUUID: () => mockUUID,
 });
 
-// Mock fetch globally
+// Mock fetch globally — handles both OpenAI LLM calls and GitHub API calls
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
@@ -67,6 +48,27 @@ function githubOk(body: unknown) {
 
 /** Create a mock fetch response for a failed GitHub API call. */
 function githubFail(status: number, body: string) {
+  return {
+    ok: false,
+    status,
+    json: () => Promise.resolve({}),
+    text: () => Promise.resolve(body),
+  };
+}
+
+/** Create a mock fetch response for a successful OpenAI LLM call. */
+function openaiOk(content: string) {
+  return {
+    ok: true,
+    json: () => Promise.resolve({
+      choices: [{ message: { content } }],
+    }),
+    text: () => Promise.resolve(''),
+  };
+}
+
+/** Create a mock fetch response for a failed OpenAI LLM call. */
+function openaiFail(status: number, body: string) {
   return {
     ok: false,
     status,
@@ -109,25 +111,14 @@ function llmFixEdits(overrides?: {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockPrompt.mockReset();
   mockFetch.mockReset();
 });
 
 describe('runAutoFix', () => {
   it('should return PR URL on success', async () => {
-    // Mock LLM response
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson(llmFixEdits())
-    );
-
-    // Mock GitHub API calls in order:
-    // 1. getDefaultBranch
-    // 2. getBranchHeadSha
-    // 3. createBranch
-    // 4. getFileBlobSha
-    // 5. updateFile
-    // 6. createPullRequest
+    // Mock LLM response (OpenAI)
     mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits()))) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' })) // getDefaultBranch
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } })) // getBranchHeadSha
       .mockResolvedValueOnce(githubOk({})) // createBranch
@@ -139,23 +130,23 @@ describe('runAutoFix', () => {
     const result = await runAutoFix(context, testEnv);
 
     expect(result).toBe('https://github.com/owner/repo/pull/1');
-    expect(mockFetch).toHaveBeenCalledTimes(6);
+    expect(mockFetch).toHaveBeenCalledTimes(7);
   });
 
   it('should return null when LLM produces empty edits array', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(llmFixJson({
         file_path: DEFAULT_TARGET_FILE,
         description: 'Cannot confidently fix',
         edits: [],
-      })
+      }))
     );
 
     const context = makeContext();
     const result = await runAutoFix(context, testEnv);
 
     expect(result).toBeNull();
-    expect(mockFetch).not.toHaveBeenCalled();
+    // Only the OpenAI LLM call was made, no GitHub calls
   });
 
   it('should return null when no target file in sourceCode', async () => {
@@ -168,14 +159,14 @@ describe('runAutoFix', () => {
     const result = await runAutoFix(context, testEnv);
 
     expect(result).toBeNull();
-    expect(mockPrompt).not.toHaveBeenCalled();
+    // No LLM or GitHub calls since no target file found
   });
 
   it('should return null when edits result in identical content', async () => {
     const originalContent = 'export function handleRequest() {\n  return data.foo;\n}';
 
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(llmFixJson({
         file_path: DEFAULT_TARGET_FILE,
         description: 'No change',
         edits: [
@@ -185,7 +176,7 @@ describe('runAutoFix', () => {
             description: 'No-op edit',
           },
         ],
-      })
+      }))
     );
 
     const context = makeContext({
@@ -198,11 +189,8 @@ describe('runAutoFix', () => {
   });
 
   it('should return null when GitHub API fails at createBranch step', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson(llmFixEdits())
-    );
-
     mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits()))) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
       .mockResolvedValueOnce(githubFail(422, 'Reference already exists'));
@@ -214,11 +202,8 @@ describe('runAutoFix', () => {
   });
 
   it('should return null when GitHub API fails at createPullRequest step', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson(llmFixEdits())
-    );
-
     mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits()))) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
       .mockResolvedValueOnce(githubOk({}))
@@ -233,7 +218,7 @@ describe('runAutoFix', () => {
   });
 
   it('should never throw — all errors caught', async () => {
-    mockPrompt.mockRejectedValueOnce(new Error('LLM service unavailable'));
+    mockFetch.mockResolvedValueOnce(openaiFail(500, 'LLM service unavailable'));
 
     const context = makeContext();
     const result = await runAutoFix(context, testEnv);
@@ -242,7 +227,10 @@ describe('runAutoFix', () => {
   });
 
   it('should never throw on GitHub errors', async () => {
-    mockFetch.mockRejectedValueOnce(new Error('Network failure'));
+    // First fetch call (OpenAI) succeeds, then GitHub fails
+    mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits())))
+      .mockRejectedValueOnce(new Error('Network failure'));
 
     const context = makeContext();
     const result = await runAutoFix(context, testEnv);
@@ -251,11 +239,8 @@ describe('runAutoFix', () => {
   });
 
   it('should produce correct branch name format', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson(llmFixEdits())
-    );
-
     mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits()))) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
       .mockResolvedValueOnce(githubOk({})) // createBranch
@@ -266,19 +251,16 @@ describe('runAutoFix', () => {
     const context = makeContext({ errorTitle: 'TypeError in handleRequest' });
     await runAutoFix(context, testEnv);
 
-    // The 3rd fetch call is createBranch — check its body
-    const createBranchCall = mockFetch.mock.calls[2];
+    // The 4th fetch call (index 3) is createBranch — check its body
+    const createBranchCall = mockFetch.mock.calls[3];
     const body = JSON.parse(createBranchCall[1].body);
     // UUID aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee -> first 8 chars: aaaaaaaa
     expect(body.ref).toBe('refs/heads/donmerge/fix/typeerror-in-handlerequest-aaaaaaaa');
   });
 
   it('should sanitize PR title', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson(llmFixEdits())
-    );
-
     mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits()))) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
       .mockResolvedValueOnce(githubOk({}))
@@ -291,8 +273,8 @@ describe('runAutoFix', () => {
     });
     await runAutoFix(context, testEnv);
 
-    // The 6th fetch call is createPullRequest — check its body
-    const prCall = mockFetch.mock.calls[5];
+    // The 7th fetch call (index 6) is createPullRequest — check its body
+    const prCall = mockFetch.mock.calls[6];
     const body = JSON.parse(prCall[1].body);
     // Title should be sanitized: "system:" prefix removed, backticks escaped
     expect(body.title).not.toContain('system:');
@@ -300,11 +282,8 @@ describe('runAutoFix', () => {
   });
 
   it('should include expected sections in PR body', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson(llmFixEdits())
-    );
-
     mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits()))) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
       .mockResolvedValueOnce(githubOk({}))
@@ -315,7 +294,7 @@ describe('runAutoFix', () => {
     const context = makeContext();
     await runAutoFix(context, testEnv);
 
-    const prCall = mockFetch.mock.calls[5];
+    const prCall = mockFetch.mock.calls[6];
     const body = JSON.parse(prCall[1].body);
     const prBody = body.body as string;
 
@@ -328,7 +307,10 @@ describe('runAutoFix', () => {
   });
 
   it('should return null when LLM returns invalid JSON', async () => {
-    mockPrompt.mockResolvedValueOnce('this is not json');
+    mockFetch.mockResolvedValueOnce(openaiOk('this is not json'));
+
+    // The retry will also fail
+    mockFetch.mockResolvedValueOnce(openaiOk('still not json'));
 
     const context = makeContext();
     const result = await runAutoFix(context, testEnv);
@@ -337,11 +319,11 @@ describe('runAutoFix', () => {
   });
 
   it('should return null when LLM returns JSON with missing file_path', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(llmFixJson({
         description: 'A fix',
         edits: [{ search: 'code', replace: 'fixed', description: 'fix' }],
-      })
+      }))
     );
 
     const context = makeContext();
@@ -351,11 +333,11 @@ describe('runAutoFix', () => {
   });
 
   it('should return null when LLM returns JSON with missing description', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(llmFixJson({
         file_path: DEFAULT_TARGET_FILE,
         edits: [{ search: 'code', replace: 'fixed', description: 'fix' }],
-      })
+      }))
     );
 
     const context = makeContext();
@@ -365,11 +347,8 @@ describe('runAutoFix', () => {
   });
 
   it('should parse JSON wrapped in markdown code blocks', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      '```json\n' + llmFixJson(llmFixEdits()) + '\n```'
-    );
-
     mockFetch
+      .mockResolvedValueOnce(openaiOk('```json\n' + llmFixJson(llmFixEdits()) + '\n```')) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
       .mockResolvedValueOnce(githubOk({}))
@@ -384,11 +363,8 @@ describe('runAutoFix', () => {
   });
 
   it('should use non-default branch when repo default is develop', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson(llmFixEdits())
-    );
-
     mockFetch
+      .mockResolvedValueOnce(openaiOk(llmFixJson(llmFixEdits()))) // callOpenAI
       .mockResolvedValueOnce(githubOk({ default_branch: 'develop' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'devbase123' } }))
       .mockResolvedValueOnce(githubOk({}))
@@ -402,14 +378,14 @@ describe('runAutoFix', () => {
     expect(result).toBe('https://github.com/owner/repo/pull/2');
 
     // Verify the PR uses 'develop' as base branch
-    const prCall = mockFetch.mock.calls[5];
+    const prCall = mockFetch.mock.calls[6];
     const body = JSON.parse(prCall[1].body);
     expect(body.base).toBe('develop');
   });
 
   it('should return null when majority of edits fail to match', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(llmFixJson({
         file_path: DEFAULT_TARGET_FILE,
         description: 'Attempted fix',
         edits: [
@@ -429,7 +405,7 @@ describe('runAutoFix', () => {
             description: 'Edit 3 - will succeed',
           },
         ],
-      })
+      }))
     );
 
     const context = makeContext();
@@ -439,26 +415,25 @@ describe('runAutoFix', () => {
   });
 
   it('should apply matching edits and warn about failures', async () => {
-    mockPrompt.mockResolvedValueOnce(
-      llmFixJson({
-        file_path: DEFAULT_TARGET_FILE,
-        description: 'Fix with some bad edits',
-        edits: [
-          {
-            search: '  return data.foo;',
-            replace: '  if (!data) return null;\n  return data.foo;',
-            description: 'Valid edit',
-          },
-          {
-            search: 'this does not exist',
-            replace: 'whatever',
-            description: 'Invalid edit - should be skipped',
-          },
-        ],
-      })
-    );
-
     mockFetch
+      .mockResolvedValueOnce(
+        openaiOk(llmFixJson({
+          file_path: DEFAULT_TARGET_FILE,
+          description: 'Fix with some bad edits',
+          edits: [
+            {
+              search: '  return data.foo;',
+              replace: '  if (!data) return null;\n  return data.foo;',
+              description: 'Valid edit',
+            },
+            {
+              search: 'this does not exist',
+              replace: 'whatever',
+              description: 'Invalid edit - should be skipped',
+            },
+          ],
+        }))
+      )
       .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
       .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
       .mockResolvedValueOnce(githubOk({}))

@@ -153,10 +153,10 @@ describe('safeJsonParse', () => {
 });
 
 describe('parseModelConfig', () => {
-  it('should default to openai/gpt-5.3-codex for undefined', () => {
+  it('should default to openai/gpt-4o for undefined', () => {
     expect(parseModelConfig(undefined)).toEqual({
       providerID: 'openai',
-      modelID: 'gpt-5.3-codex',
+      modelID: 'gpt-4o',
     });
   });
 
@@ -183,9 +183,9 @@ describe('parseModelConfig', () => {
   });
 
   it('should handle models with slashes in the ID', () => {
-    expect(parseModelConfig('openai/gpt-5.3-codex')).toEqual({
+    expect(parseModelConfig('openai/gpt-4o')).toEqual({
       providerID: 'openai',
-      modelID: 'gpt-5.3-codex',
+      modelID: 'gpt-4o',
     });
   });
 
@@ -199,14 +199,14 @@ describe('parseModelConfig', () => {
   it('should fallback for empty provider', () => {
     expect(parseModelConfig('/gpt-4o')).toEqual({
       providerID: 'openai',
-      modelID: 'gpt-5.3-codex',
+      modelID: 'gpt-4o',
     });
   });
 
   it('should fallback for empty model', () => {
     expect(parseModelConfig('openai/')).toEqual({
       providerID: 'openai',
-      modelID: 'gpt-5.3-codex',
+      modelID: 'gpt-4o',
     });
   });
 });
@@ -263,7 +263,9 @@ describe('safeStringify', () => {
 });
 
 describe('extractRawFlueResponse', () => {
-  it('should extract rawOutput from a SkillOutputError', () => {
+  // ── Canonical SkillOutputError shape: error.data.rawOutput ──────────
+
+  it('should extract rawOutput from error.data.rawOutput (SkillOutputError)', () => {
     const error = new Error('No ---RESULT_START--- block found');
     (error as Record<string, unknown>).name = 'SkillOutputError';
     (error as Record<string, unknown>).data = {
@@ -273,10 +275,77 @@ describe('extractRawFlueResponse', () => {
     expect(extractRawFlueResponse(error)).toBe('{"approved": true, "summary": "Looks good"}');
   });
 
-  it('should return null for non-SkillOutputError', () => {
-    const error = new Error('some other error');
-    expect(extractRawFlueResponse(error)).toBeNull();
+  // ── No longer requires name === 'SkillOutputError' ─────────────────
+
+  it('should extract rawOutput without requiring name=SkillOutputError', () => {
+    const error = {
+      message: 'delimiter missing',
+      data: { rawOutput: '{"approved": false}' },
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"approved": false}');
   });
+
+  // ── error.rawOutput (top-level) ─────────────────────────────────────
+
+  it('should extract from error.rawOutput (top-level shape)', () => {
+    const error = {
+      message: 'No ---RESULT_START--- block found',
+      rawOutput: '{"approved": true}',
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"approved": true}');
+  });
+
+  // ── error.data.output (alternate property) ──────────────────────────
+
+  it('should extract from error.data.output (alternate shape)', () => {
+    const error = {
+      data: { output: '{"approved": true}' },
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"approved": true}');
+  });
+
+  // ── error.cause.data.rawOutput (nested cause chain) ─────────────────
+
+  it('should extract from error.cause.data.rawOutput (nested cause)', () => {
+    const error = {
+      message: 'prompt failed',
+      cause: {
+        message: 'delimiter error',
+        data: { rawOutput: '{"approved": true}' },
+      },
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"approved": true}');
+  });
+
+  // ── Priority: data.rawOutput > data.output > rawOutput > cause ─────
+
+  it('should prefer error.data.rawOutput over error.rawOutput', () => {
+    const error = {
+      data: { rawOutput: '{"from": "data.rawOutput"}' },
+      rawOutput: '{"from": "top-level"}',
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"from": "data.rawOutput"}');
+  });
+
+  it('should prefer error.data.output over error.rawOutput', () => {
+    const error = {
+      data: { output: '{"from": "data.output"}' },
+      rawOutput: '{"from": "top-level"}',
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"from": "data.output"}');
+  });
+
+  it('should prefer error.rawOutput over error.cause.data.rawOutput', () => {
+    const error = {
+      rawOutput: '{"from": "top-level"}',
+      cause: {
+        data: { rawOutput: '{"from": "cause"}' },
+      },
+    };
+    expect(extractRawFlueResponse(error)).toBe('{"from": "top-level"}');
+  });
+
+  // ── Null / falsy guards ─────────────────────────────────────────────
 
   it('should return null for null input', () => {
     expect(extractRawFlueResponse(null)).toBeNull();
@@ -292,35 +361,39 @@ describe('extractRawFlueResponse', () => {
 
   it('should return null when data.rawOutput is missing', () => {
     const error = new Error('delimiter missing');
-    (error as Record<string, unknown>).name = 'SkillOutputError';
     (error as Record<string, unknown>).data = { sessionId: 'abc' };
     expect(extractRawFlueResponse(error)).toBeNull();
   });
 
   it('should return null when data is missing entirely', () => {
     const error = new Error('delimiter missing');
-    (error as Record<string, unknown>).name = 'SkillOutputError';
     expect(extractRawFlueResponse(error)).toBeNull();
   });
 
   it('should return null when rawOutput is an empty string', () => {
-    const error = new Error('delimiter missing');
-    (error as Record<string, unknown>).name = 'SkillOutputError';
-    (error as Record<string, unknown>).data = { rawOutput: '   ' };
+    const error = { data: { rawOutput: '   ' } };
     expect(extractRawFlueResponse(error)).toBeNull();
   });
 
   it('should return null when rawOutput is not a string', () => {
-    const error = new Error('delimiter missing');
-    (error as Record<string, unknown>).name = 'SkillOutputError';
-    (error as Record<string, unknown>).data = { rawOutput: 42 };
+    const error = { data: { rawOutput: 42 } };
     expect(extractRawFlueResponse(error)).toBeNull();
   });
 
-  it('should handle rawOutput with surrounding whitespace', () => {
-    const error = new Error('delimiter missing');
-    (error as Record<string, unknown>).name = 'SkillOutputError';
-    (error as Record<string, unknown>).data = { rawOutput: '  {"key": "val"}  ' };
+  it('should return null for plain Error with no Flue data', () => {
+    const error = new Error('some other error');
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  // ── Whitespace trimming ─────────────────────────────────────────────
+
+  it('should trim surrounding whitespace from rawOutput', () => {
+    const error = { data: { rawOutput: '  {"key": "val"}  ' } };
+    expect(extractRawFlueResponse(error)).toBe('{"key": "val"}');
+  });
+
+  it('should trim surrounding whitespace from top-level rawOutput', () => {
+    const error = { rawOutput: '  {"key": "val"}  ' };
     expect(extractRawFlueResponse(error)).toBe('{"key": "val"}');
   });
 });
@@ -396,7 +469,7 @@ describe('extractJsonFromResponse', () => {
 
 describe('classifyError', () => {
   it('should classify Flue prompt errors as LLM_FAILURE', () => {
-    const error = new Error("Flue prompt failed for model 'openai/gpt-5.3-codex': timeout");
+    const error = new Error("Flue prompt failed for model 'openai/gpt-4o': timeout");
     const result = classifyError(error);
     expect(result.code).toBe(ErrorCode.LLM_FAILURE);
     expect(result.detail).toContain('Flue prompt failed');
@@ -439,7 +512,7 @@ describe('classifyError', () => {
   });
 
   it('should preserve original message in detail', () => {
-    const error = new Error('Flue prompt failed for model openai/gpt-5.3-codex: No ---RESULT_START---');
+    const error = new Error('Flue prompt failed for model openai/gpt-4o: No ---RESULT_START---');
     const result = classifyError(error);
     expect(result.detail).toContain('---RESULT_START---');
   });

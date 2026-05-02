@@ -83,11 +83,17 @@ export function safeJsonParse<T>(jsonText: string): T {
 }
 
 /**
- * Extract raw model response from a Flue SkillOutputError.
+ * Extract raw model response from a Flue error.
  *
  * When Flue's delimiter extraction fails (e.g. the model ignores
  * ---RESULT_START---/---RESULT_END--- instructions), the full model
- * response is available on error.data.rawOutput.
+ * response may be available in several locations depending on the
+ * error shape:
+ *
+ *  1. error.data.rawOutput   — canonical SkillOutputError (current)
+ *  2. error.rawOutput         — some Flue versions expose it at top level
+ *  3. error.data.output       — alternate property name
+ *  4. error.cause.data.rawOutput — nested cause chain
  *
  * Returns the raw output string if present, or null otherwise.
  */
@@ -98,18 +104,41 @@ export function extractRawFlueResponse(error: unknown): string | null {
 
   const err = error as Record<string, unknown>;
 
-  // Check for SkillOutputError by name and data.rawOutput presence
-  if (err.name !== 'SkillOutputError') {
+  // Helper: extract a non-empty trimmed string from a candidate value
+  const asString = (v: unknown): string | null => {
+    if (typeof v === 'string') {
+      const trimmed = v.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
     return null;
-  }
+  };
 
+  // 1. Canonical: error.data.rawOutput (SkillOutputError shape)
   const data = err.data as Record<string, unknown> | undefined;
-  if (!data || typeof data.rawOutput !== 'string') {
-    return null;
+  if (data && typeof data === 'object') {
+    const fromDataRawOutput = asString(data.rawOutput);
+    if (fromDataRawOutput) return fromDataRawOutput;
+
+    // 3. Alternate: error.data.output
+    const fromDataOutput = asString(data.output);
+    if (fromDataOutput) return fromDataOutput;
   }
 
-  const rawOutput = (data.rawOutput as string).trim();
-  return rawOutput.length > 0 ? rawOutput : null;
+  // 2. Top-level: error.rawOutput
+  const fromTopLevel = asString(err.rawOutput);
+  if (fromTopLevel) return fromTopLevel;
+
+  // 4. Nested cause: error.cause.data.rawOutput
+  const cause = err.cause as Record<string, unknown> | undefined;
+  if (cause && typeof cause === 'object') {
+    const causeData = cause.data as Record<string, unknown> | undefined;
+    if (causeData && typeof causeData === 'object') {
+      const fromCause = asString(causeData.rawOutput);
+      if (fromCause) return fromCause;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -175,7 +204,7 @@ export function extractJsonFromResponse(text: string): string {
  * Format: "provider/model" or just "model" (defaults to openai).
  */
 export function parseModelConfig(raw?: string): ModelConfig {
-  const value = (raw ?? 'openai/gpt-5.3-codex').trim();
+  const value = (raw ?? 'openai/gpt-4o').trim();
   if (!value.includes('/')) {
     return { providerID: 'openai', modelID: value };
   }
@@ -183,7 +212,7 @@ export function parseModelConfig(raw?: string): ModelConfig {
   const [providerID, ...rest] = value.split('/');
   const modelID = rest.join('/').trim();
   if (!providerID.trim() || !modelID) {
-    return { providerID: 'openai', modelID: 'gpt-5.3-codex' };
+    return { providerID: 'openai', modelID: 'gpt-4o' };
   }
 
   return { providerID: providerID.trim(), modelID };

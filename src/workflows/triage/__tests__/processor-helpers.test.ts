@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { TriageOutput } from '../types';
-import { safeJsonParse, parseModelConfig } from '../utils';
+import { safeJsonParse, parseModelConfig, unwrapFlueResponse, extractRawFlueResponse, extractJsonFromResponse } from '../utils';
 
 /**
  * Equivalent to TriageProcessor.validateTriageOutput
@@ -268,7 +268,7 @@ describe('parseModelConfig', () => {
 
   it('should use default when undefined', () => {
     const result = parseModelConfig(undefined);
-    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-5.3-codex' });
+    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-4o' });
   });
 
   it('should handle model with slashes in name (e.g. openrouter/anthropic/claude)', () => {
@@ -283,16 +283,179 @@ describe('parseModelConfig', () => {
 
   it('should fallback to default for empty provider', () => {
     const result = parseModelConfig('/gpt-4o');
-    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-5.3-codex' });
+    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-4o' });
   });
 
   it('should fallback to default for empty model', () => {
     const result = parseModelConfig('openai/');
-    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-5.3-codex' });
+    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-4o' });
   });
 
   it('should fallback to default for slash-only string', () => {
     const result = parseModelConfig('/');
-    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-5.3-codex' });
+    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-4o' });
+  });
+});
+
+describe('unwrapFlueResponse', () => {
+  const validTriage = {
+    root_cause: 'Null dereference',
+    stack_trace_summary: 'TypeError at line 42',
+    affected_files: ['src/app.ts'],
+    suggested_fix: 'Add null check',
+    confidence: 'low',
+    severity: 'error',
+  };
+
+  it('should unwrap Flue {"type":"<json>"} wrapper', () => {
+    const wrapped = { type: JSON.stringify(validTriage) };
+    const result = unwrapFlueResponse(wrapped);
+    expect(result).toEqual(validTriage);
+  });
+
+  it('should recursively unwrap double-wrapped responses', () => {
+    const inner = JSON.stringify(validTriage);
+    const doubleWrapped = { type: JSON.stringify({ type: inner }) };
+    const result = unwrapFlueResponse(doubleWrapped);
+    expect(result).toEqual(validTriage);
+  });
+
+  it('should return plain objects unchanged', () => {
+    const plain = { foo: 'bar', baz: 42 };
+    expect(unwrapFlueResponse(plain)).toEqual(plain);
+  });
+
+  it('should return arrays unchanged', () => {
+    const arr = [1, 2, 3];
+    expect(unwrapFlueResponse(arr)).toEqual(arr);
+  });
+
+  it('should return primitives unchanged', () => {
+    expect(unwrapFlueResponse('hello')).toBe('hello');
+    expect(unwrapFlueResponse(42)).toBe(42);
+    expect(unwrapFlueResponse(null)).toBe(null);
+    expect(unwrapFlueResponse(undefined)).toBe(undefined);
+  });
+
+  it('should return object unchanged when type value is not JSON', () => {
+    const obj = { type: 'not-json-at-all' };
+    expect(unwrapFlueResponse(obj)).toEqual(obj);
+  });
+
+  it('should return object unchanged when it has extra keys beyond "type"', () => {
+    const obj = { type: JSON.stringify(validTriage), extra: true };
+    expect(unwrapFlueResponse(obj)).toEqual(obj);
+  });
+
+  it('should unwrap when parsed is a JSON string (double-encoded response)', () => {
+    // This is the key bug fix: safeJsonParse returns a string, not an object
+    const doubleEncoded = JSON.stringify(JSON.stringify(validTriage));
+    const parsed = JSON.parse(doubleEncoded); // yields a string: '{"root_cause":"..."}'
+    expect(typeof parsed).toBe('string');
+    const result = unwrapFlueResponse(parsed);
+    expect(result).toEqual(validTriage);
+  });
+
+  it('should return non-JSON strings unchanged', () => {
+    expect(unwrapFlueResponse('hello world')).toBe('hello world');
+    expect(unwrapFlueResponse('')).toBe('');
+  });
+
+  it('should work end-to-end: extractJsonFromResponse + safeJsonParse + unwrapFlueResponse', async () => {
+    const raw = '{"type":"{\\"root_cause\\":\\"bug\\",\\"stack_trace_summary\\":\\"stack\\",\\"affected_files\\":[\\"a.ts\\"],\\"suggested_fix\\":\\"fix it\\",\\"confidence\\":\\"low\\",\\"severity\\":\\"error\\"}"}';
+    const json = extractJsonFromResponse(raw);
+    const parsed = safeJsonParse(json);
+    const unwrapped = unwrapFlueResponse<TriageOutput>(parsed);
+    expect(validateTriageOutput(unwrapped)).toBe(true);
+    expect(unwrapped.root_cause).toBe('bug');
+    expect(unwrapped.confidence).toBe('low');
+  });
+});
+
+// ── extractRawFlueResponse tests ──────────────────────────────────────
+
+describe('extractRawFlueResponse', () => {
+  const sampleRaw = '{"root_cause":"bug","stack_trace_summary":"stack","affected_files":["a.ts"],"suggested_fix":"fix","confidence":"low","severity":"error"}';
+
+  it('should extract from canonical SkillOutputError shape (error.data.rawOutput)', () => {
+    const error = new Error('No ---RESULT_START--- / ---RESULT_END--- block found');
+    error.name = 'SkillOutputError';
+    (error as unknown as Record<string, unknown>).data = { rawOutput: sampleRaw };
+    expect(extractRawFlueResponse(error)).toBe(sampleRaw);
+  });
+
+  it('should extract from error.data.rawOutput regardless of error.name', () => {
+    const error = new Error('delimiter failure');
+    error.name = 'SomeOtherError';
+    (error as unknown as Record<string, unknown>).data = { rawOutput: sampleRaw };
+    expect(extractRawFlueResponse(error)).toBe(sampleRaw);
+  });
+
+  it('should extract from error.rawOutput (top-level)', () => {
+    const error = { rawOutput: sampleRaw };
+    expect(extractRawFlueResponse(error)).toBe(sampleRaw);
+  });
+
+  it('should extract from error.data.output (alternate property)', () => {
+    const error = { data: { output: sampleRaw } };
+    expect(extractRawFlueResponse(error)).toBe(sampleRaw);
+  });
+
+  it('should extract from error.cause.data.rawOutput (nested cause chain)', () => {
+    const error = {
+      cause: {
+        data: { rawOutput: sampleRaw },
+      },
+    };
+    expect(extractRawFlueResponse(error)).toBe(sampleRaw);
+  });
+
+  it('should prefer error.data.rawOutput over error.rawOutput', () => {
+    const error = {
+      data: { rawOutput: 'from-data' },
+      rawOutput: 'from-top-level',
+    };
+    expect(extractRawFlueResponse(error)).toBe('from-data');
+  });
+
+  it('should prefer error.data.rawOutput over error.data.output', () => {
+    const error = {
+      data: { rawOutput: 'from-rawOutput', output: 'from-output' },
+    };
+    expect(extractRawFlueResponse(error)).toBe('from-rawOutput');
+  });
+
+  it('should return null when no raw output found', () => {
+    expect(extractRawFlueResponse(null)).toBeNull();
+    expect(extractRawFlueResponse(undefined)).toBeNull();
+    expect(extractRawFlueResponse('just a string')).toBeNull();
+    expect(extractRawFlueResponse(42)).toBeNull();
+    expect(extractRawFlueResponse({})).toBeNull();
+    expect(extractRawFlueResponse({ message: 'oops' })).toBeNull();
+  });
+
+  it('should return null when rawOutput is empty string', () => {
+    expect(extractRawFlueResponse({ rawOutput: '   ' })).toBeNull();
+    expect(extractRawFlueResponse({ data: { rawOutput: '' } })).toBeNull();
+  });
+
+  it('should return null when rawOutput is not a string', () => {
+    expect(extractRawFlueResponse({ rawOutput: 42 })).toBeNull();
+    expect(extractRawFlueResponse({ data: { rawOutput: { obj: true } } })).toBeNull();
+  });
+
+  it('should handle error.cause without data gracefully', () => {
+    const error = { cause: { message: 'no data here' } };
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  it('should handle error.cause.data without rawOutput gracefully', () => {
+    const error = { cause: { data: { message: 'no rawOutput' } } };
+    expect(extractRawFlueResponse(error)).toBeNull();
+  });
+
+  it('should trim whitespace from extracted output', () => {
+    expect(extractRawFlueResponse({ rawOutput: '  hello  ' })).toBe('hello');
+    expect(extractRawFlueResponse({ data: { rawOutput: '\n  hello\n' } })).toBe('hello');
   });
 });

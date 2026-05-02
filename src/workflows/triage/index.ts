@@ -55,6 +55,10 @@ export { parseModelConfig, safeJsonParse } from './utils';
 // Auto-fix
 export { runAutoFix } from './auto-fix';
 
+// Auto-fix V2
+export { runAutoFixV2 } from './auto-fix-v2';
+export type { AutoFixV2Deps } from './auto-fix-v2';
+
 // Trackers
 export { runCreateIssue } from './trackers';
 export type { TrackerClient, TrackerIssueParams, TrackerIssueResult, TrackerIssueContext } from './trackers';

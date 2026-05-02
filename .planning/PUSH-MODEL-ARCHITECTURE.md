@@ -1636,6 +1636,8 @@ wrangler secret put GITHUB_WEBHOOK_SECRET
 wrangler secret put GITHUB_APP_PRIVATE_KEY
 ```
 
+> **Updated per ADR-001:** `DONMERGE_API_KEYS` and `SENTRY_WEBHOOK_SECRET` are now stored as `vars` (plaintext) to support multi-client aggregation. See `.planning/ADR-001-secrets-vs-vars.md`.
+
 ---
 
 ## 12. Example CI/CD Workflows
@@ -1746,57 +1748,20 @@ jobs:
           echo "Status URL: ${{ vars.DONMERGE_API_URL }}${status_url}"
 ```
 
-### 12.3 Sentry webhook to GitHub dispatch (bridge)
+### 12.3 Sentry webhook integration (direct)
 
-For teams using Sentry webhooks, a simple bridge function triggers the GitHub Action:
+For teams using Sentry webhooks, DonMerge accepts Sentry alerts directly via `POST /webhook/sentry`. This eliminates the need for a bridge or GitHub Actions:
 
-```yaml
-# .github/workflows/sentry-webhook-bridge.yml
-name: Sentry Webhook Bridge
+- Sentry Internal Integration sends `event_alert` payloads to DonMerge
+- DonMerge verifies the HMAC-SHA256 signature from the `Sentry-Hook-Signature` header
+- Error context (title, stack trace, affected files) is extracted from the Sentry event payload
+- The target repo is resolved from `SENTRY_REPO_MAP` (maps Sentry org slugs to GitHub repos)
+- A triage job is enqueued via the `TriageProcessor` Durable Object
 
-on:
-  workflow_dispatch:
-    inputs:
-      sentry_issue_url:
-        description: 'Sentry issue URL'
-        required: true
-
-jobs:
-  triage:
-    uses: ./.github/workflows/donmerge-sentry-triage.yml
-    with:
-      sentry_issue_url: ${{ inputs.sentry_issue_url }}
-    secrets: inherit
-```
-
-Or via a Cloudflare Worker / serverless function that receives the Sentry webhook and dispatches to GitHub:
-
-```typescript
-// Simplified Sentry webhook → GitHub dispatch bridge
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const sentryPayload = await request.json();
-    const issueUrl = sentryPayload.data?.issue?.url;
-
-    await fetch(
-      `https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-          Accept: 'application/vnd.github+json',
-        },
-        body: JSON.stringify({
-          event_type: 'sentry-issue',
-          client_payload: { sentry_issue_url: issueUrl },
-        }),
-      }
-    );
-
-    return new Response('OK', { status: 200 });
-  },
-};
-```
+Required environment variables:
+- `SENTRY_WEBHOOK_SECRET` — HMAC secret for signature verification
+- `SENTRY_REPO_MAP` — Format: `"org-slug:owner/repo:branch,org-slug/project:owner/repo:branch"`
+- `SENTRY_GITHUB_TOKEN` — GitHub token for fetching repo code during triage
 
 ---
 
@@ -1964,4 +1929,4 @@ These are **not** part of this plan but are anticipated future needs:
 
 7. **Multi-file auto-fix** — Support fixes that span multiple files (requires Git Data API instead of Contents API).
 
-8. **Webhook for new workflows** — `POST /webhook/sentry` to receive Sentry alerts directly, using donmerge-stored Sentry credentials (for teams that don't want to set up CI/CD bridges).
+8. **Sentry direct webhook** — `POST /webhook/sentry` to receive Sentry alerts directly — **implemented**. Uses `SENTRY_WEBHOOK_SECRET`, `SENTRY_REPO_MAP`, and `SENTRY_GITHUB_TOKEN` environment variables.

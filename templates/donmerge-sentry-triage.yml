@@ -1,9 +1,10 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # DonMerge — Sentry Triage (Push API)
 #
-# Triggered by a Sentry webhook → GitHub repository_dispatch bridge.
+# Triggered by a Sentry webhook → GitHub repository_dispatch bridge,
+# OR by DonMerge's native Sentry webhook endpoint (POST /webhook/sentry).
 # The workflow:
-#   1. Calls POST /api/v1/sentry/triage to enqueue the triage job.
+#   1. Calls POST /api/v1/triage to enqueue the triage job.
 #   2. Polls   GET  /api/v1/status/{job_id} every 10 s until complete/failed.
 #   3. Creates a GitHub Issue (or comments on an existing one) with the result.
 #
@@ -106,7 +107,7 @@ jobs:
             }')
 
           HTTP_CODE=$(curl -s -o /tmp/donmerge-trigger.json -w "%{http_code}" \
-            "${DONMERGE_API_URL}/api/v1/sentry/triage" \
+            "${DONMERGE_API_URL}/api/v1/triage" \
             -H "Authorization: Bearer ${DONMERGE_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$BODY")
@@ -223,47 +224,3 @@ jobs:
             } else if (finalStatus === 'timeout') {
               core.warning('Sentry triage timed out after 5 minutes');
             }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Sentry Webhook → GitHub Dispatch Bridge
-#
-# To connect your Sentry project to this workflow, create a Sentry webhook
-# integration that forwards issue events to GitHub as repository_dispatch.
-#
-# Option A: Use a small Cloudflare Worker or AWS Lambda as a bridge:
-#
-#   // worker.js (bridge)
-#   export default {
-#     async fetch(request, env) {
-#       const sentryPayload = await request.json();
-#       const issueUrl = sentryPayload?.data?.issue?.url
-#         || `https://sentry.io/organizations/${sentryPayload?.data?.organization?.slug}/issues/${sentryPayload?.data?.issue?.id}/`;
-#
-#       await fetch(
-#         `https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`,
-#         {
-#           method: 'POST',
-#           headers: {
-#             Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-#             Accept: 'application/vnd.github+json',
-#             'Content-Type': 'application/json',
-#           },
-#           body: JSON.stringify({
-#             event_type: 'sentry-issue',
-#             client_payload: {
-#               sentry_issue_url: issueUrl,
-#               sha: 'main',  // optional: use specific commit SHA
-#             },
-#           }),
-#         }
-#       );
-#
-#       return new Response('ok', { status: 200 });
-#     }
-#   };
-#
-# Option B: Use a no-code platform like Zapier, Make, or Pipedream to bridge
-#           the Sentry webhook into a GitHub repository_dispatch event.
-#
-# In Sentry: Settings → Integrations → Webhooks → Add your bridge URL
-# ──────────────────────────────────────────────────────────────────────────────
