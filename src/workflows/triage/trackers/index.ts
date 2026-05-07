@@ -58,10 +58,10 @@ export function buildIssueBody(context: TrackerIssueContext): string {
 
 /**
  * Run the tracker issue creation pipeline.
- * Returns the issue URL on success, null on failure/skip.
+ * Returns the TrackerIssueResult on success, null on failure/skip.
  * Never throws — all errors are caught and logged.
  */
-export async function runCreateIssue(context: TrackerIssueContext): Promise<string | null> {
+export async function runCreateIssue(context: TrackerIssueContext): Promise<TrackerIssueResult | null> {
   try {
     const client = createTrackerClient(context.tracker, context.repo);
 
@@ -91,7 +91,7 @@ export async function runCreateIssue(context: TrackerIssueContext): Promise<stri
       issueUrl: issue.url,
     });
 
-    return issue.url;
+    return issue;
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'unknown';
     console.error('Tracker issue creation failed', {
@@ -99,5 +99,218 @@ export async function runCreateIssue(context: TrackerIssueContext): Promise<stri
       error: msg,
     });
     return null;
+  }
+}
+
+// ── Dedup helpers ─────────────────────────────────────────────────────────────
+
+/** Row shape returned from tracker_issue_dedup queries. */
+interface DedupRow {
+  id: number;
+  tracker_issue_id: string;
+  tracker_issue_url: string;
+  tracker_issue_key: string;
+}
+
+/**
+ * Build a markdown comment body for a recurring event on an existing tracker issue.
+ */
+function buildDedupCommentBody(context: TrackerIssueContext): string {
+  const sanitizedRootCause = sanitizeData(context.triageOutput.root_cause, 2000);
+  const sanitizedFix = sanitizeData(context.triageOutput.suggested_fix, 1000);
+
+  const sections = [
+    `## 🔄 Recurring Event`,
+    ``,
+    `This event has been observed again. Updating with latest triage info.`,
+    ``,
+    `### Root Cause`,
+    sanitizedRootCause,
+    ``,
+    `### Suggested Fix`,
+    sanitizedFix,
+  ];
+
+  if (context.fixPrUrl) {
+    sections.push('', `### Fix PR`, context.fixPrUrl);
+  }
+
+  sections.push('', '---', '*Auto-updated by [DonMerge](https://donmerge.dev) Triage*');
+
+  return sections.join('\n');
+}
+
+/**
+ * Add a dedup comment to an existing tracker issue (best-effort).
+ */
+async function addDedupComment(context: TrackerIssueContext, existing: DedupRow): Promise<void> {
+  try {
+    const client = createTrackerClient(context.tracker, context.repo);
+    const comment = buildDedupCommentBody(context);
+    await client.addComment(existing.tracker_issue_id, comment);
+
+    console.log('Dedup: added update comment to existing issue', {
+      tracker: context.tracker.type,
+      issueKey: existing.tracker_issue_key,
+      issueUrl: existing.tracker_issue_url,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'unknown';
+    console.error('Dedup: failed to add comment to existing issue', {
+      tracker: context.tracker.type,
+      issueKey: existing.tracker_issue_key,
+      error: msg,
+    });
+  }
+}
+
+/**
+ * Run the tracker issue creation pipeline with deduplication.
+ *
+ * If a tracker issue already exists for the same (sentry_issue_id, tracker_type, tracker_team),
+ * a comment is added to the existing issue instead of creating a duplicate.
+ * Falls back to plain `runCreateIssue` when dedup is not possible (no DB, no sentry_issue_id).
+ *
+ * Returns the issue URL on success, null on failure.
+ * Never throws — dedup failures are logged and do not block issue creation.
+ */
+export async function runCreateIssueWithDedup(
+  context: TrackerIssueContext,
+  db?: D1Database,
+): Promise<string | null> {
+  // Early return if dedup is not possible — require sentryIssueId for issue-level dedup
+  if (!context.sentryIssueId || !context.tracker || !db) {
+    const result = await runCreateIssue(context);
+    return result?.url ?? null;
+  }
+
+  const { sentryIssueId, tracker } = context;
+
+  try {
+    // 1. Check for existing dedup entry
+    const existing = await db
+      .prepare(
+        `SELECT id, tracker_issue_id, tracker_issue_url, tracker_issue_key
+         FROM tracker_issue_dedup
+         WHERE sentry_issue_id = ? AND tracker_type = ? AND tracker_team = ?`
+      )
+      .bind(sentryIssueId, tracker.type, tracker.team)
+      .first<DedupRow>();
+
+    if (existing && existing.tracker_issue_id !== '') {
+      // Real existing issue found — add comment with updated triage info
+      console.log('Dedup: existing issue found, adding comment', {
+        sentryIssueId,
+        tracker: tracker.type,
+        issueKey: existing.tracker_issue_key,
+      });
+
+      await addDedupComment(context, existing);
+
+      // Update the updated_at timestamp
+      try {
+        await db
+          .prepare(
+            `UPDATE tracker_issue_dedup SET updated_at = datetime('now') WHERE id = ?`
+          )
+          .bind(existing.id)
+          .run();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'unknown';
+        console.error('Dedup: failed to update timestamp', { error: msg });
+      }
+
+      return existing.tracker_issue_url;
+    }
+    // If placeholder (tracker_issue_id === '') or no entry, fall through to create
+
+    // 2. No real existing entry — claim the dedup slot with a placeholder
+    try {
+      await db
+        .prepare(
+          `INSERT INTO tracker_issue_dedup (sentry_issue_id, tracker_type, tracker_team, tracker_issue_id, tracker_issue_url, tracker_issue_key, source_url)
+           VALUES (?, ?, ?, '', '', '', ?)`
+        )
+        .bind(sentryIssueId, tracker.type, tracker.team, context.sourceUrl ?? null)
+        .run();
+    } catch {
+      // INSERT failed — re-query to determine current state
+      console.log('Dedup: INSERT failed, re-querying to determine state', {
+        sentryIssueId,
+        tracker: tracker.type,
+      });
+
+      const afterFailure = await db
+        .prepare(
+          `SELECT id, tracker_issue_id, tracker_issue_url, tracker_issue_key
+           FROM tracker_issue_dedup
+           WHERE sentry_issue_id = ? AND tracker_type = ? AND tracker_team = ?`
+        )
+        .bind(sentryIssueId, tracker.type, tracker.team)
+        .first<DedupRow>();
+
+      if (afterFailure && afterFailure.tracker_issue_id !== '') {
+        // Another DO completed — add comment and return
+        await addDedupComment(context, afterFailure);
+        return afterFailure.tracker_issue_url;
+      }
+      // Placeholder or no row — fall through to create the issue
+    }
+
+    // 3. Create the tracker issue
+    const result = await runCreateIssue(context);
+
+    if (!result) {
+      // Creation failed — remove the placeholder so next attempt can retry
+      console.log('Dedup: issue creation failed, removing placeholder', {
+        sentryIssueId,
+        tracker: tracker.type,
+      });
+      try {
+        await db
+          .prepare(
+            `DELETE FROM tracker_issue_dedup WHERE sentry_issue_id = ? AND tracker_type = ? AND tracker_team = ? AND tracker_issue_id = ''`
+          )
+          .bind(sentryIssueId, tracker.type, tracker.team)
+          .run();
+      } catch (cleanupError) {
+        const msg = cleanupError instanceof Error ? cleanupError.message : 'unknown';
+        console.error('Dedup: failed to clean up placeholder', { error: msg });
+      }
+      return null;
+    }
+
+    // 4. Update the placeholder with real issue data
+    try {
+      await db
+        .prepare(
+          `UPDATE tracker_issue_dedup
+           SET tracker_issue_id = ?, tracker_issue_url = ?, tracker_issue_key = ?, updated_at = datetime('now')
+           WHERE sentry_issue_id = ? AND tracker_type = ? AND tracker_team = ?`
+        )
+        .bind(result.id, result.url, result.key, sentryIssueId, tracker.type, tracker.team)
+        .run();
+
+      console.log('Dedup: stored issue mapping', {
+        sentryIssueId,
+        tracker: tracker.type,
+        issueKey: result.key,
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'unknown';
+      console.error('Dedup: failed to store issue mapping (issue was still created)', {
+        error: msg,
+      });
+    }
+
+    return result.url;
+  } catch (error) {
+    // Catch-all: never let dedup failures block issue creation
+    const msg = error instanceof Error ? error.message : 'unknown';
+    console.error('Dedup: unexpected error, falling back to direct creation', {
+      error: msg,
+    });
+    const result = await runCreateIssue(context);
+    return result?.url ?? null;
   }
 }

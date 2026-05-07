@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runCreateIssue, buildIssueBody, createTrackerClient } from '../trackers';
+import { runCreateIssue, buildIssueBody, createTrackerClient, runCreateIssueWithDedup } from '../trackers';
 import { GitHubTrackerClient } from '../trackers/github-tracker';
 import { LinearTrackerClient } from '../trackers/linear-tracker';
 import { JiraTrackerClient } from '../trackers/jira-tracker';
@@ -172,7 +172,7 @@ describe('runCreateIssue - GitHub', () => {
 
     const result = await runCreateIssue(githubContext());
 
-    expect(result).toBe('https://github.com/test-owner/test-repo/issues/42');
+    expect(result?.url).toBe('https://github.com/test-owner/test-repo/issues/42');
   });
 
   it('adds comment with PR link when fixPrUrl is present', async () => {
@@ -188,7 +188,7 @@ describe('runCreateIssue - GitHub', () => {
     const context = githubContext({ fixPrUrl: 'https://github.com/test-owner/test-repo/pull/7' });
     const result = await runCreateIssue(context);
 
-    expect(result).toBe('https://github.com/test-owner/test-repo/issues/42');
+    expect(result?.url).toBe('https://github.com/test-owner/test-repo/issues/42');
     expect(mockFetch).toHaveBeenCalledTimes(2);
 
     const [commentUrl, commentOptions] = mockFetch.mock.calls[1];
@@ -210,7 +210,7 @@ describe('runCreateIssue - GitHub', () => {
     const context = githubContext({ fixPrUrl: 'https://github.com/test-owner/test-repo/pull/7' });
     const result = await runCreateIssue(context);
 
-    expect(result).toBe('https://github.com/test-owner/test-repo/issues/42');
+    expect(result?.url).toBe('https://github.com/test-owner/test-repo/issues/42');
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
@@ -260,7 +260,7 @@ describe('runCreateIssue - Linear', () => {
 
     const result = await runCreateIssue(linearContext());
 
-    expect(result).toBe('https://linear.app/acme/issue/ENG-42');
+    expect(result?.url).toBe('https://linear.app/acme/issue/ENG-42');
     expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
@@ -294,7 +294,7 @@ describe('runCreateIssue - Linear', () => {
     );
 
     const result = await runCreateIssue(linearContext());
-    expect(result).toBe('https://linear.app/acme/issue/ENG-43');
+    expect(result?.url).toBe('https://linear.app/acme/issue/ENG-43');
 
     // Verify the create mutation received labelIds
     const createCall = mockFetch.mock.calls[2];
@@ -323,7 +323,7 @@ describe('runCreateIssue - Linear', () => {
     const context = linearContext({ tracker: { ...linearContext().tracker, labels: [] } });
     const result = await runCreateIssue(context);
 
-    expect(result).toBe('https://linear.app/acme/issue/ENG-44');
+    expect(result?.url).toBe('https://linear.app/acme/issue/ENG-44');
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
@@ -372,7 +372,7 @@ describe('runCreateIssue - Jira', () => {
     const context = jiraContext();
     const result = await runCreateIssue(context);
 
-    expect(result).toBe('https://test.atlassian.net/browse/PROJ-42');
+    expect(result?.url).toBe('https://test.atlassian.net/browse/PROJ-42');
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
     const [url, options] = mockFetch.mock.calls[0];
@@ -393,7 +393,7 @@ describe('runCreateIssue - Jira', () => {
 
     const result = await runCreateIssue(jiraContext());
 
-    expect(result).toBe('https://test.atlassian.net/browse/PROJ-42');
+    expect(result?.url).toBe('https://test.atlassian.net/browse/PROJ-42');
   });
 
   it('returns null on API error', async () => {
@@ -432,7 +432,7 @@ describe('runCreateIssue - Jira', () => {
     const context = jiraContext({ fixPrUrl: 'https://github.com/test-owner/test-repo/pull/5' });
     const result = await runCreateIssue(context);
 
-    expect(result).toBe('https://test.atlassian.net/browse/PROJ-42');
+    expect(result?.url).toBe('https://test.atlassian.net/browse/PROJ-42');
     expect(mockFetch).toHaveBeenCalledTimes(2);
 
     const [commentUrl, commentOptions] = mockFetch.mock.calls[1];
@@ -552,5 +552,212 @@ describe('createTrackerClient', () => {
         'owner/repo'
       )
     ).toThrow('Unsupported tracker type: asana');
+  });
+});
+
+// ── runCreateIssueWithDedup ────────────────────────────────────────────────────
+
+/** Build a chainable D1 mock: db.prepare(sql).bind(...).first/run() */
+function mockD1() {
+  const stmt: Record<string, any> = {};
+  stmt.bind = vi.fn().mockReturnValue(stmt);
+  stmt.first = vi.fn().mockResolvedValue(null);
+  stmt.run = vi.fn().mockResolvedValue(undefined);
+
+  const db: Record<string, any> = {};
+  db.prepare = vi.fn().mockReturnValue(stmt);
+  return { db: db as unknown as D1Database, stmt };
+}
+
+/** Context with sentryIssueId set (required for dedup path). */
+function dedupContext(overrides: Partial<TrackerIssueContext> = {}): TrackerIssueContext {
+  return githubContext({
+    sourceUrl: 'https://sentry.io/organizations/acme-inc/issues/12345/events/abc123def456/',
+    sentryIssueId: '12345',
+    ...overrides,
+  });
+}
+
+/** Set up mock fetch for a successful GitHub issue creation. */
+function mockGithubCreateIssue() {
+  mockFetch.mockResolvedValueOnce(
+    githubOk({
+      number: 42,
+      html_url: 'https://github.com/test-owner/test-repo/issues/42',
+    })
+  );
+}
+
+/** Set up mock fetch for a failed GitHub issue creation. */
+function mockGithubCreateIssueFail() {
+  mockFetch.mockResolvedValueOnce(githubFail(500, 'Internal Server Error'));
+}
+
+describe('runCreateIssueWithDedup', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+    vi.stubGlobal('fetch', mockFetch);
+  });
+
+  // 1. Happy path — no existing entry
+  it('creates issue when no existing dedup entry', async () => {
+    const { db, stmt } = mockD1();
+    // SELECT returns null
+    stmt.first.mockResolvedValueOnce(null);
+    // INSERT placeholder succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+    // runCreateIssue will call fetch → GitHub API
+    mockGithubCreateIssue();
+    // UPDATE with real data succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    const result = await runCreateIssueWithDedup(dedupContext(), db);
+
+    expect(result).toBe('https://github.com/test-owner/test-repo/issues/42');
+    // INSERT placeholder
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO tracker_issue_dedup')
+    );
+    // UPDATE with real data
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE tracker_issue_dedup')
+    );
+    // fetch was called to create the issue
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // 2. Existing real entry found
+  it('adds comment and returns existing URL when real entry exists', async () => {
+    const { db, stmt } = mockD1();
+    const existingRow = {
+      id: 1,
+      tracker_issue_id: '99',
+      tracker_issue_url: 'https://github.com/test-owner/test-repo/issues/99',
+      tracker_issue_key: '#99',
+    };
+    stmt.first.mockResolvedValueOnce(existingRow);
+    stmt.run.mockResolvedValue(undefined);
+
+    // Mock fetch for the addComment call inside addDedupComment
+    mockFetch.mockResolvedValueOnce(githubOk({ id: 1 }));
+
+    const result = await runCreateIssueWithDedup(dedupContext(), db);
+
+    expect(result).toBe('https://github.com/test-owner/test-repo/issues/99');
+    // Should NOT try to create a new issue (only the comment call)
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    // Should update timestamp
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE tracker_issue_dedup SET updated_at')
+    );
+  });
+
+  // 3. Existing placeholder found — should fall through to create
+  it('falls through to create issue when placeholder exists', async () => {
+    const { db, stmt } = mockD1();
+    // First SELECT returns a placeholder
+    const placeholderRow = {
+      id: 2,
+      tracker_issue_id: '',
+      tracker_issue_url: '',
+      tracker_issue_key: '',
+    };
+    stmt.first.mockResolvedValueOnce(placeholderRow);
+    // INSERT will fail (race), re-query returns the same placeholder
+    stmt.run.mockRejectedValueOnce(new Error('UNIQUE constraint failed'));
+    stmt.first.mockResolvedValueOnce(placeholderRow);
+    // runCreateIssue succeeds via fetch
+    mockGithubCreateIssue();
+    // UPDATE succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    const result = await runCreateIssueWithDedup(dedupContext(), db);
+
+    expect(result).toBe('https://github.com/test-owner/test-repo/issues/42');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // 4. UNIQUE constraint violation on INSERT — re-query finds real entry
+  it('returns existing URL when INSERT fails and re-query finds real entry', async () => {
+    const { db, stmt } = mockD1();
+    // First SELECT returns null
+    stmt.first.mockResolvedValueOnce(null);
+    // INSERT fails
+    stmt.run.mockRejectedValueOnce(new Error('UNIQUE constraint failed'));
+    // Re-query returns a real entry
+    const realEntry = {
+      id: 5,
+      tracker_issue_id: '55',
+      tracker_issue_url: 'https://github.com/test-owner/test-repo/issues/55',
+      tracker_issue_key: '#55',
+    };
+    stmt.first.mockResolvedValueOnce(realEntry);
+    // Mock fetch for addDedupComment
+    mockFetch.mockResolvedValueOnce(githubOk({ id: 1 }));
+
+    const result = await runCreateIssueWithDedup(dedupContext(), db);
+
+    expect(result).toBe('https://github.com/test-owner/test-repo/issues/55');
+    // Should not create a new issue — only the comment
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // 5. Fallback: no DB provided
+  it('falls back to runCreateIssue when db is undefined', async () => {
+    mockGithubCreateIssue();
+
+    const result = await runCreateIssueWithDedup(dedupContext(), undefined);
+
+    expect(result).toBe('https://github.com/test-owner/test-repo/issues/42');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // 6. Fallback: no sentryIssueId
+  it('falls back to runCreateIssue when sentryIssueId is empty', async () => {
+    const { db } = mockD1();
+    mockGithubCreateIssue();
+
+    const ctx = dedupContext({ sentryIssueId: undefined });
+    const result = await runCreateIssueWithDedup(ctx, db);
+
+    expect(result).toBe('https://github.com/test-owner/test-repo/issues/42');
+    // Should not touch the DB
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  // 7. Fallback: no tracker — runCreateIssue crashes in its error handler (pre-existing bug)
+  it('throws when tracker is not set (pre-existing: error handler accesses tracker.type)', async () => {
+    const { db } = mockD1();
+
+    const ctx = dedupContext({ tracker: undefined as any });
+
+    // runCreateIssue enters catch → tries context.tracker.type → TypeError
+    await expect(runCreateIssueWithDedup(ctx, db)).rejects.toThrow(
+      "Cannot read properties of undefined"
+    );
+    // Should not touch the DB (falls through the early-return guard)
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  // 8. Issue creation fails — placeholder cleaned up
+  it('cleans up placeholder when issue creation fails', async () => {
+    const { db, stmt } = mockD1();
+    // SELECT returns null
+    stmt.first.mockResolvedValueOnce(null);
+    // INSERT succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+    // runCreateIssue returns null (GitHub API fails)
+    mockGithubCreateIssueFail();
+    // DELETE succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    const result = await runCreateIssueWithDedup(dedupContext(), db);
+
+    expect(result).toBeNull();
+    // Should have called DELETE to clean up placeholder
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM tracker_issue_dedup')
+    );
   });
 });

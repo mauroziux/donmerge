@@ -31,6 +31,8 @@ export interface ErrorContext {
   metadata?: Record<string, unknown>;
   /** Original URL of the error/ticket in the source system (e.g. Sentry, GitHub Issue) */
   source_url?: string;
+  /** Sentry issue ID — used for deduplication (same across all events in an issue) */
+  sentry_issue_id?: string;
 }
 
 // ── Triage output ──────────────────────────────────────────────────────────────
@@ -154,4 +156,5 @@ export interface TriageEnv {
   ANTHROPIC_API_KEY?: string;
   CODEX_MODEL?: string;
   TriageProcessor: DurableObjectNamespace;
+  DB?: D1Database;
 }

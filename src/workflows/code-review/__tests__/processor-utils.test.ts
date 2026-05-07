@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   validateReviewResult,
   normalizeReviewResult,
+  normalizeCommentBody,
   filterCommentsByMatch,
   calculateIssueOverlapScore,
   hasStrongIssueTextOverlap,
@@ -338,6 +339,32 @@ describe('normalizeReviewResult', () => {
     const normalized = normalizeReviewResult(result);
     expect(normalized.prSummary).toBeUndefined();
     expect(normalized.summary).toBe('Good');
+  });
+
+  it('should normalize double-escaped newlines in comment body', () => {
+    const result = {
+      approved: false,
+      summary: 'Issues',
+      prSummary: {
+        overview: 'Desc',
+        keyChanges: ['Change'],
+        codeQuality: 'Ok',
+        testingNotes: 'Ok',
+        riskAssessment: 'Low',
+      },
+      lineComments: [
+        createReviewComment({
+          body: '🤖 **AI Prompt:**\n```\\nVerify code.\\n```',
+          issueKey: 'test-issue',
+          severity: 'suggestion',
+        }),
+      ],
+      criticalIssues: [],
+      suggestions: [],
+    };
+
+    const normalized = normalizeReviewResult(result);
+    expect(normalized.lineComments[0].body).toBe('🤖 **AI Prompt:**\n```\nVerify code.\n```');
   });
 
   it('should default arrays when missing', () => {
@@ -712,6 +739,39 @@ describe('syncTrackedIssuesFromComments', () => {
 
     const result = syncTrackedIssuesFromComments([issue], [previous]);
     expect(result[0].githubCommentId).toBeUndefined();
+  });
+});
+
+// ─── normalizeCommentBody ────────────────────────────────────────────
+
+describe('normalizeCommentBody', () => {
+  it('should replace literal \\n sequences with real newlines', () => {
+    const input = '🤖 **AI Prompt:**\n```\\nVerify the code.\\n```';
+    const result = normalizeCommentBody(input);
+    expect(result).toBe('🤖 **AI Prompt:**\n```\nVerify the code.\n```');
+    expect(result).not.toContain('\\n');
+  });
+
+  it('should leave bodies with real newlines unchanged', () => {
+    const input = '🔴 **Issue:** Bug\n\n💡 **Suggestion:** Fix';
+    expect(normalizeCommentBody(input)).toBe(input);
+  });
+
+  it('should handle empty string', () => {
+    expect(normalizeCommentBody('')).toBe('');
+  });
+
+  it('should handle body with only literal \\n', () => {
+    expect(normalizeCommentBody('\\n')).toBe('\n');
+  });
+
+  it('should handle multiple consecutive literal \\n', () => {
+    expect(normalizeCommentBody('line1\\n\\nline2')).toBe('line1\n\nline2');
+  });
+
+  it('should handle mixed real newlines and literal \\n', () => {
+    const input = 'line1\n\\n\\nline2';
+    expect(normalizeCommentBody(input)).toBe('line1\n\n\nline2');
   });
 });
 

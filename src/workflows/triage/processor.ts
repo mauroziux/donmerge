@@ -23,7 +23,7 @@ import type {
 import { fetchRepoCodeForTriage } from './repo-fetcher';
 import { buildTriagePrompt } from './prompts';
 import { runAutoFixV2 } from './auto-fix-v2';
-import { runCreateIssue } from './trackers';
+import { runCreateIssueWithDedup } from './trackers';
 import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, unwrapFlueResponse } from './utils';
 
 // State keys
@@ -216,14 +216,18 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
 
     // 6. Tracker issue creation — always when tracker configured
     if (context.tracker) {
-      const issueUrl = await runCreateIssue({
-        repo: context.repo,
-        errorTitle: errorContext.title,
-        sourceUrl: errorContext.source_url ?? '',
-        triageOutput: output,
-        tracker: context.tracker,
-        fixPrUrl: result.fix_pr_url ?? null,
-      });
+      const issueUrl = await runCreateIssueWithDedup(
+        {
+          repo: context.repo,
+          errorTitle: errorContext.title,
+          sourceUrl: errorContext.source_url ?? '',
+          sentryIssueId: errorContext.sentry_issue_id,
+          triageOutput: output,
+          tracker: context.tracker,
+          fixPrUrl: result.fix_pr_url ?? null,
+        },
+        this.env.DB,
+      );
       if (issueUrl) {
         result.tracker_issue_url = issueUrl;
       }

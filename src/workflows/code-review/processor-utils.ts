@@ -16,6 +16,17 @@ import { deriveIssueKey, extractIssueTerms, buildIssueIdentity } from './issue-k
 import { getSeverityOverride } from './donmerge';
 
 /**
+ * Fix LLM double-escaped newlines in comment body.
+ *
+ * The LLM sometimes outputs \\n (JSON double-escape) inside code blocks,
+ * which JSON.parse() turns into the literal two-character string \n instead
+ * of a real newline. Replace with actual newlines.
+ */
+export function normalizeCommentBody(body: string): string {
+  return body.replace(/\\n/g, '\n');
+}
+
+/**
  * Validate required fields from LLM output.
  */
 export function validateReviewResult(
@@ -71,6 +82,7 @@ export function normalizeReviewResult(
     ? result.lineComments.map((comment) => ({
         ...comment,
         issueKey: deriveIssueKey(comment),
+        body: normalizeCommentBody(comment.body),
       }))
     : [];
   const reconciledLineComments = reconcileIssueKeys(lineComments, previousComments ?? []);

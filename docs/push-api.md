@@ -523,7 +523,7 @@ The agent can read files, run tests, edit code, and commit — all inside an iso
 ### PR format
 
 - **Branch name:** `donmerge/fix-v2/{sanitized-title}-{random}`
-- **PR title:** `fix(v2): {error title}` (truncated to 80 chars)
+- **PR title:** `fix: {error title}` (truncated to 80 chars)
 - **PR body:** Includes error link, root cause, agent summary, files changed, and stack trace summary
 
 ### When auto-fix is skipped

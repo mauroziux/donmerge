@@ -125,6 +125,8 @@ interface SentryEvent {
   web_url?: string;
   platform?: string;
   event_id?: string;
+  issue_id?: string;
+  issue_url?: string;
   exception?: {
     values?: SentryException[];
   };
@@ -211,6 +213,9 @@ export function extractSentryErrorContext(
   if (event.event_id) {
     metadata.event_id = event.event_id;
   }
+  if (event.issue_id) {
+    metadata.issue_id = event.issue_id;
+  }
   if (event.platform) {
     metadata.platform = event.platform;
   }
@@ -222,6 +227,7 @@ export function extractSentryErrorContext(
     affected_files: affectedFiles,
     environment,
     source_url: sourceUrl,
+    sentry_issue_id: event.issue_id,
     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
   };
 }

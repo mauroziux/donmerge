@@ -33,7 +33,7 @@ export function createErrorContext(
     severity: 'error',
     environment: 'production',
     metadata: { count: '42', userCount: 10 },
-    source_url: 'https://sentry.io/organizations/acme/issues/12345/',
+    source_url: 'https://sentry.io/organizations/acme/issues/12345/events/abc123/',
     ...overrides,
   };
 }
@@ -171,10 +171,10 @@ export function createAutoFixEdit(overrides: Partial<AutoFixEdit> = {}): AutoFix
 export function createAutoFixContext(overrides: Partial<AutoFixContext> = {}): AutoFixContext {
   return {
     repo: 'owner/repo',
-    sha: 'abc123',
+    sha: '',
     githubToken: 'ghs_test_token',
     errorTitle: 'TypeError: Cannot read properties of undefined',
-    sourceUrl: 'https://sentry.io/organizations/test/issues/12345/',
+    sourceUrl: 'https://sentry.io/organizations/test/issues/12345/events/abc123/',
     triageOutput: createValidTriageOutput({
       affected_files: ['src/index.ts'],
     }),
@@ -191,7 +191,8 @@ export function createTrackerIssueContext(
   return {
     repo: 'test-owner/test-repo',
     errorTitle: 'TypeError: Cannot read properties of undefined',
-    sourceUrl: 'https://test.sentry.io/issues/12345/',
+    sourceUrl: 'https://sentry.io/organizations/acme-inc/issues/12345/events/abc123def456/',
+    sentryIssueId: '12345',
     triageOutput: createValidTriageOutput(),
     tracker: {
       type: 'github',

@@ -45,9 +45,11 @@ function buildSentryPayload(overrides?: Record<string, unknown>) {
       event: {
         title: 'TypeError: Cannot read property "name" of undefined',
         message: 'TypeError: Cannot read property "name" of undefined',
-        web_url: 'https://sentry.io/organizations/acme-inc/issues/12345/',
+        web_url: 'https://sentry.io/organizations/acme-inc/issues/12345/events/abc123def456/',
         platform: 'javascript',
         event_id: 'abc123def456',
+        issue_id: '12345',
+        issue_url: 'https://sentry.io/api/0/issues/12345/',
         exception: {
           values: [
             {
@@ -155,8 +157,9 @@ describe('extractSentryErrorContext', () => {
     expect(ctx.stack_trace).toContain('at processUser (/app/src/utils.ts:42:15)');
     expect(ctx.affected_files).toEqual(['/app/src/utils.ts', '/app/src/index.ts']);
     expect(ctx.environment).toBe('production');
-    expect(ctx.source_url).toBe('https://sentry.io/organizations/acme-inc/issues/12345/');
-    expect(ctx.metadata).toEqual({ event_id: 'abc123def456', platform: 'javascript' });
+    expect(ctx.source_url).toBe('https://sentry.io/organizations/acme-inc/issues/12345/events/abc123def456/');
+    expect(ctx.sentry_issue_id).toBe('12345');
+    expect(ctx.metadata).toEqual({ event_id: 'abc123def456', issue_id: '12345', platform: 'javascript' });
   });
 
   it('should stack trace with frames in correct order (reversed)', () => {
@@ -235,11 +238,13 @@ describe('extractSentryErrorContext', () => {
       data: {
         event: {
           web_url: 'https://mantto.sentry.io/issues/67890/',
+          issue_id: '67890',
         },
       },
     });
     const ctx = extractSentryErrorContext(payload);
     expect(ctx.source_url).toBe('https://mantto.sentry.io/issues/67890/');
+    expect(ctx.sentry_issue_id).toBe('67890');
   });
 });
 

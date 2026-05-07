@@ -15,6 +15,15 @@ import type { AutoFixContext, AutoFixSandbox, TriageEnv, TriageOutput } from './
 import { sanitizeTitle, sanitizeData } from './prompts/sanitizers';
 import { parseModelConfig, extractJsonFromResponse, safeJsonParse, utf8ToBase64, base64ToUtf8 } from './utils';
 import { resolvePaths, formatPathMappingPrompt, type ResolveResult } from './path-resolver';
+import {
+  computeSafeTitle,
+  findExistingPr,
+  claimDedupSlot,
+  updateDedupSlot,
+  removeDedupSlot,
+  addPrEnrichmentComment,
+  recordSourceUrl,
+} from './auto-fix-dedup';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -375,14 +384,20 @@ async function cloneRepo(
   sandbox: AutoFixSandbox,
   repo: string,
   githubToken: string,
+  branch?: string,
 ): Promise<void> {
   // Clean up in case the sandbox is reused from the triage step
   await execShell(sandbox, `rm -rf ${REPO_DIR} 2>/dev/null || true`);
 
+  // Validate branch name to prevent shell injection
+  const branchFlag = branch && /^[a-zA-Z0-9._/\-]+$/.test(branch)
+    ? ` --branch ${branch}`
+    : '';
+
   const cloneUrl = `https://x-access-token:${githubToken}@github.com/${repo}.git`;
   const output = await execShell(
     sandbox,
-    `git clone --depth=1 --single-branch ${cloneUrl} ${REPO_DIR} 2>&1`,
+    `git clone --depth=1 --single-branch${branchFlag} ${cloneUrl} ${REPO_DIR} 2>&1`,
   );
   // Redact token before logging — git errors may include the clone URL
   console.log('[auto-fix-v2] Clone output:', redactToken(output?.slice?.(0, 500) ?? '', githubToken));
@@ -732,16 +747,13 @@ async function createPrFromSandbox(
 
   console.log('[auto-fix-v2] Changed files', { files: filesChanged });
 
-  // 2. Get base branch and SHA
-  const baseBranch = await getDefaultBranch(repo, githubToken);
+  // 2. Get base branch and SHA — use configured branch (context.sha) if available
+  const baseBranch = context.sha || await getDefaultBranch(repo, githubToken);
   const baseSha = await getBranchHeadSha(repo, baseBranch, githubToken);
 
   // 3. Create branch
   const shortHash = crypto.randomUUID().replace(/-/g, '').substring(0, 8);
-  const safeTitle = errorTitle
-    .replace(/[^a-zA-Z0-9]/g, '-')
-    .toLowerCase()
-    .slice(0, 40);
+  const safeTitle = computeSafeTitle(errorTitle);
   const branchName = `donmerge/fix-v2/${safeTitle}-${shortHash}`;
 
   let branchCreated = false;
@@ -783,7 +795,7 @@ async function createPrFromSandbox(
     }
 
     // 5. Create PR
-    const prTitle = `fix(v2): ${sanitizeTitle(errorTitle).slice(0, 80)}`;
+    const prTitle = `fix: ${sanitizeTitle(errorTitle).slice(0, 80)}`;
     const prBody = buildPrBody(context, agentResult);
     const prUrl = await createPullRequest(
       repo,
@@ -864,11 +876,60 @@ export async function runAutoFixV2(
   deps: AutoFixV2Deps,
 ): Promise<string | null> {
   const { sandbox } = deps;
+  const db = env.DB;
+  const safeTitle = computeSafeTitle(context.errorTitle);
+
+  // ── PR dedup check (before expensive clone + agent loop) ──────────────────
+  if (db && safeTitle) {
+    try {
+      // Check for existing PR
+      const existing = await findExistingPr(context.repo, safeTitle, db);
+
+      if (existing && existing.pr_url !== '') {
+        // Real PR exists — add enrichment comment and skip
+        await addPrEnrichmentComment(context.repo, existing.pr_number, context, context.githubToken);
+        await recordSourceUrl(context.repo, safeTitle, context.sourceUrl, db);
+        console.log('[auto-fix-v2] Dedup: existing PR found, adding comment', {
+          repo: context.repo,
+          prUrl: existing.pr_url,
+        });
+        return existing.pr_url;
+      }
+
+      // Try to claim the slot
+      const claimResult = await claimDedupSlot(context.repo, safeTitle, context.sourceUrl, db);
+
+      if (claimResult.status === 'existing_found' && claimResult.existing?.pr_url) {
+        await addPrEnrichmentComment(context.repo, claimResult.existing.pr_number, context, context.githubToken);
+        await recordSourceUrl(context.repo, safeTitle, context.sourceUrl, db);
+        console.log('[auto-fix-v2] Dedup: race resolved with existing PR', {
+          repo: context.repo,
+          prUrl: claimResult.existing.pr_url,
+        });
+        return claimResult.existing.pr_url;
+      }
+
+      if (claimResult.status === 'race_detected') {
+        // Another DO is working on it — don't create duplicate
+        console.log('[auto-fix-v2] Dedup: another DO is creating a PR, skipping', {
+          repo: context.repo,
+          safeTitle,
+        });
+        return null;
+      }
+
+      // 'claimed' — proceed with agent loop below
+    } catch (error) {
+      // Dedup failure should never block the main flow
+      const msg = error instanceof Error ? error.message : 'unknown';
+      console.error('[auto-fix-v2] Dedup check failed, proceeding without dedup', { error: msg });
+    }
+  }
 
   try {
     // 1. Clone repo
     console.log('[auto-fix-v2] Cloning repo', { repo: context.repo });
-    await cloneRepo(sandbox, context.repo, context.githubToken);
+    await cloneRepo(sandbox, context.repo, context.githubToken, context.sha);
 
     // 2. Configure git identity in sandbox
     await execShell(
@@ -911,6 +972,10 @@ export async function runAutoFixV2(
       console.log('[auto-fix-v2] Agent could not fix', {
         reason: agentResult.summary,
       });
+      // Dedup: clean up placeholder on failure
+      if (db && safeTitle) {
+        await removeDedupSlot(context.repo, safeTitle, db);
+      }
       return null;
     }
 
@@ -919,14 +984,35 @@ export async function runAutoFixV2(
         type: agentResult.type,
         reason: agentResult.summary,
       });
+      // Dedup: clean up placeholder on failure
+      if (db && safeTitle) {
+        await removeDedupSlot(context.repo, safeTitle, db);
+      }
       return null;
     }
 
     // 5. Create PR via GitHub API (handles git diff for actual changed files)
-    return await createPrFromSandbox(sandbox, context, agentResult, initialSha);
+    const prUrl = await createPrFromSandbox(sandbox, context, agentResult, initialSha);
+
+    // Dedup: update or remove slot based on PR creation result
+    if (db && safeTitle) {
+      if (prUrl) {
+        // Extract PR number from URL (e.g. https://github.com/owner/repo/pull/42 → 42)
+        const prNumber = prUrl.split('/').pop() ?? '';
+        await updateDedupSlot(context.repo, safeTitle, prUrl, prNumber, '', context.sourceUrl, db);
+      } else {
+        await removeDedupSlot(context.repo, safeTitle, db);
+      }
+    }
+
+    return prUrl;
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'unknown';
     console.error('[auto-fix-v2] Pipeline failed', { error: msg });
+    // Dedup: clean up placeholder on unexpected failure
+    if (db && safeTitle) {
+      await removeDedupSlot(context.repo, safeTitle, db);
+    }
     return null;
   }
 }

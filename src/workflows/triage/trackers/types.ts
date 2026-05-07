@@ -21,6 +21,8 @@ export interface TrackerIssueContext {
   repo: string;
   errorTitle: string;
   sourceUrl: string;
+  /** Sentry issue ID — used for deduplication (same across all events in an issue) */
+  sentryIssueId?: string;
   triageOutput: TriageOutput;
   tracker: TrackerConfig;
   fixPrUrl: string | null;

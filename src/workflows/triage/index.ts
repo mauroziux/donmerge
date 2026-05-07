@@ -59,6 +59,19 @@ export { runAutoFix } from './auto-fix';
 export { runAutoFixV2 } from './auto-fix-v2';
 export type { AutoFixV2Deps } from './auto-fix-v2';
 
+// Auto-fix PR dedup
+export {
+  computeSafeTitle,
+  findExistingPr,
+  claimDedupSlot,
+  updateDedupSlot,
+  removeDedupSlot,
+  addPrEnrichmentComment,
+  recordSourceUrl,
+  buildEnrichmentCommentBody,
+} from './auto-fix-dedup';
+export type { ExistingPrRow } from './auto-fix-dedup';
+
 // Trackers
-export { runCreateIssue } from './trackers';
+export { runCreateIssue, runCreateIssueWithDedup } from './trackers';
 export type { TrackerClient, TrackerIssueParams, TrackerIssueResult, TrackerIssueContext } from './trackers';

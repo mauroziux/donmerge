@@ -386,6 +386,41 @@ describe('runAutoFixV2', () => {
     expect(body.base).toBe('develop');
   });
 
+  it('should use context.sha as base branch when provided', async () => {
+    const context = makeContext({ sha: 'develop' });
+    const { deps, commands } = makeDeps(['', '', '', '', '']);
+
+    mockFetch
+      .mockResolvedValueOnce(openaiOk(JSON.stringify({
+        action: 'done',
+        summary: 'Fixed',
+        files_changed: ['src/index.ts'],
+      })))
+      // No getDefaultBranch call — context.sha is used directly
+      .mockResolvedValueOnce(githubOk({ object: { sha: 'devbase456' } }))
+      .mockResolvedValueOnce(githubOk({}))
+      .mockResolvedValueOnce(githubOk({ sha: 'blobsha123', content: btoa('old') }))
+      .mockResolvedValueOnce(githubOk({ commit: { sha: 'commitsha123' } }))
+      .mockResolvedValueOnce(githubOk({ html_url: 'https://github.com/owner/repo/pull/3' }));
+
+    const result = await runAutoFixV2(context, testEnv, deps);
+
+    expect(result).toBe('https://github.com/owner/repo/pull/3');
+
+    // Verify the clone command includes --branch develop
+    const cloneCmd = commands.find((c) => c.includes('git clone'));
+    expect(cloneCmd).toContain('--branch develop');
+
+    // Verify PR targets the configured branch, not the GitHub default
+    const prCall = mockFetch.mock.calls[5];
+    const body = JSON.parse(prCall[1].body);
+    expect(body.base).toBe('develop');
+
+    // Verify getBranchHeadSha was called for the correct branch
+    const shaCall = mockFetch.mock.calls[1];
+    expect(shaCall[0]).toContain('/git/ref/heads/develop');
+  });
+
   it('should clone repo with correct git clone command', async () => {
     const context = makeContext();
     const { deps, commands } = makeDeps(['', '', '', '']);
@@ -401,12 +436,30 @@ describe('runAutoFixV2', () => {
     expect(commands[1]).toContain('git clone --depth=1 --single-branch');
     expect(commands[1]).toContain('x-access-token:');
     expect(commands[1]).toContain(context.repo);
+    // No --branch flag when sha is empty
+    expect(commands[1]).not.toContain('--branch');
     // Third command strips the token from the remote URL
     expect(commands[2]).toContain('git remote set-url');
     expect(commands[2]).toContain('https://github.com/');
     expect(commands[2]).not.toContain('x-access-token:');
     // Fourth command should be git config
     expect(commands[3]).toContain('git config');
+  });
+
+  it('should reject branch names with shell injection characters', async () => {
+    const context = makeContext({ sha: 'develop; rm -rf /' });
+    const { deps, commands } = makeDeps(['', '']);
+
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(JSON.stringify({ action: 'cannot_fix', reason: 'Test' }))
+    );
+
+    await runAutoFixV2(context, testEnv, deps);
+
+    const cloneCmd = commands.find((c) => c.includes('git clone'));
+    // The injection attempt should be stripped — no --branch flag
+    expect(cloneCmd).not.toContain('--branch');
+    expect(cloneCmd).not.toContain('rm -rf');
   });
 
   it('should configure git identity after cloning', async () => {
@@ -1378,5 +1431,311 @@ describe('runAutoFixV2 — Unicode file content', () => {
 
     expect(result).toBe('https://github.com/owner/repo/pull/101');
     // The pipeline should not crash when decoding the Unicode GitHub content
+  });
+});
+
+// ── PR dedup integration tests ──────────────────────────────────────────────────
+
+/** Build a chainable D1 mock: db.prepare(sql).bind(...).first/run */
+function mockD1() {
+  const stmt: Record<string, any> = {};
+  stmt.bind = vi.fn().mockReturnValue(stmt);
+  stmt.first = vi.fn().mockResolvedValue(null);
+  stmt.run = vi.fn().mockResolvedValue(undefined);
+
+  const db: Record<string, any> = {};
+  db.prepare = vi.fn().mockReturnValue(stmt);
+  return { db: db as unknown as D1Database, stmt };
+}
+
+describe('runAutoFixV2 — PR dedup paths', () => {
+  it('should skip agent loop and return existing PR URL when dedup finds existing PR', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+    const { deps, commands } = makeDeps([]);
+
+    // findExistingPr returns a row with a real PR
+    stmt.first.mockResolvedValueOnce({
+      id: 1,
+      pr_url: 'https://github.com/owner/repo/pull/42',
+      pr_number: '42',
+      branch_name: 'donmerge/fix-v2/typeerror-cannot-read-properties-of-und-aaaaaaaa',
+      source_urls: '["https://sentry.io/1"]',
+    });
+    // recordSourceUrl: SELECT existing source_urls, then UPDATE
+    stmt.first.mockResolvedValueOnce({ source_urls: '["https://sentry.io/1"]' });
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    // addPrEnrichmentComment calls fetch (POST to GitHub comments API)
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: 1 }),
+    });
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    // Should return the existing PR URL
+    expect(result).toBe('https://github.com/owner/repo/pull/42');
+
+    // Agent loop should NOT have run — no sandbox clone commands
+    expect(commands.length).toBe(0);
+
+    // No LLM calls
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // GitHub comment was posted to the existing PR
+    expect(mockFetch.mock.calls[0][0]).toContain('/issues/42/comments');
+  });
+
+  it('should claim slot, run agent loop, and update dedup on PR success', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+    const { deps } = makeDeps(['', '', '', '', 'content']);
+
+    // findExistingPr returns null (no existing entry)
+    stmt.first.mockResolvedValueOnce(null);
+    // claimDedupSlot INSERT succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+    // updateDedupSlot: SELECT existing source_urls
+    stmt.first.mockResolvedValueOnce({ source_urls: '["https://sentry.io/organizations/test/issues/12345/events/abc123/"]' });
+    // updateDedupSlot: UPDATE
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    // Agent loop
+    mockFetch
+      .mockResolvedValueOnce(openaiOk(JSON.stringify({
+        action: 'done',
+        summary: 'Added null check',
+        files_changed: ['src/index.ts'],
+      })))
+      // GitHub API calls for PR creation
+      .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
+      .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
+      .mockResolvedValueOnce(githubOk({}))
+      .mockResolvedValueOnce(githubOk({ sha: 'blobsha123', content: btoa('old') }))
+      .mockResolvedValueOnce(githubOk({ commit: { sha: 'commitsha123' } }))
+      .mockResolvedValueOnce(githubOk({ html_url: 'https://github.com/owner/repo/pull/77' }));
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    expect(result).toBe('https://github.com/owner/repo/pull/77');
+
+    // Verify dedup calls happened in correct order:
+    // 1. findExistingPr (SELECT)
+    // 2. claimDedupSlot (INSERT)
+    // 3. updateDedupSlot (SELECT source_urls + UPDATE)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('FROM pr_dedup'));
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO pr_dedup'));
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('UPDATE pr_dedup'));
+  });
+
+  it('should return null when race detected (another DO has placeholder)', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+    const { deps, commands } = makeDeps([]);
+
+    // findExistingPr returns null (no row yet)
+    stmt.first.mockResolvedValueOnce(null);
+    // claimDedupSlot INSERT fails (UNIQUE constraint)
+    stmt.run.mockRejectedValueOnce(new Error('UNIQUE constraint failed'));
+    // claimDedupSlot re-query returns placeholder
+    stmt.first.mockResolvedValueOnce({
+      id: 3,
+      pr_url: '',
+      pr_number: '',
+      branch_name: '',
+      source_urls: '["https://sentry.io/1"]',
+    });
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    // Should return null — another DO is working on it
+    expect(result).toBeNull();
+
+    // Agent loop should NOT have run
+    expect(commands.length).toBe(0);
+
+    // No LLM or GitHub API calls
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('should return existing PR URL when race resolved with real PR from claimDedupSlot', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+    const { deps, commands } = makeDeps([]);
+
+    // findExistingPr returns null
+    stmt.first.mockResolvedValueOnce(null);
+    // claimDedupSlot INSERT fails
+    stmt.run.mockRejectedValueOnce(new Error('UNIQUE constraint failed'));
+    // claimDedupSlot re-query finds a real PR
+    stmt.first.mockResolvedValueOnce({
+      id: 5,
+      pr_url: 'https://github.com/owner/repo/pull/55',
+      pr_number: '55',
+      branch_name: 'donmerge/fix-v2/typeerror-cannot-read-properties-of-und-bbbbbbbb',
+      source_urls: '["https://sentry.io/1"]',
+    });
+    // recordSourceUrl: SELECT + UPDATE
+    stmt.first.mockResolvedValueOnce({ source_urls: '["https://sentry.io/1"]' });
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    // addPrEnrichmentComment calls fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: 2 }),
+    });
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    // Should return the existing PR URL found by claimDedupSlot
+    expect(result).toBe('https://github.com/owner/repo/pull/55');
+
+    // Agent loop should NOT have run
+    expect(commands.length).toBe(0);
+
+    // GitHub comment was posted
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0][0]).toContain('/issues/55/comments');
+  });
+
+  it('should proceed with normal flow when DB is not provided', async () => {
+    const context = makeContext();
+    // testEnv has no DB property
+    const { deps, commands } = makeDeps(['', '']);
+
+    // Agent loop — agent immediately cannot_fix
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(JSON.stringify({ action: 'cannot_fix', reason: 'Test' }))
+    );
+
+    const result = await runAutoFixV2(context, testEnv, deps);
+
+    // Normal flow ran (agent loop executed)
+    expect(result).toBeNull();
+
+    // Sandbox was used (clone commands present)
+    expect(commands.length).toBeGreaterThan(0);
+    expect(commands[0]).toContain('rm -rf');
+  });
+
+  it('should clean up placeholder when PR creation fails', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+    const { deps } = makeDeps(['', '', '', '', '']);
+
+    // findExistingPr returns null
+    stmt.first.mockResolvedValueOnce(null);
+    // claimDedupSlot INSERT succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+    // removeDedupSlot DELETE (placeholder cleanup)
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    // Agent loop — agent reports done
+    mockFetch
+      .mockResolvedValueOnce(openaiOk(JSON.stringify({
+        action: 'done',
+        summary: 'Fixed',
+        files_changed: ['src/index.ts'],
+      })))
+      // GitHub API — PR creation fails
+      .mockResolvedValueOnce(githubOk({ default_branch: 'main' }))
+      .mockResolvedValueOnce(githubOk({ object: { sha: 'base123sha' } }))
+      .mockResolvedValueOnce(githubOk({}))  // createBranch
+      .mockResolvedValueOnce(githubOk({ sha: 'blobsha123', content: btoa('old') }))
+      .mockResolvedValueOnce(githubFail(500, 'Update failed'));  // updateFile fails
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    // PR creation failed
+    expect(result).toBeNull();
+
+    // Verify placeholder was cleaned up (DELETE)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM pr_dedup'));
+  });
+
+  it('should clean up placeholder when agent returns cannot_fix', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+    const { deps } = makeDeps(['', '']);
+
+    // findExistingPr returns null
+    stmt.first.mockResolvedValueOnce(null);
+    // claimDedupSlot INSERT succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+    // removeDedupSlot DELETE
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    // Agent loop — agent cannot fix
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(JSON.stringify({ action: 'cannot_fix', reason: 'Bug requires domain knowledge' }))
+    );
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    expect(result).toBeNull();
+
+    // Verify placeholder was cleaned up
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM pr_dedup'));
+  });
+
+  it('should clean up placeholder on unexpected pipeline exception', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+
+    // findExistingPr returns null
+    stmt.first.mockResolvedValueOnce(null);
+    // claimDedupSlot INSERT succeeds
+    stmt.run.mockResolvedValueOnce(undefined);
+    // removeDedupSlot DELETE
+    stmt.run.mockResolvedValueOnce(undefined);
+
+    // Sandbox throws during clone (simulating unexpected failure)
+    const sandbox: AutoFixSandbox = {
+      exec: vi.fn(async (cmd: string) => {
+        if (cmd.includes('git clone')) throw new Error('Clone failed catastrophically');
+        return { success: true, exitCode: 0, stdout: '', stderr: '' };
+      }),
+      setEnvVars: vi.fn(async () => {}),
+    };
+    const deps = { sandbox, flue: {} };
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    // Should not throw, returns null
+    expect(result).toBeNull();
+
+    // Verify placeholder was cleaned up even on unexpected exception
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM pr_dedup'));
+  });
+
+  it('should proceed with normal flow when dedup check throws', async () => {
+    const context = makeContext();
+    const { db, stmt } = mockD1();
+    const envWithDb = { ...testEnv, DB: db };
+    const { deps } = makeDeps(['', '']);
+
+    // findExistingPr throws (DB connection issue)
+    stmt.first.mockRejectedValueOnce(new Error('DB connection lost'));
+
+    // Agent loop — agent cannot fix
+    mockFetch.mockResolvedValueOnce(
+      openaiOk(JSON.stringify({ action: 'cannot_fix', reason: 'Test' }))
+    );
+
+    const result = await runAutoFixV2(context, envWithDb, deps);
+
+    // Should fall through to normal flow (dedup error doesn't block)
+    expect(result).toBeNull();
+
+    // LLM was called (agent loop ran)
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
