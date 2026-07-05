@@ -30,6 +30,19 @@ export function sanitizePromptInput(input: string, maxLength = 2000): string {
 }
 
 /**
+ * Quotes untrusted user-controlled data for prompt inclusion.
+ *
+ * Sanitization alone cannot neutralize natural-language instructions like
+ * "ignore the rubric". Callers should pair this quoted representation with
+ * explicit prompt instructions that the quoted data is not executable.
+ */
+export function quoteUntrustedPromptData(input: string, maxLength = 2000): string {
+  return JSON.stringify(sanitizePromptInput(input, maxLength))
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
+}
+
+/**
  * Sanitizes a diff text for prompt inclusion.
  * Less aggressive than user input sanitization - preserves code structure.
  *

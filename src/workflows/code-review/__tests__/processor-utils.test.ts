@@ -16,6 +16,10 @@ import {
   validateReviewResult,
   normalizeReviewResult,
   normalizeCommentBody,
+  filterLineCommentsByQuality,
+  filterCriticalIssuesByQuality,
+  hasBlockingFindings,
+  withBlockingApproval,
   filterCommentsByMatch,
   calculateIssueOverlapScore,
   hasStrongIssueTextOverlap,
@@ -172,13 +176,13 @@ describe('validateReviewResult', () => {
     expect(validateReviewResult(result).valid).toBe(true);
   });
 
-  it('should reject criticalIssues with empty lineComments', () => {
+  it('should accept criticalIssues with empty lineComments', () => {
     const result = makeValidResult({
       criticalIssues: ['SQL injection'],
       lineComments: [],
       approved: false,
     });
-    expect(validateReviewResult(result).reason).toContain('criticalIssues present but lineComments empty');
+    expect(validateReviewResult(result).valid).toBe(true);
   });
 
   it('should accept criticalIssues with matching lineComments', () => {
@@ -220,7 +224,7 @@ describe('normalizeReviewResult', () => {
     expect(normalized.approved).toBe(true);
   });
 
-  it('should normalize approved=false when lineComments exist', () => {
+  it('should normalize approved=false when critical lineComments exist', () => {
     const result: ReviewResult = {
       approved: true,
       summary: 'Has issues',
@@ -232,7 +236,11 @@ describe('normalizeReviewResult', () => {
         riskAssessment: 'Medium',
       },
       lineComments: [
-        createReviewComment({ body: '🔴 **Issue:** Missing validation\n\n💡 **Suggestion:** Add checks', issueKey: 'missing-validation', severity: 'critical' }),
+        createReviewComment({
+          body: '🔴 **Issue:** Missing null check throws when user is undefined\n\n💡 **Suggestion:** Add checks',
+          issueKey: 'missing-null-check',
+          severity: 'critical',
+        }),
       ],
       criticalIssues: [],
       suggestions: [],
@@ -242,7 +250,7 @@ describe('normalizeReviewResult', () => {
     expect(normalized.approved).toBe(false);
   });
 
-  it('should normalize approved=false when criticalIssues exist', () => {
+  it('should normalize approved=false when validated criticalIssues exist', () => {
     const result: ReviewResult = {
       approved: true,
       summary: 'Has critical',
@@ -254,9 +262,13 @@ describe('normalizeReviewResult', () => {
         riskAssessment: 'High',
       },
       lineComments: [
-        createReviewComment({ body: '🔴 **Issue:** Critical\n\n💡 **Suggestion:** Fix', issueKey: 'critical-bug', severity: 'critical' }),
+        createReviewComment({
+          body: '🔴 **Issue:** Missing null check throws when user is undefined\n\n💡 **Suggestion:** Add a guard',
+          issueKey: 'missing-null-check',
+          severity: 'critical',
+        }),
       ],
-      criticalIssues: ['Critical bug'],
+      criticalIssues: ['Missing null check throws when user is undefined'],
       suggestions: [],
     };
 
@@ -277,7 +289,7 @@ describe('normalizeReviewResult', () => {
       },
       lineComments: [
         createReviewComment({
-          body: '🔴 **Issue:** The SQL query is vulnerable to injection',
+          body: '🔴 **Issue:** The SQL query allows injection because user input is concatenated into the WHERE clause',
           issueKey: undefined,
           severity: 'critical',
         }),
@@ -295,7 +307,7 @@ describe('normalizeReviewResult', () => {
       id: 1,
       path: 'src/auth.ts',
       line: 10,
-      body: '🔴 **Issue:** SQL injection in auth\n\n💡 **Suggestion:** Use prepared statements',
+      body: '🔴 **Issue:** SQL injection in auth allows attackers to bypass login\n\n💡 **Suggestion:** Use prepared statements',
       issueKey: 'sql-injection-auth',
     });
 
@@ -313,7 +325,7 @@ describe('normalizeReviewResult', () => {
         createReviewComment({
           path: 'src/auth.ts',
           line: 10,
-          body: '🔴 **Issue:** SQL injection in auth module\n\n💡 **Suggestion:** Use prepared statements',
+          body: '🔴 **Issue:** SQL injection in auth module allows attackers to bypass login\n\n💡 **Suggestion:** Use prepared statements',
           issueKey: 'sql-injection',
           severity: 'critical',
         }),
@@ -354,9 +366,10 @@ describe('normalizeReviewResult', () => {
       },
       lineComments: [
         createReviewComment({
-          body: '🤖 **AI Prompt:**\n```\\nVerify code.\\n```',
-          issueKey: 'test-issue',
+          body: '🟡 **Suggestion:** This branch returns stale cache when input is empty, causing an incorrect result.\n\n🤖 **AI Prompt:**\n```\\nVerify code.\\n```',
+          issueKey: 'stale-cache-empty-input',
           severity: 'suggestion',
+          codeSnippet: 'if (!input) return cache;',
         }),
       ],
       criticalIssues: [],
@@ -364,7 +377,7 @@ describe('normalizeReviewResult', () => {
     };
 
     const normalized = normalizeReviewResult(result);
-    expect(normalized.lineComments[0].body).toBe('🤖 **AI Prompt:**\n```\nVerify code.\n```');
+    expect(normalized.lineComments[0].body).toContain('```\nVerify code.\n```');
   });
 
   it('should default arrays when missing', () => {
@@ -386,6 +399,193 @@ describe('normalizeReviewResult', () => {
     expect(normalized.suggestions).toEqual([]);
     expect(normalized.resolvedComments).toEqual([]);
     expect(normalized.fileSummaries).toEqual([]);
+  });
+});
+
+// ─── line comment quality gate / blocking semantics ──────────────────
+
+describe('filterLineCommentsByQuality', () => {
+  it('drops style-only comments such as import ordering', () => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: '🔴 **Issue:** Imports should be alphabetical.\n\n💡 **Suggestion:** Sort imports.',
+        issueKey: 'sort-imports',
+        severity: 'critical',
+      }),
+    ]);
+
+    expect(comments).toEqual([]);
+  });
+
+  it('drops vague advisory comments without a concrete failure mechanism', () => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: '🔴 **Issue:** Consider adding tests to verify this behavior.\n\n💡 **Suggestion:** Add tests.',
+        issueKey: 'add-tests',
+        severity: 'suggestion',
+      }),
+    ]);
+
+    expect(comments).toEqual([]);
+  });
+
+  it('drops vague critical advisory comments even when they include a code snippet', () => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: '🔴 **Issue:** Consider adding tests for this branch.\n\n💡 **Suggestion:** Add tests.',
+        issueKey: 'add-tests-for-branch',
+        severity: 'critical',
+        codeSnippet: 'if (featureFlag) return newBehavior();',
+      }),
+    ]);
+
+    expect(comments).toEqual([]);
+  });
+
+  it('drops vague critical domain comments without a concrete failure mechanism', () => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: '🔴 **Issue:** Ensure authentication is handled here.\n\n💡 **Suggestion:** Check the auth flow.',
+        issueKey: 'ensure-authentication',
+        severity: 'critical',
+      }),
+      createReviewComment({
+        body: '🔴 **Issue:** Verify token handling.\n\n💡 **Suggestion:** Confirm token behavior.',
+        issueKey: 'verify-token-handling',
+        severity: 'critical',
+      }),
+    ]);
+
+    expect(comments).toEqual([]);
+  });
+
+  it('keeps concrete critical security/runtime findings', () => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: '🔴 **Issue:** The token is logged when authentication fails, exposing credentials in production logs.\n\n💡 **Suggestion:** Remove the token from the log payload.',
+        issueKey: 'token-logged-on-auth-failure',
+        severity: 'critical',
+      }),
+    ]);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].severity).toBe('critical');
+  });
+
+  it.each([
+    'User input is concatenated into SQL, enabling SQL injection.',
+    'SQL query is vulnerable to injection attacks - user input is directly concatenated.',
+  ])('keeps concrete SQL injection findings with vulnerability mechanisms: %s', (body) => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: `🔴 **Issue:** ${body}\n\n💡 **Suggestion:** Use parameterized queries.`,
+        issueKey: 'sql-injection-concatenated-input',
+        severity: 'critical',
+      }),
+    ]);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].severity).toBe('critical');
+    expect(hasBlockingFindings({ lineComments: comments, criticalIssues: [] })).toBe(true);
+  });
+
+  it.each([
+    'This dereferences user.id when user is null, causing a runtime exception.',
+    'The unsynchronized balance update allows a race condition that loses payments.',
+    'Deleting the parent row causes data loss because child records are not migrated.',
+    'The missing ownership check allows a security bypass that exposes another user\'s data.',
+  ])('keeps concrete critical findings with consequences: %s', (body) => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: `🔴 **Issue:** ${body}\n\n💡 **Suggestion:** Fix the failing path.`,
+        issueKey: 'concrete-critical-finding',
+        severity: 'critical',
+      }),
+    ]);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].severity).toBe('critical');
+  });
+
+  it('labels kept non-critical comments as non-blocking suggestions', () => {
+    const comments = filterLineCommentsByQuality([
+      createReviewComment({
+        body: '🔴 **Issue:** This branch returns stale cache when input is empty, causing an incorrect result.\n\n💡 **Suggestion:** Return a fresh value for empty input.',
+        issueKey: 'stale-cache-empty-input',
+        severity: 'suggestion',
+        codeSnippet: 'if (!input) return cache;',
+      }),
+    ]);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].body).toContain('🟡 **Suggestion:**');
+    expect(hasBlockingFindings({ lineComments: comments, criticalIssues: [] })).toBe(false);
+  });
+});
+
+describe('filterCriticalIssuesByQuality', () => {
+  it('drops vague criticalIssues so they do not block approval', () => {
+    const result: ReviewResult = {
+      approved: false,
+      summary: 'Needs tests',
+      prSummary: {
+        overview: 'Adds a branch',
+        keyChanges: ['Added feature flag branch'],
+        codeQuality: 'Ok',
+        testingNotes: 'Could use more tests',
+        riskAssessment: 'Low',
+      },
+      lineComments: [],
+      criticalIssues: ['Add more tests'],
+      suggestions: [],
+    };
+
+    const normalized = normalizeReviewResult(result);
+    expect(normalized.criticalIssues).toEqual([]);
+    expect(normalized.approved).toBe(true);
+    expect(hasBlockingFindings({ lineComments: [], criticalIssues: ['Add more tests'] })).toBe(false);
+  });
+
+  it('drops vague criticalIssues that only mention critical domains', () => {
+    const issues = filterCriticalIssuesByQuality([
+      'Ensure authentication is handled here',
+      'Verify token handling',
+    ]);
+
+    expect(issues).toEqual([]);
+    expect(hasBlockingFindings({ lineComments: [], criticalIssues: ['Verify token handling'] })).toBe(false);
+  });
+
+  it('drops style-only criticalIssues', () => {
+    expect(filterCriticalIssuesByQuality(['Sort imports alphabetically'])).toEqual([]);
+  });
+
+  it('keeps validated summary-level critical findings', () => {
+    const issues = filterCriticalIssuesByQuality([
+      'Authentication bypass allows users without permission to access admin data',
+    ]);
+
+    expect(issues).toEqual([
+      'Authentication bypass allows users without permission to access admin data',
+    ]);
+    expect(hasBlockingFindings({ lineComments: [], criticalIssues: issues })).toBe(true);
+  });
+
+  it.each([
+    'User input is concatenated into SQL, enabling SQL injection.',
+    'SQL query is vulnerable to injection attacks - user input is directly concatenated.',
+  ])('keeps summary-level SQL injection findings with vulnerability mechanisms: %s', (issue) => {
+    expect(filterCriticalIssuesByQuality([issue])).toEqual([issue]);
+    expect(hasBlockingFindings({ lineComments: [], criticalIssues: [issue] })).toBe(true);
+  });
+
+  it.each([
+    'Null dereference throws when user is missing',
+    'Race condition allows two workers to overwrite each other and lose queued jobs',
+    'Deleting the account before export causes data loss',
+    'Security bypass allows unauthenticated users to access admin data',
+  ])('keeps concrete criticalIssues with consequences: %s', (issue) => {
+    expect(filterCriticalIssuesByQuality([issue])).toEqual([issue]);
   });
 });
 
@@ -452,6 +652,49 @@ describe('filterCommentsByMatch', () => {
     );
 
     expect(result).toHaveLength(0);
+  });
+
+  it('should allow approval after all critical line comments are filtered as persisting duplicates', () => {
+    const comments = [
+      createReviewComment({
+        path: 'a.ts',
+        issueKey: 'persisting-null-deref',
+        severity: 'critical',
+        body: '🔴 **Issue:** This dereferences user.id when user is null, causing a runtime exception.',
+      }),
+    ];
+
+    const filteredComments = filterCommentsByMatch(
+      comments,
+      ['fp-persisting'],
+      ['persisting-null-deref|function|fn'],
+      [],
+      []
+    );
+    const result = withBlockingApproval({
+      approved: false,
+      summary: 'Issues found',
+      lineComments: filteredComments,
+      criticalIssues: [],
+      suggestions: [],
+    });
+
+    expect(filteredComments).toEqual([]);
+    expect(result.approved).toBe(true);
+    expect(hasBlockingFindings(result)).toBe(false);
+  });
+
+  it('should keep failure after deduplication when validated criticalIssues remain', () => {
+    const result = withBlockingApproval({
+      approved: false,
+      summary: 'Issues found',
+      lineComments: [],
+      criticalIssues: ['Security bypass allows unauthenticated users to access admin data'],
+      suggestions: [],
+    });
+
+    expect(result.approved).toBe(false);
+    expect(hasBlockingFindings(result)).toBe(true);
   });
 });
 
@@ -792,7 +1035,7 @@ describe('normalizeReviewResult — severity overrides', () => {
       lineComments: [
         createReviewComment({
           path: 'src/auth/login.ts',
-          body: '🔴 **Issue:** Weak password\n\n💡 **Suggestion:** Use bcrypt',
+          body: '🔴 **Issue:** Weak password hashing allows credential compromise when hashes leak.\n\n💡 **Suggestion:** Use bcrypt',
           issueKey: 'weak-password',
           severity: 'suggestion',
         }),
@@ -820,9 +1063,10 @@ describe('normalizeReviewResult — severity overrides', () => {
       lineComments: [
         createReviewComment({
           path: 'src/utils/helper.ts',
-          body: '🔴 **Issue:** Bad naming\n\n💡 **Suggestion:** Rename',
-          issueKey: 'bad-naming',
+          body: '🟡 **Suggestion:** This helper returns stale cache when input is empty, causing an incorrect result.\n\n💡 **Suggestion:** Return a fresh value.',
+          issueKey: 'stale-cache-empty-input',
           severity: 'suggestion',
+          codeSnippet: 'if (!input) return cache;',
         }),
       ],
       criticalIssues: [],
@@ -848,9 +1092,10 @@ describe('normalizeReviewResult — severity overrides', () => {
       lineComments: [
         createReviewComment({
           path: 'src/auth/login.ts',
-          body: '🔴 **Issue:** Bug\n\n💡 **Suggestion:** Fix',
+          body: '🟡 **Suggestion:** This branch returns stale cache when input is empty, causing an incorrect result.\n\n💡 **Suggestion:** Return a fresh value.',
           issueKey: 'bug',
           severity: 'suggestion',
+          codeSnippet: 'if (!input) return cache;',
         }),
       ],
       criticalIssues: [],
@@ -875,7 +1120,7 @@ describe('normalizeReviewResult — severity overrides', () => {
       lineComments: [
         createReviewComment({
           path: 'src/auth.ts',
-          body: '🔴 **Issue:** Bug\n\n💡 **Suggestion:** Fix',
+          body: '🔴 **Issue:** This dereferences user.id when user is null, causing a runtime exception.\n\n💡 **Suggestion:** Guard user before access.',
           issueKey: 'bug',
           severity: 'critical',
         }),
@@ -902,13 +1147,13 @@ describe('normalizeReviewResult — severity overrides', () => {
       lineComments: [
         createReviewComment({
           path: 'src/auth/login.ts',
-          body: '🔴 **Issue:** Bug A\n\n💡 **Suggestion:** Fix A',
+          body: '🔴 **Issue:** This dereferences session.user when session is null, causing a runtime exception.\n\n💡 **Suggestion:** Guard session before access.',
           issueKey: 'bug-a',
           severity: 'suggestion',
         }),
         createReviewComment({
           path: 'src/legacy/utils.ts',
-          body: '🔴 **Issue:** Bug B\n\n💡 **Suggestion:** Fix B',
+          body: '🔴 **Issue:** This dereferences config.value when config is null, causing a runtime exception.\n\n💡 **Suggestion:** Guard config before access.',
           issueKey: 'bug-b',
           severity: 'critical',
         }),
@@ -927,9 +1172,6 @@ describe('normalizeReviewResult — severity overrides', () => {
   });
 
   it('should allow approval when only low-severity issues exist', () => {
-    // The current logic: approved = !hasLineComments && !hasCriticalIssues
-    // Low severity comments are still lineComments, so they block approval.
-    // But we test that 'low' is a valid severity that flows through correctly.
     const result: ReviewResult = {
       approved: false,
       summary: 'Minor issues',
@@ -943,9 +1185,10 @@ describe('normalizeReviewResult — severity overrides', () => {
       lineComments: [
         createReviewComment({
           path: 'src/style.css',
-          body: '🔴 **Issue:** Formatting\n\n💡 **Suggestion:** Prettier',
-          issueKey: 'formatting',
+          body: '🟡 **Suggestion:** This selector matches disabled buttons too, causing the wrong style in the disabled state.\n\n💡 **Suggestion:** Scope it to enabled buttons.',
+          issueKey: 'disabled-button-selector',
           severity: 'low',
+          codeSnippet: '.button:hover { color: red; }',
         }),
       ],
       criticalIssues: [],
@@ -954,7 +1197,6 @@ describe('normalizeReviewResult — severity overrides', () => {
 
     const normalized = normalizeReviewResult(result);
     expect(normalized.lineComments[0].severity).toBe('low');
-    // Low severity comments still count as lineComments → not approved
-    expect(normalized.approved).toBe(false);
+    expect(normalized.approved).toBe(true);
   });
 });

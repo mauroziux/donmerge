@@ -13,6 +13,7 @@ export interface WorkerEnv {
   MAX_REVIEW_FILES?: string;
   REPO_CONFIGS?: string;     // "owner/repo:branch,owner/repo2:branch2" - branch is optional
   REVIEW_TRIGGER?: string;
+  DONMERGE_POST_FIXED_REPLIES?: string;
 }
 
 /**

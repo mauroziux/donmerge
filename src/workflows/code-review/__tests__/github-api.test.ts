@@ -154,7 +154,7 @@ describe('completeCheckRun', () => {
         approved: false,
         summary: 'Issues found',
         lineComments: [],
-        criticalIssues: ['SQL injection'],
+        criticalIssues: ['SQL injection allows attackers to bypass authentication and read user data'],
         suggestions: ['Add tests'],
       },
       'token'
@@ -164,8 +164,109 @@ describe('completeCheckRun', () => {
     const body = JSON.parse(call.body);
     expect(body.conclusion).toBe('failure');
     expect(body.output.title).toContain('⚠️');
-    expect(body.output.text).toContain('SQL injection');
+    expect(body.output.text).toContain('SQL injection allows attackers');
     expect(body.output.text).toContain('Add tests');
+  });
+
+  it('should not fail with no visible or validated critical findings', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+    await completeCheckRun(
+      'owner', 'repo', 123, {
+        approved: false,
+        summary: 'Duplicate issues were filtered out',
+        lineComments: [],
+        criticalIssues: [],
+        suggestions: [],
+      },
+      'token'
+    );
+
+    const call = mockFetch.mock.calls[0][1] as any;
+    const body = JSON.parse(call.body);
+    expect(body.conclusion).toBe('success');
+    expect(body.output.title).toContain('✅');
+    expect(body.output.text).toContain('- None, ¡nada que objetar!');
+  });
+
+  it('should not fail for vague criticalIssues with only domain keywords', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+    await completeCheckRun(
+      'owner', 'repo', 123, {
+        approved: false,
+        summary: 'Vague domain-only issue',
+        lineComments: [],
+        criticalIssues: ['Verify token handling'],
+        suggestions: [],
+      },
+      'token'
+    );
+
+    const call = mockFetch.mock.calls[0][1] as any;
+    const body = JSON.parse(call.body);
+    expect(body.conclusion).toBe('success');
+    expect(body.output.text).toContain('- None, ¡nada que objetar!');
+    expect(body.output.text).not.toContain('Verify token handling');
+  });
+
+  it('should not fail for vague critical line comments with only domain keywords', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+    await completeCheckRun(
+      'owner', 'repo', 123, {
+        approved: false,
+        summary: 'Vague duplicate issue',
+        lineComments: [
+          {
+            path: 'src/auth.ts',
+            line: 12,
+            side: 'RIGHT',
+            severity: 'critical',
+            issueKey: 'verify-token-handling',
+            body: '🔴 **Issue:** Verify token handling.',
+          },
+        ],
+        criticalIssues: [],
+        suggestions: [],
+      },
+      'token'
+    );
+
+    const call = mockFetch.mock.calls[0][1] as any;
+    const body = JSON.parse(call.body);
+    expect(body.conclusion).toBe('success');
+    expect(body.output.text).toContain('- None, ¡nada que objetar!');
+    expect(body.output.text).not.toContain('Verify token handling');
+  });
+
+  it('should list critical line comments when criticalIssues is empty', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+    await completeCheckRun(
+      'owner', 'repo', 123, {
+        approved: false,
+        summary: 'Issues found',
+        lineComments: [
+          {
+            path: 'src/auth.ts',
+            line: 12,
+            side: 'RIGHT',
+            severity: 'critical',
+            issueKey: 'token-logged',
+            body: '🔴 **Issue:** Token is logged when authentication fails, exposing credentials.',
+          },
+        ],
+        criticalIssues: [],
+        suggestions: [],
+      },
+      'token'
+    );
+
+    const call = mockFetch.mock.calls[0][1] as any;
+    const body = JSON.parse(call.body);
+    expect(body.conclusion).toBe('failure');
+    expect(body.output.text).toContain('Token is logged when authentication fails');
   });
 });
 

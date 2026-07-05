@@ -62,6 +62,7 @@ import {
   normalizeReviewResult,
   filterCommentsByMatch,
   syncTrackedIssuesFromComments,
+  withBlockingApproval,
 } from './processor-utils';
 
 // State keys
@@ -280,32 +281,34 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       await this.state.storage.put(STATE_KEYS.context, context);
     }
 
-    // Fetch PR info if headSha not provided
+    // Fetch PR info (head/base plus title/body for review intent context)
     let headSha = context.headSha;
     let checkRunId = context.checkRunId;
-    
+
+    const pr = await githubFetch<{
+      base: { ref: string };
+      head: { sha: string };
+      title?: string;
+      body?: string | null;
+    }>(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, githubToken);
+
+    // Check base branch using per-repo config
+    const repoConfig = getRepoConfig(owner, repo, this.env.REPO_CONFIGS);
+
+    // Only filter by base branch if the repo config specifies one
+    if (repoConfig?.baseBranch && pr.base.ref !== repoConfig.baseBranch) {
+      console.log('PR skipped - wrong base branch', {
+        expected: repoConfig.baseBranch,
+        actual: pr.base.ref,
+        repo: `${owner}/${repo}`,
+      });
+      status.state = 'complete';
+      status.completedAt = new Date().toISOString();
+      await this.state.storage.put(STATE_KEYS.status, status);
+      return;
+    }
+
     if (!headSha) {
-      const pr = await githubFetch<{ base: { ref: string }; head: { sha: string } }>(
-        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
-        githubToken
-      );
-      
-      // Check base branch using per-repo config
-      const repoConfig = getRepoConfig(owner, repo, this.env.REPO_CONFIGS);
-      
-      // Only filter by base branch if the repo config specifies one
-      if (repoConfig?.baseBranch && pr.base.ref !== repoConfig.baseBranch) {
-        console.log('PR skipped - wrong base branch', {
-          expected: repoConfig.baseBranch,
-          actual: pr.base.ref,
-          repo: `${owner}/${repo}`,
-        });
-        status.state = 'complete';
-        status.completedAt = new Date().toISOString();
-        await this.state.storage.put(STATE_KEYS.status, status);
-        return;
-      }
-      
       headSha = pr.head.sha;
       context.headSha = headSha;
     }
@@ -422,7 +425,17 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
 
     // Run LLM review
     const result = await this.runLlmReview(
-      { owner, repo, prNumber, retrigger, instruction, repoContext, modelOverride: context.model },
+      {
+        owner,
+        repo,
+        prNumber,
+        prTitle: pr.title,
+        prBody: pr.body,
+        retrigger,
+        instruction,
+        repoContext,
+        modelOverride: context.model,
+      },
       activePreviousComments,
       diffText,
       githubToken,
@@ -443,7 +456,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       await this.updateTrackedIssuesWithMatch(headSha, storedIssues, currentIssues, matchResult);
     }
 
-    if (matchResult && matchResult.resolvedIssues.length > 0) {
+    const postFixedReplies = this.env.DONMERGE_POST_FIXED_REPLIES === 'true';
+    if (postFixedReplies && matchResult && matchResult.resolvedIssues.length > 0) {
       await resolveFixedComments(
         owner,
         repo,
@@ -461,7 +475,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
 
     // Post review
     const filteredResult = matchResult
-      ? {
+      ? withBlockingApproval({
           ...result,
           lineComments: filterCommentsByMatch(
             result.lineComments,
@@ -470,7 +484,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
             matchResult.newIssues.map((i) => i.fingerprint),
             matchResult.reintroducedIssues.map((i) => i.logicalKey)
           ),
-        }
+        })
       : result;
 
     await publishReview(owner, repo, prNumber, headSha!, filteredResult, githubToken, activePreviousComments);
@@ -487,15 +501,15 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     }
 
     // Complete check run
-    await completeCheckRun(owner, repo, checkRunId!, result, githubToken);
+    await completeCheckRun(owner, repo, checkRunId!, filteredResult, githubToken);
 
     // Update PR description
-    await updatePRDescription(owner, repo, prNumber, result, githubToken);
+    await updatePRDescription(owner, repo, prNumber, filteredResult, githubToken);
 
     // Mark complete
     status.state = 'complete';
     status.completedAt = new Date().toISOString();
-    status.result = result;
+    status.result = filteredResult;
     await this.state.storage.put(STATE_KEYS.status, status);
 
     // Clear the GitHub token from stored context after use
@@ -509,7 +523,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       owner,
       repo,
       prNumber,
-      approved: result.approved,
+      approved: filteredResult.approved,
       attempts: status.attempts,
     });
   }
@@ -522,6 +536,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       owner: string;
       repo: string;
       prNumber: number;
+      prTitle?: string;
+      prBody?: string | null;
       retrigger: boolean;
       instruction?: string;
       repoContext: RepoContextType;
@@ -550,6 +566,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         owner: input.owner,
         repo: input.repo,
         prNumber: input.prNumber,
+        prTitle: input.prTitle,
+        prBody: input.prBody,
         retrigger: input.retrigger,
         instruction: input.instruction,
         previousComments,
@@ -562,11 +580,11 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     const promptErrorHint =
       'Your previous response was invalid. Produce valid JSON matching the schema. ' +
       'Ensure `summary` is present and 1-2 sentences. Ensure `prSummary` includes overview, keyChanges (non-empty), codeQuality, testingNotes, riskAssessment. ' +
-      'If `criticalIssues` is non-empty, you MUST include `lineComments` for each issue.';
+      'Only use `lineComments` for concrete findings anchored to lines in the diff.';
 
     const severityOverrides = donmergeResolved?.config.severity;
 
-    let response: string;
+    let response = '';
     let parsed: ReviewResult;
     try {
       response = await flue.client.prompt(prompt, { model, result: v.string() });

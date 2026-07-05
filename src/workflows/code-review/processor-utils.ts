@@ -15,6 +15,24 @@ import type {
 import { deriveIssueKey, extractIssueTerms, buildIssueIdentity } from './issue-key';
 import { getSeverityOverride } from './donmerge';
 
+const STYLE_NOISE_PATTERNS = [
+  /\b(imports?|exports?)\b.{0,32}\b(alphabetical|alphabetic|sorted|order|ordering|organize)\b/i,
+  /\b(alphabetical|alphabetic|sorted|order|ordering|organize)\b.{0,32}\b(imports?|exports?)\b/i,
+  /\bphpdoc\b|\bdocblock\b|\b@return\b|\b@throws\b|\b@param\b/i,
+  /\b(indentation|indent|whitespace|spacing|formatting|prettier|lint|linting|trailing comma|trailing commas|semicolon|semicolons)\b/i,
+  /\b(comment cleanup|cleanup comments?|remove stale comments?|delete unused comments?|unnecessary comments?|redundant comments?)\b/i,
+  /\b(naming convention|rename (this )?(variable|function|method|class|property)|better name|more descriptive name)\b/i,
+  /\b(refactor|cleanup|clean up|tidy|readability|style nit|nitpick)\b/i,
+];
+
+const ADVISORY_WORD_PATTERN = /\b(ensure|verify|consider|test|confirm|double-check|double check|may|might|could)\b/i;
+
+const CRITICAL_DOMAIN_PATTERN = /\b(sql injection|sql query|sql|xss|csrf|ssrf|injection|auth(?:entication|orization)?|permission|access control|privilege|secret|token|password|credential|api key|data loss|corrupt(?:ion)?|truncate|delete|runtime error|exception|crash|null|undefined|race|deadlock|concurren(?:cy|t)|regression|broken logic|wrong result|incorrect result|n\+1|infinite loop|memory leak|timeout|critical performance)\b/i;
+
+const CONCRETE_FAILURE_PATTERN = /\b(leads? to|leading to|causes?|causing|results? in|resulting in|allows?|allowing|enables?|enabling|permits?|permitting|exposes?|exposing|throws?|crashes?|fails?|breaks?|loses?|corrupts?|leaks?|bypasses?|rejects?|accepts?|dereferences?|overwrites?|drops?|deadlocks?|hangs?|times? out|panics?|raises?)\b/i;
+const CONCRETE_FAILURE_STATE_PATTERN = /\b(runtime error|exception|crash|null dereference|null pointer|undefined property|data loss|data corruption|race condition|security bypass|authentication bypass|authorization bypass|privilege escalation|credential exposure|secret exposure|incorrect result|wrong result|deadlock|infinite loop|memory leak|timeout)\b/i;
+const CONCRETE_VULNERABILITY_MECHANISM_PATTERN = /\b(vulnerab(?:le|ility)|bypass(?:es|ed|ing)?|inject(?:s|ed|ing)?|directly concatenated|concatenat(?:es?|ed|ing)|user input|untrusted input|attacker-controlled|unsanitized|unescaped|unvalidated)\b/i;
+
 /**
  * Fix LLM double-escaped newlines in comment body.
  *
@@ -53,7 +71,6 @@ export function validateReviewResult(
   if (!prSummary.testingNotes?.trim()) return { valid: false, reason: 'missing prSummary.testingNotes' };
   if (!prSummary.riskAssessment?.trim()) return { valid: false, reason: 'missing prSummary.riskAssessment' };
 
-  const criticalIssues = Array.isArray(result.criticalIssues) ? result.criticalIssues : [];
   const lineComments = Array.isArray(result.lineComments) ? result.lineComments : [];
 
   for (const comment of lineComments) {
@@ -62,11 +79,122 @@ export function validateReviewResult(
     }
   }
 
-  if (criticalIssues.length > 0 && lineComments.length === 0) {
-    return { valid: false, reason: 'criticalIssues present but lineComments empty' };
+  return { valid: true };
+}
+
+/**
+ * True when a normalized review result has blocking findings.
+ * Only verified critical inline findings or explicit criticalIssues block merges.
+ */
+export function hasBlockingFindings(review: Pick<ReviewResult, 'lineComments' | 'criticalIssues'>): boolean {
+  const hasCriticalLineComment = Array.isArray(review.lineComments)
+    ? filterLineCommentsByQuality(review.lineComments).some((comment) => comment.severity === 'critical')
+    : false;
+  const hasCriticalIssues = Array.isArray(review.criticalIssues)
+    ? filterCriticalIssuesByQuality(review.criticalIssues).length > 0
+    : false;
+
+  return hasCriticalLineComment || hasCriticalIssues;
+}
+
+/**
+ * Recompute approved from blocking semantics without mutating the review.
+ */
+export function withBlockingApproval(review: ReviewResult): ReviewResult {
+  return {
+    ...review,
+    approved: !hasBlockingFindings(review),
+  };
+}
+
+/**
+ * Deterministic post-LLM quality gate for inline comments.
+ * Drops vague advisory/style/noise findings and requires critical comments to
+ * describe a concrete failure mechanism or consequence.
+ */
+export function filterLineCommentsByQuality(comments: ReviewComment[]): ReviewComment[] {
+  return comments
+    .filter((comment) => shouldKeepLineComment(comment))
+    .map((comment) =>
+      comment.severity === 'critical'
+        ? labelCriticalComment(comment)
+        : labelNonBlockingComment(comment)
+    );
+}
+
+export function shouldKeepLineComment(comment: ReviewComment): boolean {
+  const body = comment.body ?? '';
+  const searchable = `${body}\n${comment.issueKey ?? ''}\n${comment.ruleId ?? ''}`;
+  const hasCriticalDomain = CRITICAL_DOMAIN_PATTERN.test(searchable);
+  const hasConcreteFailure = hasConcreteFailureDescription(searchable);
+
+  if (STYLE_NOISE_PATTERNS.some((pattern) => pattern.test(searchable)) && !hasCriticalDomain) {
+    return false;
   }
 
-  return { valid: true };
+  if (isVagueAdvisory(searchable) && !hasConcreteFailure) {
+    return false;
+  }
+
+  if (comment.severity === 'critical') {
+    return hasConcreteFailure;
+  }
+
+  return hasConcreteFailure && !isVagueAdvisory(searchable);
+}
+
+export function filterCriticalIssuesByQuality(issues: string[]): string[] {
+  return issues.filter((issue) => shouldKeepCriticalIssue(issue));
+}
+
+function shouldKeepCriticalIssue(issue: string): boolean {
+  const text = issue ?? '';
+
+  if (!text.trim()) {
+    return false;
+  }
+
+  const hasCriticalDomain = CRITICAL_DOMAIN_PATTERN.test(text);
+  const hasConcreteFailure = hasConcreteFailureDescription(text);
+
+  if (STYLE_NOISE_PATTERNS.some((pattern) => pattern.test(text)) && !hasCriticalDomain) {
+    return false;
+  }
+
+  if (isVagueAdvisory(text) && !hasConcreteFailure) {
+    return false;
+  }
+
+  return hasConcreteFailure;
+}
+
+function isVagueAdvisory(text: string): boolean {
+  if (!ADVISORY_WORD_PATTERN.test(text)) {
+    return false;
+  }
+
+  return !hasConcreteFailureDescription(text);
+}
+
+function hasConcreteFailureDescription(text: string): boolean {
+  return (
+    CONCRETE_FAILURE_PATTERN.test(text) ||
+    CONCRETE_FAILURE_STATE_PATTERN.test(text) ||
+    (CRITICAL_DOMAIN_PATTERN.test(text) && CONCRETE_VULNERABILITY_MECHANISM_PATTERN.test(text))
+  );
+}
+
+function labelNonBlockingComment(comment: ReviewComment): ReviewComment {
+  const body = comment.body
+    .replace(/🔴\s*\*\*Issue:\*\*/i, '🟡 **Suggestion:**')
+    .replace(/🔴\s*\*\*Critical Issue:\*\*/i, '🟡 **Suggestion:**');
+
+  return { ...comment, body };
+}
+
+function labelCriticalComment(comment: ReviewComment): ReviewComment {
+  const body = comment.body.replace(/🟡\s*\*\*Suggestion:\*\*/i, '🔴 **Issue:**');
+  return { ...comment, body };
 }
 
 /**
@@ -88,7 +216,7 @@ export function normalizeReviewResult(
   const reconciledLineComments = reconcileIssueKeys(lineComments, previousComments ?? []);
 
   // Apply severity overrides from .donmerge config
-  const finalLineComments = severityOverrides
+  const overriddenLineComments = severityOverrides
     ? reconciledLineComments.map((comment) => {
         const override = getSeverityOverride(comment.path, severityOverrides);
         if (override) {
@@ -98,11 +226,13 @@ export function normalizeReviewResult(
       })
     : reconciledLineComments;
 
-  const criticalIssues = Array.isArray(result.criticalIssues) ? result.criticalIssues : [];
+  const finalLineComments = filterLineCommentsByQuality(overriddenLineComments);
 
-  const hasLineComments = finalLineComments.length > 0;
-  const hasCriticalIssues = criticalIssues.length > 0;
-  const approved = !hasLineComments && !hasCriticalIssues;
+  const criticalIssues = Array.isArray(result.criticalIssues)
+    ? filterCriticalIssuesByQuality(result.criticalIssues)
+    : [];
+
+  const approved = !hasBlockingFindings({ lineComments: finalLineComments, criticalIssues });
 
   // Normalize prSummary
   let prSummary: PRSummary | undefined;

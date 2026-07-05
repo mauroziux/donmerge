@@ -7,6 +7,7 @@ import { ErrorCodeDescriptions, type ErrorCode } from './error-codes';
 import { attachFingerprint, computeFingerprint, parseFingerprint } from './fingerprint';
 import { normalizeEntityType, normalizeRuleId, normalizeSymbolName } from './issue-identity';
 import { deriveIssueKey } from './issue-key';
+import { filterCriticalIssuesByQuality, filterLineCommentsByQuality, hasBlockingFindings } from './processor-utils';
 
 const RESOLVED_REPLY_MARKER = '✅ **Fixed!**';
 const META_MARKER_PREFIX = '<!-- DONMERGE_META:';
@@ -72,10 +73,12 @@ export async function completeCheckRun(
   review: ReviewResult,
   token: string
 ): Promise<void> {
-  const title = review.approved ? '✅ All good, compadre!' : '⚠️ Ojo, some things need attention';
+  const approved = !hasBlockingFindings(review);
+  const title = approved ? '✅ All good, compadre!' : '⚠️ Ojo, some things need attention';
+  const criticalFindings = collectCriticalFindings(review);
   const critical =
-    review.criticalIssues.length > 0
-      ? review.criticalIssues.map((issue) => `- ${issue}`).join('\n')
+    criticalFindings.length > 0
+      ? criticalFindings.map((issue) => `- ${issue}`).join('\n')
       : '- None, ¡nada que objetar!';
   const suggestions =
     review.suggestions.length > 0
@@ -88,7 +91,7 @@ export async function completeCheckRun(
     'PATCH',
     {
       status: 'completed',
-      conclusion: review.approved ? 'success' : 'failure',
+      conclusion: approved ? 'success' : 'failure',
       completed_at: new Date().toISOString(),
       output: {
         title,
@@ -341,8 +344,9 @@ ${riskAssessment}
   }
 
   // Only add issue lists if there are issues
-  if (review.criticalIssues.length > 0) {
-    section += `\n### 🔴 Critical Issues\n${review.criticalIssues.map((i) => `- ${i}`).join('\n')}\n`;
+  const criticalFindings = collectCriticalFindings(review);
+  if (criticalFindings.length > 0) {
+    section += `\n### 🔴 Critical Issues\n${criticalFindings.map((i) => `- ${i}`).join('\n')}\n`;
   }
 
   if (review.suggestions.length > 0) {
@@ -352,6 +356,22 @@ ${riskAssessment}
   section += `\n---\n*Reviewed by DonMerge 🤠 — ${timestamp}*\n`;
 
   return section;
+}
+
+function collectCriticalFindings(review: ReviewResult): string[] {
+  const criticalIssues = filterCriticalIssuesByQuality(review.criticalIssues);
+  if (criticalIssues.length > 0) {
+    return criticalIssues;
+  }
+
+  return filterLineCommentsByQuality(review.lineComments)
+    .filter((comment) => comment.severity === 'critical')
+    .map((comment) => summarizeCommentBody(comment.body));
+}
+
+function summarizeCommentBody(body: string): string {
+  const issueMatch = body.match(/(?:🔴\s*)?\*\*(?:Critical\s+)?Issue:\*\*\s*([^\n]+)/i);
+  return issueMatch?.[1]?.trim() || body.split('\n')[0]?.trim() || 'Critical inline finding';
 }
 
 /**

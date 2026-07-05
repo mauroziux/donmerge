@@ -8,7 +8,7 @@
  * Uses structured PR summary for rich, parseable output.
  */
 export const REVIEW_OUTPUT_SCHEMA = `{
-  "approved": boolean,
+  "approved": boolean (false only when critical lineComments or criticalIssues exist),
   "summary": "1-2 sentence overall review summary",
   "prSummary": {
     "overview": "1-2 sentences describing what this PR does",
@@ -27,8 +27,8 @@ export const REVIEW_OUTPUT_SCHEMA = `{
       "entityType": "method" | "function" | "class" | "variable" | "module",
       "symbolName": "fully-qualified symbol name (e.g., BookingService.confirm)",
       "codeSnippet": "short normalized snippet around the issue",
-      "body": "Full comment with Issue, Suggestion, and AI Prompt sections",
-      "severity": "critical" or "suggestion"
+      "body": "Full comment with Issue/Suggestion and AI Prompt sections",
+      "severity": "critical" or "suggestion" or "low"
     }
   ],
   "resolvedComments": [list of previous comment IDs that are now fixed],
