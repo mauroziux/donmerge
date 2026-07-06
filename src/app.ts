@@ -2,6 +2,7 @@ import { FlueWorker } from '@flue/cloudflare/worker';
 import { processGitHubCodeReviewWebhook, validateWebhookFast } from './workflows/code-review';
 import type { WorkerEnv } from './workflows/code-review';
 import { ReviewProcessor } from './workflows/code-review/processor';
+import { CodeReviewWorkflow } from './workflows/code-review/code-review-workflow';
 import { TriageProcessor } from './workflows/triage/processor';
 import { handlePushReview, handleTriage, handleJobStatus } from './api/routes';
 import { RateLimiter } from './api/rate-limit';
@@ -16,6 +17,7 @@ interface AppEnv extends WorkerEnv {
   SENTRY_WEBHOOK_SECRET?: string;
   SENTRY_REPO_MAP?: string;
   SENTRY_GITHUB_TOKEN?: string;
+  CODE_REVIEW_WORKFLOW?: Workflow;
   // Multi-tenant D1 database (Phase 1)
   DB?: D1Database;
   TENANT_ENCRYPTION_KEY?: string;
@@ -69,6 +71,7 @@ app.post('/webhook/sentry', handleSentryWebhook);
 // Export Durable Objects
 export { Sandbox } from '@cloudflare/sandbox';
 export { ReviewProcessor };
+export { CodeReviewWorkflow };
 export { TriageProcessor };
 export { RateLimiter };
 export default app;

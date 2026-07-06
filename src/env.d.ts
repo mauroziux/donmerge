@@ -203,6 +203,37 @@ interface DurableObjectTransaction {
   rollback(): void;
 }
 
+// ── Cloudflare Workflows types ──────────────────────────────────────────────
+interface WorkflowStep {
+  do<T>(name: string, callback: () => Promise<T>, opts?: {
+    retries?: { limit: number; delay?: string | number; backoff?: string };
+    timeout?: string | number;
+  }): Promise<T>;
+}
+
+interface WorkflowEvent<T = unknown> {
+  payload: T;
+  timestamp: Date;
+  instanceId: string;
+}
+
+interface Workflow<PARAMS = unknown> {
+  create(opts: {
+    id?: string;
+    params: PARAMS;
+    delay?: string | number;
+  }): Promise<WorkflowInstance>;
+  get(id: string): Promise<WorkflowInstance>;
+  list(opts?: { completed?: boolean; status?: string }): Promise<WorkflowInstance[]>;
+}
+
+interface WorkflowInstance {
+  id: string;
+  status(): Promise<{ status: string; output?: unknown }>;
+  cancel(): Promise<void>;
+  terminate(): Promise<void>;
+}
+
 // ── DurableObject base class ─────────────────────────────────────────────────
 // Matches the pattern: import { DurableObject } from 'cloudflare:workers'
 declare module 'cloudflare:workers' {
@@ -210,6 +241,25 @@ declare module 'cloudflare:workers' {
     constructor(ctx: DurableObjectState, env: Env);
     fetch?(request: Request): Promise<Response>;
     alarm?(): Promise<void>;
+  }
+
+  export interface WorkflowStep {
+    do<T>(name: string, callback: () => Promise<T>, opts?: {
+      retries?: { limit: number; delay?: string | number; backoff?: string };
+      timeout?: string | number;
+    }): Promise<T>;
+  }
+
+  export interface WorkflowEvent<T = unknown> {
+    payload: T;
+    timestamp: Date;
+    instanceId: string;
+  }
+
+  export class WorkflowEntrypoint<Env = unknown, T = unknown> {
+    protected env: Env;
+    constructor(ctx: unknown, env: Env);
+    run(event: WorkflowEvent<T>, step: WorkflowStep): Promise<void>;
   }
 }
 

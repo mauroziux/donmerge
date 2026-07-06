@@ -193,6 +193,22 @@ export const handlePushReview = withAuth(async (c, auth) => {
     initiatorKeyHash: callerKeyHash,
   });
 
+  // Create the workflow to handle execution
+  if (c.env.CODE_REVIEW_WORKFLOW) {
+    await c.env.CODE_REVIEW_WORKFLOW.create({
+      id: buildReviewJobId(body.owner, body.repo, body.pr_number),
+      params: {
+        owner: body.owner,
+        repo: body.repo,
+        prNumber: body.pr_number,
+        githubToken: body.github_token,
+        model: body.model,
+        maxFiles: body.max_files,
+        retrigger: false,
+      },
+    });
+  }
+
   const jobId = buildReviewJobId(body.owner, body.repo, body.pr_number);
   const response: PushReviewResponse = {
     job_id: jobId,

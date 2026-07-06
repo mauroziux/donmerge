@@ -59,3 +59,11 @@ export {
 
 // Durable Object
 export { ReviewProcessor, getReviewProcessor } from './processor';
+
+// Workflow
+export { CodeReviewWorkflow } from './code-review-workflow';
+export type { WorkflowParams } from './code-review-workflow';
+
+// Issue builder (pure function, reusable)
+export { buildCurrentIssues } from './issue-builder';
+export type { IssueBuilderContext } from './issue-builder';

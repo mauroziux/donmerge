@@ -113,6 +113,13 @@
 			"head_sampling_rate": 1
 		}
 	},
+	"workflows": [
+		{
+			"name": "code-review-workflow",
+			"binding": "CODE_REVIEW_WORKFLOW",
+			"class_name": "CodeReviewWorkflow"
+		}
+	],
 	// Staging environment — used for push API testing; Wrangler does NOT inherit
 	// vars, durable_objects, containers, or migrations into named environments,
 	// so everything must be duplicated here.
@@ -202,6 +209,13 @@
 							"to": "TriageProcessor"
 						}
 					]
+				}
+			],
+			"workflows": [
+				{
+					"name": "code-review-workflow",
+					"binding": "CODE_REVIEW_WORKFLOW",
+					"class_name": "CodeReviewWorkflow"
 				}
 			]
 		}

@@ -1,17 +1,18 @@
 /**
  * Webhook validation and processing for code review.
  *
- * Uses ReviewProcessor Durable Object for reliable long-running reviews.
+ * Uses ReviewProcessor Durable Object for status tracking and concurrency control.
+ * Actual review execution is handled by CodeReviewWorkflow.
  */
 
 import type { WorkerEnv, WebhookPayload, FastValidationResult, WebhookContext } from './types';
 import { verifyWebhookSignature, isRepoAllowed } from './github-auth';
 import { parseTrigger } from './triggers';
-import { githubFetch, createCheckRun } from './github-api';
 import { getReviewProcessor } from './processor';
 
 interface EnvWithReviewProcessor extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
+  CODE_REVIEW_WORKFLOW?: Workflow;
 }
 
 /**
@@ -82,7 +83,7 @@ export async function validateWebhookFast(
 
 /**
  * Start background processing of the code review.
- * Delegates to ReviewProcessor Durable Object for reliable execution.
+ * Delegates to ReviewProcessor DO for status tracking and CodeReviewWorkflow for execution.
  */
 export async function processGitHubCodeReviewWebhook(
   env: EnvWithReviewProcessor,
@@ -92,7 +93,7 @@ export async function processGitHubCodeReviewWebhook(
     context;
   const focusFiles = context.focusFiles;
 
-  console.log('Starting review via ReviewProcessor', {
+  console.log('Starting review via ReviewProcessor + CodeReviewWorkflow', {
     owner,
     repo,
     prNumber,
@@ -101,21 +102,10 @@ export async function processGitHubCodeReviewWebhook(
     focusFilesCount: focusFiles?.length ?? 0,
   });
 
-  // Get PR info to get the head SHA
-  // Note: We need a token for this. The ReviewProcessor will handle the full flow.
-  // For now, we'll pass minimal info and let the DO fetch what it needs.
-  
-  // Create check run first (needs to be done here so we have the ID)
-  // But we need a token... Let's pass the context and let the DO create the check run
-  
-  // Actually, let's delegate everything to the DO including check run creation
-  // The DO will fetch the PR, create the check run, and run the review
-  
   // Get the ReviewProcessor DO for this PR
   const processor = getReviewProcessor(env.ReviewProcessor, owner, repo, prNumber);
 
-  // Start the review (this will trigger an alarm in the DO)
-  // Cast needed: DurableObjectStub proxies user-defined methods at runtime
+  // Start the review (stores context, initializes status in DO)
   await (processor as unknown as { startReview(ctx: {
     owner: string; repo: string; prNumber: number; retrigger: boolean;
     commentId?: number; commentType?: 'issue' | 'review';
@@ -131,4 +121,24 @@ export async function processGitHubCodeReviewWebhook(
     instruction,
     focusFiles,
   });
+
+  // Create the workflow to handle execution
+  if (env.CODE_REVIEW_WORKFLOW) {
+    await env.CODE_REVIEW_WORKFLOW.create({
+      id: `review/${owner}/${repo}/${prNumber}`,
+      params: {
+        owner,
+        repo,
+        prNumber,
+        retrigger,
+        commentId,
+        commentType,
+        installationId,
+        instruction,
+        focusFiles,
+      },
+    });
+  } else {
+    console.warn('CODE_REVIEW_WORKFLOW not bound — review queued in DO but will not execute');
+  }
 }

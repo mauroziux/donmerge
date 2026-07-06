@@ -14,6 +14,7 @@ export interface WorkerEnv {
   REPO_CONFIGS?: string;     // "owner/repo:branch,owner/repo2:branch2" - branch is optional
   REVIEW_TRIGGER?: string;
   DONMERGE_POST_FIXED_REPLIES?: string;
+  CODE_REVIEW_WORKFLOW?: Workflow;
 }
 
 /**
