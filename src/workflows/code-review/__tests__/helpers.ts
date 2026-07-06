@@ -83,6 +83,28 @@ export function createCheckRunPayload(
   };
 }
 
+export function createReactionPayload(
+  reaction: string,
+  overrides: Partial<WebhookPayload> = {}
+): WebhookPayload {
+  return {
+    action: 'created',
+    installation: { id: 123456 },
+    repository: {
+      owner: { login: 'tableoltd' },
+      name: 'test-repo',
+    },
+    issue: {
+      number: 42,
+      pull_request: {},
+    },
+    comment: { id: 99 },
+    reaction: { content: reaction },
+    sender: { login: 'dev' },
+    ...overrides,
+  };
+}
+
 // ─── TrackedIssue Factory ────────────────────────────────────────────
 
 let issueCounter = 0;

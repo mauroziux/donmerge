@@ -13,6 +13,7 @@ import {
   createIssueCommentPayload,
   createReviewCommentPayload,
   createCheckRunPayload,
+  createReactionPayload,
 } from './helpers';
 
 describe('parseTrigger', () => {
@@ -175,6 +176,122 @@ describe('parseTrigger', () => {
       expect(result.shouldRun).toBe(true);
       expect(result.instruction).toContain('check for security issues');
     });
+
+    it('bare @donmerge → shouldRun:true, triggers review', () => {
+      const payload = createIssueCommentPayload('@donmerge');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(true);
+      expect(result.prNumber).toBe(42);
+      expect(result.retrigger).toBe(true);
+      expect(result.feedback).toBeUndefined();
+    });
+
+    it('@donmerge please review this → shouldRun:true, triggers review', () => {
+      const payload = createIssueCommentPayload('@donmerge please review this');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(true);
+      expect(result.instruction).toBe('please review this');
+      expect(result.feedback).toBeUndefined();
+    });
+
+    it('@donmerge review → shouldRun:true, triggers review', () => {
+      const payload = createIssueCommentPayload('@donmerge review');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(true);
+      expect(result.feedback).toBeUndefined();
+    });
+  });
+
+  // ─── Feedback command routing (issue_comment) ──────────────────────
+
+  describe('issue_comment — feedback command routing', () => {
+    it('@donmerge dismiss <fp> → shouldRun:false, routes to feedback', () => {
+      const payload = createIssueCommentPayload('@donmerge dismiss abc123');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'dismiss', fingerprint: 'abc123' });
+      expect(result.reason).toBe('feedback command');
+      expect(result.prNumber).toBe(42);
+      expect(result.commentType).toBe('issue');
+    });
+
+    it('@donmerge accept <fp> → shouldRun:false, routes to feedback', () => {
+      const payload = createIssueCommentPayload('@donmerge accept def456');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'accept', fingerprint: 'def456' });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge override <fp> suggestion → shouldRun:false, routes to feedback', () => {
+      const payload = createIssueCommentPayload('@donmerge override abc123 suggestion');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({
+        type: 'override',
+        fingerprint: 'abc123',
+        newSeverity: 'suggestion',
+      });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge preference Focus on security → shouldRun:false, routes to feedback (learning)', () => {
+      const payload = createIssueCommentPayload('@donmerge preference Focus on security');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'preference', text: 'Focus on security' });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge ignore PHPDoc comments → shouldRun:false, routes to feedback (learning)', () => {
+      const payload = createIssueCommentPayload('@donmerge ignore PHPDoc comments');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({
+        type: 'preference',
+        text: "Don't comment on: PHPDoc comments",
+      });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge focus authentication → shouldRun:false, routes to feedback (learning)', () => {
+      const payload = createIssueCommentPayload('@donmerge focus authentication');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({
+        type: 'preference',
+        text: 'Focus on: authentication',
+      });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge focus src/auth.ts → shouldRun:true, triggers review (has file path)', () => {
+      const payload = createIssueCommentPayload('@donmerge focus src/auth.ts');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(true);
+      expect(result.feedback).toBeUndefined();
+      expect(result.focusFiles).toContain('src/auth.ts');
+    });
+
+    it('@donmerge focus `src/auth.ts` and `src/api.ts` → shouldRun:true, triggers review', () => {
+      const payload = createIssueCommentPayload(
+        '@donmerge focus `src/auth.ts` and `src/api.ts`'
+      );
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(true);
+      expect(result.focusFiles).toContain('src/auth.ts');
+      expect(result.focusFiles).toContain('src/api.ts');
+    });
+
+    it('feedback commands include commentId, githubUser, inReplyToId', () => {
+      const payload = createIssueCommentPayload('@donmerge dismiss abc123', {
+        comment: { body: '@donmerge dismiss abc123', id: 777, in_reply_to_id: 555, user: { login: 'reviewer1' } },
+      });
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.commentId).toBe(777);
+      expect(result.githubUser).toBe('reviewer1');
+      expect(result.inReplyToId).toBe(555);
+    });
   });
 
   // ─── pull_request_review_comment events ───────────────────────────
@@ -202,6 +319,86 @@ describe('parseTrigger', () => {
     });
   });
 
+  // ─── Feedback command routing (pull_request_review_comment) ────────
+
+  describe('pull_request_review_comment — feedback command routing', () => {
+    it('@donmerge dismiss <fp> → shouldRun:false, routes to feedback', () => {
+      const payload = createReviewCommentPayload('@donmerge dismiss abc123');
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'dismiss', fingerprint: 'abc123' });
+      expect(result.reason).toBe('feedback command');
+      expect(result.commentType).toBe('review');
+    });
+
+    it('@donmerge accept <fp> → shouldRun:false, routes to feedback', () => {
+      const payload = createReviewCommentPayload('@donmerge accept def456');
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'accept', fingerprint: 'def456' });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge override <fp> critical → shouldRun:false, routes to feedback', () => {
+      const payload = createReviewCommentPayload('@donmerge override abc123 critical');
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({
+        type: 'override',
+        fingerprint: 'abc123',
+        newSeverity: 'critical',
+      });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge preference No PHPDoc → shouldRun:false, routes to feedback (learning)', () => {
+      const payload = createReviewCommentPayload('@donmerge preference No PHPDoc needed');
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'preference', text: 'No PHPDoc needed' });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge ignore logging → shouldRun:false, routes to feedback (learning)', () => {
+      const payload = createReviewCommentPayload('@donmerge ignore logging statements');
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({
+        type: 'preference',
+        text: "Don't comment on: logging statements",
+      });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge focus security → shouldRun:false, routes to feedback (learning)', () => {
+      const payload = createReviewCommentPayload('@donmerge focus security');
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({
+        type: 'preference',
+        text: 'Focus on: security',
+      });
+      expect(result.reason).toBe('feedback command');
+    });
+
+    it('@donmerge focus src/auth.ts → shouldRun:true, triggers review (has file path)', () => {
+      const payload = createReviewCommentPayload('@donmerge focus src/auth.ts');
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.shouldRun).toBe(true);
+      expect(result.focusFiles).toContain('src/auth.ts');
+    });
+
+    it('feedback commands include commentId, githubUser, inReplyToId', () => {
+      const payload = createReviewCommentPayload('@donmerge dismiss abc123', {
+        comment: { body: '@donmerge dismiss abc123', id: 888, in_reply_to_id: 666, user: { login: 'reviewer2' } },
+      });
+      const result = parseTrigger('pull_request_review_comment', payload);
+      expect(result.commentId).toBe(888);
+      expect(result.githubUser).toBe('reviewer2');
+      expect(result.inReplyToId).toBe(666);
+    });
+  });
+
   // ─── Unsupported events ───────────────────────────────────────────
 
   describe('unsupported events', () => {
@@ -217,6 +414,80 @@ describe('parseTrigger', () => {
       const result = parseTrigger('issues', payload);
       expect(result.shouldRun).toBe(false);
       expect(result.reason).toContain('unsupported event: issues');
+    });
+  });
+
+  // ─── Reaction routing ─────────────────────────────────────────────
+
+  describe('reaction event', () => {
+    it('thumbsdown → shouldRun:false, routes to feedback (dismiss)', () => {
+      const payload = createReactionPayload('thumbsdown');
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'dismiss' });
+      expect(result.prNumber).toBe(42);
+      expect(result.commentId).toBe(99);
+      expect(result.commentType).toBe('review');
+      expect(result.githubUser).toBe('dev');
+    });
+
+    it('thumbsup → shouldRun:false, routes to feedback (accept)', () => {
+      const payload = createReactionPayload('thumbsup');
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toEqual({ type: 'accept' });
+      expect(result.prNumber).toBe(42);
+      expect(result.commentId).toBe(99);
+      expect(result.commentType).toBe('review');
+    });
+
+    it('non-thumbs reaction (heart) → shouldRun:false, ignored', () => {
+      const payload = createReactionPayload('heart');
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toBeUndefined();
+      expect(result.reason).toBe('non-thumbs reaction');
+    });
+
+    it('non-thumbs reaction (hooray) → shouldRun:false, ignored', () => {
+      const payload = createReactionPayload('hooray');
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toBeUndefined();
+      expect(result.reason).toBe('non-thumbs reaction');
+    });
+
+    it('non-thumbs reaction (laugh) → shouldRun:false, ignored', () => {
+      const payload = createReactionPayload('laugh');
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.feedback).toBeUndefined();
+      expect(result.reason).toBe('non-thumbs reaction');
+    });
+
+    it('should NOT trigger on "deleted" action', () => {
+      const payload = createReactionPayload('thumbsdown', { action: 'deleted' });
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.reason).toBe('ignored reaction');
+    });
+
+    it('should NOT trigger if issue is not a PR', () => {
+      const payload = createReactionPayload('thumbsdown', {
+        issue: { number: 42 }, // no pull_request key
+      });
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.reason).toBe('ignored reaction');
+    });
+
+    it('should NOT trigger if comment.id is missing', () => {
+      const payload = createReactionPayload('thumbsdown', {
+        comment: undefined,
+      });
+      const result = parseTrigger('reaction', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.reason).toBe('ignored reaction');
     });
   });
 
