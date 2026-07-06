@@ -164,6 +164,46 @@ export async function addCommentReaction(
 }
 
 /**
+ * Fetch a single comment by ID (for extracting fingerprint from reacted comment).
+ * Reactions can occur on both PR review comments (inline) and issue comments (conversation),
+ * so we try the appropriate endpoint first and fall back to the other.
+ */
+export async function fetchCommentById(
+  owner: string,
+  repo: string,
+  commentId: number,
+  token: string,
+  commentType?: 'review' | 'issue'
+): Promise<{ body: string; id: number; in_reply_to_id: number | null } | null> {
+  try {
+    const endpoint = commentType === 'issue'
+      ? `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`
+      : `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}`;
+
+    const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null }>(
+      endpoint,
+      token
+    );
+    return comment;
+  } catch {
+    // If the primary endpoint fails, try the other one
+    try {
+      const fallbackEndpoint = commentType === 'issue'
+        ? `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}`
+        : `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`;
+
+      const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null }>(
+        fallbackEndpoint,
+        token
+      );
+      return comment;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
  * Publish a review with line comments.
  */
 export async function publishReview(

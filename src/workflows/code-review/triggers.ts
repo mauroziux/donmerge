@@ -2,7 +2,8 @@
  * Trigger parsing logic for code review webhooks.
  */
 
-import type { WebhookPayload, TriggerResult } from './types';
+import type { WebhookPayload, TriggerResult, FeedbackCommand } from './types';
+import { parseDonmergeCommand } from './feedback-handler';
 
 /**
  * Parse webhook event to determine if a review should be triggered.
@@ -49,6 +50,45 @@ export function parseTrigger(
         reason: 'comment does not trigger review',
       };
     }
+
+    // Check for feedback commands (dismiss/accept/override/preference/ignore/focus-as-learning)
+    const command = parseDonmergeCommand(body);
+    if (command) {
+      // If it's a focus command with file paths, it's a review trigger (not feedback)
+      if (command.type === 'preference' && command.text?.startsWith('Focus on:')) {
+        const focus = extractFocusFiles(command.text);
+        if (focus.files.length > 0) {
+          // Fall through to review trigger logic below
+        } else {
+          // Focus without file paths → learning
+          return {
+            shouldRun: false,
+            prNumber: payload.issue.number,
+            retrigger: false,
+            feedback: command,
+            commentId: payload.comment?.id,
+            commentType: 'issue',
+            githubUser: payload.comment?.user?.login,
+            inReplyToId: payload.comment?.in_reply_to_id,
+            reason: 'feedback command',
+          };
+        }
+      } else {
+        // dismiss/accept/override/preference/ignore → always feedback
+        return {
+          shouldRun: false,
+          prNumber: payload.issue.number,
+          retrigger: false,
+          feedback: command,
+          commentId: payload.comment?.id,
+          commentType: 'issue',
+          githubUser: payload.comment?.user?.login,
+          inReplyToId: payload.comment?.in_reply_to_id,
+          reason: 'feedback command',
+        };
+      }
+    }
+
     const instructionResult = parseInstruction(body, triggerTagNormalized);
     if (instructionResult.action === 'ignore') {
       return {
@@ -66,6 +106,8 @@ export function parseTrigger(
       commentType: 'issue',
       instruction: instructionResult.instruction,
       focusFiles: instructionResult.focusFiles,
+      githubUser: payload.comment?.user?.login,
+      inReplyToId: payload.comment?.in_reply_to_id,
     };
   }
 
@@ -80,6 +122,45 @@ export function parseTrigger(
         reason: 'review comment does not trigger review',
       };
     }
+
+    // Check for feedback commands (dismiss/accept/override/preference/ignore/focus-as-learning)
+    const command = parseDonmergeCommand(body);
+    if (command) {
+      // If it's a focus command with file paths, it's a review trigger (not feedback)
+      if (command.type === 'preference' && command.text?.startsWith('Focus on:')) {
+        const focus = extractFocusFiles(command.text);
+        if (focus.files.length > 0) {
+          // Fall through to review trigger logic below
+        } else {
+          // Focus without file paths → learning
+          return {
+            shouldRun: false,
+            prNumber: payload.pull_request.number,
+            retrigger: false,
+            feedback: command,
+            commentId: payload.comment?.id,
+            commentType: 'review',
+            githubUser: payload.comment?.user?.login,
+            inReplyToId: payload.comment?.in_reply_to_id,
+            reason: 'feedback command',
+          };
+        }
+      } else {
+        // dismiss/accept/override/preference/ignore → always feedback
+        return {
+          shouldRun: false,
+          prNumber: payload.pull_request.number,
+          retrigger: false,
+          feedback: command,
+          commentId: payload.comment?.id,
+          commentType: 'review',
+          githubUser: payload.comment?.user?.login,
+          inReplyToId: payload.comment?.in_reply_to_id,
+          reason: 'feedback command',
+        };
+      }
+    }
+
     const instructionResult = parseInstruction(body, triggerTagNormalized);
     if (instructionResult.action === 'ignore') {
       return {
@@ -97,6 +178,29 @@ export function parseTrigger(
       commentType: 'review',
       instruction: instructionResult.instruction,
       focusFiles: instructionResult.focusFiles,
+      githubUser: payload.comment?.user?.login,
+      inReplyToId: payload.comment?.in_reply_to_id,
+    };
+  }
+
+  if (event === 'reaction') {
+    // Reaction payload structure:
+    // { action: 'created', reaction: { content: 'thumbsdown' }, comment: { id: 123 }, issue: { number: 456, pull_request: {...} } }
+    if (payload.action !== 'created' || !payload.comment?.id || !payload.issue?.pull_request) {
+      return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'ignored reaction' };
+    }
+    const reactionContent = payload.reaction?.content;
+    if (reactionContent !== 'thumbsup' && reactionContent !== 'thumbsdown') {
+      return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'non-thumbs reaction' };
+    }
+    return {
+      shouldRun: false,
+      prNumber: payload.issue.number,
+      retrigger: false,
+      feedback: { type: reactionContent === 'thumbsdown' ? 'dismiss' : 'accept' },
+      commentId: payload.comment.id,
+      commentType: 'review',
+      githubUser: payload.sender?.login,
     };
   }
 

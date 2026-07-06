@@ -131,8 +131,10 @@ export interface WebhookPayload {
     number: number;
     pull_request?: Record<string, unknown>;
   };
-  comment?: { body?: string; id?: number };
+  comment?: { body?: string; id?: number; in_reply_to_id?: number; user?: { login: string } };
   check_run?: CheckRunPayload;
+  reaction?: { content: string };
+  sender?: { login: string };
 }
 
 export interface ReviewComment {
@@ -220,6 +222,17 @@ export interface ReviewResult {
   fileSummaries?: FileSummary[];
 }
 
+/**
+ * Parsed feedback command (matches feedback-handler ParsedCommand shape).
+ * Defined here to avoid circular dependency with feedback-handler.ts.
+ */
+export interface FeedbackCommand {
+  type: 'dismiss' | 'accept' | 'override' | 'preference';
+  fingerprint?: string;
+  text?: string;
+  newSeverity?: 'critical' | 'suggestion' | 'low';
+}
+
 export interface WebhookContext {
   owner: string;
   repo: string;
@@ -230,6 +243,9 @@ export interface WebhookContext {
   installationId?: number;
   instruction?: string;
   focusFiles?: string[];
+  feedback?: FeedbackCommand;
+  githubUser?: string;
+  inReplyToId?: number;
 }
 
 export interface FastValidationResult {
@@ -248,6 +264,9 @@ export interface TriggerResult {
   instruction?: string;
   focusFiles?: string[];
   reason?: string;
+  feedback?: FeedbackCommand;
+  githubUser?: string;
+  inReplyToId?: number;
 }
 
 export interface ModelConfig {

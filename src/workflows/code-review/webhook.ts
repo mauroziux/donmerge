@@ -6,9 +6,11 @@
  */
 
 import type { WorkerEnv, WebhookPayload, FastValidationResult, WebhookContext } from './types';
-import { verifyWebhookSignature, isRepoAllowed } from './github-auth';
+import { verifyWebhookSignature, isRepoAllowed, resolveGitHubToken } from './github-auth';
 import { parseTrigger } from './triggers';
 import { getReviewProcessor } from './processor';
+import { fetchCommentById } from './github-api';
+import { parseFingerprint } from './fingerprint';
 
 interface EnvWithReviewProcessor extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
@@ -60,6 +62,26 @@ export async function validateWebhookFast(
 
   const trigger = parseTrigger(event, payload, env.REVIEW_TRIGGER);
   if (!trigger.shouldRun) {
+    // Feedback commands (dismiss/accept/override/preference/ignore) should still be processed
+    if (trigger.feedback) {
+      return {
+        shouldProcess: true,
+        status: 202,
+        body: { ok: true, accepted: true, feedback: true },
+        context: {
+          owner,
+          repo,
+          prNumber: trigger.prNumber,
+          retrigger: false,
+          commentId: trigger.commentId,
+          commentType: trigger.commentType,
+          installationId: payload.installation?.id,
+          feedback: trigger.feedback,
+          githubUser: trigger.githubUser,
+          inReplyToId: trigger.inReplyToId,
+        },
+      };
+    }
     return { shouldProcess: false, status: 200, body: { ok: true, skipped: true, reason: trigger.reason } };
   }
 
@@ -89,6 +111,84 @@ export async function processGitHubCodeReviewWebhook(
   env: EnvWithReviewProcessor,
   context: WebhookContext
 ): Promise<void> {
+  // ── Feedback handling (dismiss/accept/override/preference/ignore reactions) ──
+  if (context.feedback) {
+    if (!env.DB) {
+      console.warn('DB not bound — feedback not stored');
+      return;
+    }
+    const { handleCommentFeedback, handleReactionFeedback } = await import('./feedback-handler');
+
+    if (context.feedback.type === 'dismiss' || context.feedback.type === 'accept') {
+      if (context.feedback.fingerprint) {
+        // @donmerge command (dismiss/accept) — fingerprint already parsed from command
+        await handleCommentFeedback(env.DB, {
+          owner: context.owner,
+          repo: context.repo,
+          prNumber: context.prNumber,
+          githubUser: context.githubUser ?? 'unknown',
+          commentBody: `@donmerge ${context.feedback.type} ${context.feedback.fingerprint}`,
+          commentId: context.commentId ?? 0,
+          inReplyToId: context.inReplyToId,
+        });
+      } else if (context.commentId) {
+        // Reaction event — need to fetch comment body to get the fingerprint
+        try {
+          const token = await resolveGitHubToken(env, context.installationId);
+          const comment = await fetchCommentById(
+            context.owner,
+            context.repo,
+            context.commentId,
+            token,
+            context.commentType
+          );
+          if (comment) {
+            const metadata = parseFingerprint(comment.body);
+            await handleReactionFeedback(env.DB, {
+              owner: context.owner,
+              repo: context.repo,
+              prNumber: context.prNumber,
+              githubUser: context.githubUser ?? 'unknown',
+              reaction: context.feedback.type === 'dismiss' ? 'thumbsdown' : 'thumbsup',
+              commentId: context.commentId,
+              commentFingerprint: metadata?.fingerprint,
+            });
+          }
+        } catch (error) {
+          console.error('Failed to handle reaction feedback', {
+            error: error instanceof Error ? error.message : error,
+          });
+        }
+      }
+    } else if (context.feedback.type === 'override') {
+      // @donmerge override <fingerprint> <severity>
+      const feedbackText = context.feedback.fingerprint
+        ? `${context.feedback.fingerprint} ${context.feedback.newSeverity ?? ''}`
+        : '';
+      await handleCommentFeedback(env.DB, {
+        owner: context.owner,
+        repo: context.repo,
+        prNumber: context.prNumber,
+        githubUser: context.githubUser ?? 'unknown',
+        commentBody: `@donmerge override ${feedbackText}`.trim(),
+        commentId: context.commentId ?? 0,
+        inReplyToId: context.inReplyToId,
+      });
+    } else {
+      // preference/ignore/focus-as-learning
+      const feedbackText = context.feedback.text ?? context.feedback.fingerprint ?? '';
+      await handleCommentFeedback(env.DB, {
+        owner: context.owner,
+        repo: context.repo,
+        prNumber: context.prNumber,
+        githubUser: context.githubUser ?? 'unknown',
+        commentBody: `@donmerge preference ${feedbackText}`,
+        commentId: context.commentId ?? 0,
+      });
+    }
+    return;
+  }
+
   const { owner, repo, prNumber, retrigger, commentId, commentType, installationId, instruction } =
     context;
   const focusFiles = context.focusFiles;
