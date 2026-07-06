@@ -29,19 +29,36 @@ AI-powered code review and Sentry triage as a service. DonMerge runs as a Cloudf
 │  │              Durable Objects                      │      │
 │  │  ┌─────────────┐  ┌──────────────────────┐       │      │
 │  │  │ Review      │  │ TriageProcessor      │       │      │
-│  │  │ Processor   │  │ (error-agnostic)     │       │      │
+│  │  │ Processor   │  │ (error triage)       │       │      │
+│  │  └──────┬──────┘  └──────────────────────┘       │      │
+│  │  ┌──────┴──────┐  ┌──────────────────────┐       │      │
+│  │  │ RateLimiter │  │ Sandbox (Container)  │       │      │
 │  │  └─────────────┘  └──────────────────────┘       │      │
-│  │  ┌─────────────┐  ┌──────────────────────┐       │      │
-│  │  │ RateLimiter │  │ Sandbox              │       │      │
-│  │  │             │  │ (Container)          │       │      │
-│  │  └─────────────┘  └──────────────────────┘       │      │
+│  └───────────────────────┬───────────────────────────┘      │
+│                          │                                  │
+│                          ▼                                  │
+│  ┌───────────────────────────────────────────────────┐      │
+│  │         Cloudflare Workflows                      │      │
+│  │  ┌─────────────────────────────────────────────┐  │      │
+│  │  │  CodeReviewWorkflow (4-step pipeline)       │  │      │
+│  │  │  1. Fetch PR Data    2. Prepare Files       │  │      │
+│  │  │  3. Run LLM Review   4. Publish Review      │  │      │
+│  │  └──────────────────────┬──────────────────────┘  │      │
+│  │                         │                         │      │
+│  │                         ▼                         │      │
+│  │  ┌─────────────────────────────────────────────┐  │      │
+│  │  │  Quality Gate                               │  │      │
+│  │  │  Filter → 🔴 Critical (blocks)              │  │      │
+│  │  │           🟡 Suggestion (non-blocking)       │  │      │
+│  │  │           ❌ Style/noise (dropped)           │  │      │
+│  │  └─────────────────────────────────────────────┘  │      │
 │  └───────────────────────────────────────────────────┘      │
 │       │              │                                      │
 │       ▼              ▼                                      │
 │  ┌──────────┐   ┌──────────┐                                │
 │  │ GitHub   │   │ LLM      │                                │
 │  │ API      │   │ (OpenAI/ │                                │
-│  │          │   │ Anthropic)│                                │
+│  │          │   │ via Flue)│                                │
 │  └──────────┘   └──────────┘                                │
 │       │                                                     │
 │       ▼                                                     │
@@ -51,6 +68,8 @@ AI-powered code review and Sentry triage as a service. DonMerge runs as a Cloudf
 │  └──────────┘   └──────────┘   └──────────┘                │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+For detailed architecture diagrams (Mermaid), see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ## Two Integration Modes
 

@@ -16,6 +16,51 @@ An AI-powered code review assistant that provides automated, line-specific feedb
 - **Private Repository Support**: Secure handling of private code
 - **Codex Integration**: Uses Codex completions models for intelligent code analysis
 
+## 🏗 Architecture
+
+DonMerge runs as a Cloudflare Worker. When a review is triggered, a **Cloudflare Workflow** executes a 4-step durable pipeline. A **Quality Gate** filters findings before publishing — only concrete, high-confidence issues with a described failure mechanism can block a merge.
+
+```mermaid
+graph TD
+    subgraph Entry ["Entry Points"]
+        WH["GitHub Webhook"]
+        API["Push API"]
+    end
+
+    subgraph Pipeline ["CodeReviewWorkflow"]
+        S1["1. Fetch PR Data<br/>& Check Run"]
+        S2["2. Prepare Files<br/>Filters + Context"]
+        S3["3. Run LLM Review<br/>Sandbox + Flue"]
+        S4["4. Publish Review<br/>Match + Dedup"]
+    end
+
+    subgraph Gate ["Quality Gate"]
+        QG{"filterLineComments<br/>ByQuality"}
+        CRIT["🔴 Critical<br/>Blocks merge"]
+        SUGG["🟡 Suggestion<br/>Non-blocking"]
+        DROP["❌ Dropped<br/>Style/noise/vague"]
+    end
+
+    subgraph Output ["GitHub"]
+        CR["Check Run<br/>Pass / Fail"]
+        LC["Line Comments"]
+    end
+
+    WH --> S1
+    API --> S1
+    S1 --> S2 --> S3 --> S4
+    S3 --> QG
+    QG -->|concrete failure mechanism| CRIT
+    QG -->|non-critical but actionable| SUGG
+    QG -->|style/vague/noise| DROP
+    CRIT --> S4
+    SUGG --> S4
+    S4 --> CR
+    S4 --> LC
+```
+
+For the full architecture document with detailed diagrams, see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -111,15 +156,22 @@ Please focus on security vulnerabilities and performance issues.
 
 | Status | Meaning |
 |--------|---------|
-| ✅ **Success** | No critical issues found, PR is safe to merge |
-| ❌ **Failure** | Critical issues detected, review required |
+| ✅ **Success** | No blocking issues found, PR is safe to merge |
+| ❌ **Failure** | Blocking issues detected, review required |
 | ⏱️ **Timed Out** | Review exceeded maximum duration |
 | ⚠️ **Partial** | Large PR, only critical files reviewed |
 
 #### Line Comments
 
-- 🔴 **Critical**: Blocking issues (security, logic errors, breaking changes)
-- 💡 **Suggestions**: Non-blocking improvements (code quality, best practices)
+| Label | Blocking? | Criteria |
+|-------|-----------|----------|
+| 🔴 **Issue** | **Yes** — fails the check run | Concrete finding with a described failure mechanism (security vulnerability, data loss, race condition, runtime error, broken logic) |
+| 🟡 **Suggestion** | No — informational only | Non-critical finding that is concrete and actionable, but lacks a blocking failure mechanism |
+| *(filtered)* | N/A | Style, PHPDoc, import ordering, vague advisory ("ensure", "consider") — automatically removed by the quality gate |
+
+**What blocks a merge:** Only 🔴 **Issue** comments with severity `critical` AND a concrete failure mechanism (e.g., "leads to SQL injection", "causes null dereference", "results in data loss"). Generic or vague findings — even at critical severity — are filtered out.
+
+**What doesn't block:** 🟡 Suggestions, style-related findings, PHPDoc/docblock comments, import ordering, naming conventions, and advisory comments without a described code path.
 
 #### Comment Lifecycle
 
@@ -142,6 +194,44 @@ This PR implements user authentication with proper security practices.
 - Consider adding rate limiting to the login endpoint
 - Add JSDoc comments to public functions
 - Extract validation logic to a separate module
+```
+
+### Quality Calibration
+
+#### Why the Change
+
+An audit of 100 PRs found that ~80% of LLM-generated inline findings were generic, vague, or style-related — not true blocking issues. Comments like "Ensure all errors are handled" or "Consider adding PHPDoc" created noise without identifying concrete risks. The quality gate was introduced to ensure only findings with a **described failure mechanism** can block a merge.
+
+#### How It Works
+
+After the LLM produces findings, a deterministic post-processing step (`filterLineCommentsByQuality`) applies three checks:
+
+1. **Style/Noise filter** — Drops comments about PHPDoc, imports, formatting, naming, refactoring, etc.
+2. **Vague advisory filter** — Drops comments using "ensure", "verify", "consider", "may", "could" without explaining the exact code path that fails.
+3. **Concrete failure mechanism check** — Critical findings must describe what happens (e.g., "leads to SQL injection", "causes null dereference"). Critical findings without a mechanism are dropped or downgraded.
+
+Non-critical findings that pass the quality gate are labeled 🟡 **Suggestion** (non-blocking). Only critical findings with a concrete mechanism remain 🔴 **Issue** (blocking).
+
+#### What Blocks vs. What Doesn't
+
+| Finding | Blocks? | Why |
+|---------|---------|-----|
+| "This SQL query concatenates user input directly — leads to SQL injection" | ✅ Yes | Critical domain + concrete mechanism |
+| "Consider adding rate limiting to the login endpoint" | ❌ No | Vague advisory, no failure mechanism |
+| "Race condition in `updateBalance` — concurrent writes can corrupt balance" | ✅ Yes | Critical domain + concrete mechanism |
+| "Ensure all async errors are handled" | ❌ No | Vague advisory, no specific code path |
+| "Missing PHPDoc on `getUserById`" | ❌ No | Style/noise, filtered out |
+| "Import ordering should be alphabetical" | ❌ No | Style/noise, filtered out |
+
+#### Configuration
+
+The quality gate is always active. You can adjust severity per-path using the `.donmerge` config file:
+
+```yaml
+severity:
+  "src/auth/**": "critical"      # Elevate auth findings
+  "docs/**": "suggestion"         # Demote doc findings
+  "**/*.config.ts": "low"         # Minimize config file noise
 ```
 
 ## ⚙️ Configuration
@@ -289,12 +379,14 @@ Broad exclude patterns can unintentionally hide important files from review. Kee
 
 ### Flue Architecture
 
-DonMerge uses [Flue](https://github.com/withastro/flue) for LLM orchestration inside Cloudflare Workers:
+DonMerge uses [Flue](https://github.com/withastro/flue) for LLM orchestration inside a Cloudflare Workflow pipeline:
 
-1. Each review runs in a Cloudflare **Sandbox container**
-2. Flue's `@flue/cloudflare` runtime starts an **OpenCode server** inside the container
-3. The OpenCode server proxies requests to the **OpenAI API** directly (not Cloudflare Workers AI)
-4. The `OPENAI_API_KEY` is injected into the container environment at runtime
+1. The **CodeReviewWorkflow** (Cloudflare Workflow) orchestrates the 4-step review pipeline with durable retries and timeouts
+2. Each review runs in a Cloudflare **Sandbox container**
+3. Flue's `@flue/cloudflare` runtime starts an **OpenCode server** inside the container
+4. The OpenCode server proxies requests to the **OpenAI API** directly (not Cloudflare Workers AI)
+5. The `OPENAI_API_KEY` is injected into the container environment at runtime
+6. After the LLM responds, the **Quality Gate** filters findings before publishing to GitHub
 
 #### Output Format Instructions
 
