@@ -129,6 +129,18 @@ export const DONMERGE_INSTRUCTION_TEMPLATE = `📝 PROJECT INSTRUCTIONS (from .d
 "{instruction}"`;
 
 /**
+ * Memory section template for team learnings.
+ */
+export const MEMORY_SECTION = `
+## 🧠 Team Learnings
+
+The following preferences were learned from past interactions with this team.
+These are NOT rules — they are preferences. Honor them when applicable.
+
+{memory_content}
+`;
+
+/**
  * Approval rules.
  */
 export const APPROVAL_RULES = `RULES:

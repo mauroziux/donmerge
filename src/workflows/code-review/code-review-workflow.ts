@@ -21,6 +21,8 @@ import type {
   RepoContext as RepoContextType,
   TrackedIssue,
   DonmergeResolved,
+  MemoryContext,
+  PatternWeight,
 } from './types';
 import {
   githubFetch,
@@ -55,6 +57,8 @@ import {
   syncTrackedIssuesFromComments,
   withBlockingApproval,
 } from './processor-utils';
+import { recordReviewFindings } from './feedback-handler';
+import { buildMemoryContext, getPatternWeights } from './memory-store';
 
 // ── Workflow params (must be serializable — no functions, no DO stubs) ────────
 
@@ -430,6 +434,18 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
   private async runLlmReview(preparedFiles: PreparedFiles): Promise<LlmReviewResult> {
     const { prData, diffText, repoContext, donmergeResolved, activePreviousComments } = preparedFiles;
 
+    // Load memory context and pattern weights (best-effort)
+    let memoryContext: MemoryContext | undefined;
+    let patternWeights: Map<string, PatternWeight> | undefined;
+    if (this.env.DB) {
+      try {
+        memoryContext = await buildMemoryContext(this.env.DB, prData.owner, prData.repo);
+        patternWeights = await getPatternWeights(this.env.DB, prData.owner, prData.repo);
+      } catch (e) {
+        console.warn('[memory] Failed to load memory context, proceeding without:', e);
+      }
+    }
+
     const sessionId = `review-${prData.owner}-${prData.repo}-${prData.prNumber}-${Date.now()}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
     const flue = new FlueRuntime({ sandbox, sessionId, workdir: '/home/user' });
@@ -457,7 +473,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         diffText,
         repoContext,
       },
-      { donmergeResolved }
+      { donmergeResolved, memoryContext }
     );
 
     const promptErrorHint =
@@ -482,7 +498,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           if (validation.valid) {
             return {
               preparedFiles,
-              result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides),
+              result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
             };
           }
           response = rawResponse;
@@ -500,7 +516,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     if (validation.valid) {
       return {
         preparedFiles,
-        result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides),
+        result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
       };
     }
 
@@ -518,7 +534,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           if (retryValidation.valid) {
             return {
               preparedFiles,
-              result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides),
+              result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
             };
           }
           response = rawResponse;
@@ -536,7 +552,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     if (retryValidation.valid) {
       return {
         preparedFiles,
-        result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides),
+        result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
       };
     }
 
@@ -593,6 +609,31 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       updatedIssues.set(issue.id, transitionToNew(issue, headSha));
     }
     await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()));
+
+    // Record review outcomes in D1 memory (best-effort)
+    if (this.env.DB) {
+      try {
+        await recordReviewFindings(this.env.DB, {
+          owner,
+          repo,
+          prNumber,
+          headSha,
+          findings: currentIssues.map(ci => ({
+            fingerprint: ci.fingerprint,
+            logicalKey: ci.logicalKey,
+            ruleId: ci.payload.ruleId,
+            filePath: ci.payload.filePath,
+            line: ci.payload.line,
+            severity: ci.payload.severity,
+            body: ci.payload.body,
+            status: ci.payload.status,
+            githubCommentId: ci.payload.githubCommentId,
+          })),
+        });
+      } catch (error) {
+        console.warn('[memory] Failed to record review outcomes:', error);
+      }
+    }
 
     // Resolve fixed comments (if enabled)
     const postFixedReplies = this.env.DONMERGE_POST_FIXED_REPLIES === 'true';

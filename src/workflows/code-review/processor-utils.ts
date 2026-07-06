@@ -11,6 +11,7 @@ import type {
   ReviewResult,
   PreviousComment,
   PRSummary,
+  PatternWeight,
 } from './types';
 import { deriveIssueKey, extractIssueTerms, buildIssueIdentity } from './issue-key';
 import { getSeverityOverride } from './donmerge';
@@ -112,17 +113,19 @@ export function withBlockingApproval(review: ReviewResult): ReviewResult {
  * Drops vague advisory/style/noise findings and requires critical comments to
  * describe a concrete failure mechanism or consequence.
  */
-export function filterLineCommentsByQuality(comments: ReviewComment[]): ReviewComment[] {
+export function filterLineCommentsByQuality(
+  comments: ReviewComment[],
+  patternWeights?: Map<string, PatternWeight>
+): ReviewComment[] {
   return comments
-    .filter((comment) => shouldKeepLineComment(comment))
-    .map((comment) =>
-      comment.severity === 'critical'
-        ? labelCriticalComment(comment)
-        : labelNonBlockingComment(comment)
-    );
+    .filter((comment) => shouldKeepLineComment(comment, patternWeights))
+    .map((comment) => calibrateSeverity(comment, patternWeights));
 }
 
-export function shouldKeepLineComment(comment: ReviewComment): boolean {
+export function shouldKeepLineComment(
+  comment: ReviewComment,
+  patternWeights?: Map<string, PatternWeight>
+): boolean {
   const body = comment.body ?? '';
   const searchable = `${body}\n${comment.issueKey ?? ''}\n${comment.ruleId ?? ''}`;
   const hasCriticalDomain = CRITICAL_DOMAIN_PATTERN.test(searchable);
@@ -137,10 +140,53 @@ export function shouldKeepLineComment(comment: ReviewComment): boolean {
   }
 
   if (comment.severity === 'critical') {
-    return hasConcreteFailure;
+    if (!hasConcreteFailure) return false;
+  } else {
+    if (!hasConcreteFailure || isVagueAdvisory(searchable)) return false;
   }
 
-  return hasConcreteFailure && !isVagueAdvisory(searchable);
+  // Check pattern confidence: drop low-confidence rules with sufficient sample size
+  if (patternWeights && comment.ruleId) {
+    const weight = patternWeights.get(comment.ruleId);
+    if (weight && weight.confidence < 0.3 && weight.total_findings >= 10) {
+      return false; // Low confidence pattern → drop
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Calibrate comment severity based on pattern confidence.
+ * Demotes critical to suggestion if the rule has low confidence with sufficient samples.
+ */
+function calibrateSeverity(
+  comment: ReviewComment,
+  patternWeights?: Map<string, PatternWeight>
+): ReviewComment {
+  if (!patternWeights || !comment.ruleId) {
+    // Apply default labeling when no pattern weights
+    return comment.severity === 'critical'
+      ? labelCriticalComment(comment)
+      : labelNonBlockingComment(comment);
+  }
+
+  const weight = patternWeights.get(comment.ruleId);
+  if (!weight) {
+    return comment.severity === 'critical'
+      ? labelCriticalComment(comment)
+      : labelNonBlockingComment(comment);
+  }
+
+  // If confidence is low and severity is critical, demote to suggestion
+  if (weight.confidence < 0.4 && comment.severity === 'critical' && weight.total_findings >= 5) {
+    const body = comment.body.replace(/🔴\s*\*\*Issue:\*\*/gi, '🟡 **Suggestion:**');
+    return { ...comment, severity: 'suggestion', body };
+  }
+
+  return comment.severity === 'critical'
+    ? labelCriticalComment(comment)
+    : labelNonBlockingComment(comment);
 }
 
 export function filterCriticalIssuesByQuality(issues: string[]): string[] {
@@ -204,7 +250,8 @@ function labelCriticalComment(comment: ReviewComment): ReviewComment {
 export function normalizeReviewResult(
   result: ReviewResult,
   previousComments?: PreviousComment[],
-  severityOverrides?: Record<string, 'critical' | 'suggestion' | 'low'>
+  severityOverrides?: Record<string, 'critical' | 'suggestion' | 'low'>,
+  patternWeights?: Map<string, PatternWeight>
 ): ReviewResult {
   const lineComments = Array.isArray(result.lineComments)
     ? result.lineComments.map((comment) => ({
@@ -226,7 +273,7 @@ export function normalizeReviewResult(
       })
     : reconciledLineComments;
 
-  const finalLineComments = filterLineCommentsByQuality(overriddenLineComments);
+  const finalLineComments = filterLineCommentsByQuality(overriddenLineComments, patternWeights);
 
   const criticalIssues = Array.isArray(result.criticalIssues)
     ? filterCriticalIssuesByQuality(result.criticalIssues)

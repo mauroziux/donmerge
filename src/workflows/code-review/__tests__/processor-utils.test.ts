@@ -27,7 +27,7 @@ import {
   syncTrackedIssuesFromComments,
 } from '../processor-utils';
 import { createReviewComment, createPreviousComment, createTrackedIssue, resetIssueCounter } from './helpers';
-import type { ReviewResult, TrackedIssue } from '../types';
+import type { ReviewResult, TrackedIssue, PatternWeight } from '../types';
 
 beforeEach(() => {
   resetIssueCounter();
@@ -1198,5 +1198,336 @@ describe('normalizeReviewResult — severity overrides', () => {
     const normalized = normalizeReviewResult(result);
     expect(normalized.lineComments[0].severity).toBe('low');
     expect(normalized.approved).toBe(true);
+  });
+});
+
+// ─── filterLineCommentsByQuality with patternWeights ────────────────
+
+describe('filterLineCommentsByQuality with patternWeights', () => {
+  it('drops comments with low-confidence patterns and sufficient sample size', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'sql-injection',
+        ruleId: 'style-import-order',
+        severity: 'critical',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'style-import-order',
+        {
+          rule_id: 'style-import-order',
+          pattern_type: 'style',
+          confidence: 0.2,
+          total_findings: 15,
+          dismissed_count: 12,
+          accepted_count: 1,
+          fixed_count: 1,
+          ignored_count: 1,
+          owner: 'owner',
+          repo: 'repo',
+        },
+      ],
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    expect(result).toHaveLength(0); // Dropped due to low confidence
+  });
+
+  it('keeps comments with high-confidence patterns', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'sql-injection',
+        ruleId: 'sql-injection',
+        severity: 'critical',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'sql-injection',
+        {
+          rule_id: 'sql-injection',
+          pattern_type: 'vulnerability',
+          confidence: 0.9,
+          total_findings: 20,
+          dismissed_count: 1,
+          accepted_count: 15,
+          fixed_count: 3,
+          ignored_count: 1,
+          owner: 'owner',
+          repo: 'repo',
+        },
+      ],
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    expect(result).toHaveLength(1); // Kept due to high confidence
+  });
+
+  it('keeps comments when pattern confidence is moderate (>= 0.3)', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'sql-injection',
+        ruleId: 'some-rule',
+        severity: 'critical',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'some-rule',
+        {
+          rule_id: 'some-rule',
+          pattern_type: 'advisory',
+          confidence: 0.3,
+          total_findings: 12,
+          dismissed_count: 5,
+          accepted_count: 5,
+          fixed_count: 1,
+          ignored_count: 1,
+          owner: 'owner',
+          repo: 'repo',
+        },
+      ],
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    expect(result).toHaveLength(1); // Kept: confidence >= 0.3
+  });
+
+  it('keeps low-confidence patterns with insufficient sample size', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'sql-injection',
+        ruleId: 'new-rule',
+        severity: 'critical',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'new-rule',
+        {
+          rule_id: 'new-rule',
+          pattern_type: 'advisory',
+          confidence: 0.1,
+          total_findings: 5, // < 10 threshold
+          dismissed_count: 4,
+          accepted_count: 1,
+          fixed_count: 0,
+          ignored_count: 0,
+          owner: 'owner',
+          repo: 'repo',
+        },
+      ],
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    expect(result).toHaveLength(1); // Kept: total_findings < 10
+  });
+
+  it('demotes critical to suggestion for low-confidence rules', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'uncertain-rule',
+        ruleId: 'uncertain-rule',
+        severity: 'critical',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'uncertain-rule',
+        {
+          rule_id: 'uncertain-rule',
+          pattern_type: 'advisory',
+          confidence: 0.35,
+          total_findings: 8,
+          dismissed_count: 4,
+          accepted_count: 2,
+          fixed_count: 1,
+          ignored_count: 1,
+          owner: 'owner',
+          repo: 'repo',
+        },
+      ],
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('suggestion');
+    expect(result[0].body).toContain('Suggestion');
+  });
+
+  it('does not demote non-critical comments based on pattern weights', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🟡 **Suggestion:** This branch returns stale cache when input is empty, causing an incorrect result.\n\n💡 **Suggestion:** Return a fresh value.',
+        issueKey: 'some-rule',
+        ruleId: 'some-rule',
+        severity: 'suggestion',
+        codeSnippet: 'if (!input) return cache;',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'some-rule',
+        {
+          rule_id: 'some-rule',
+          pattern_type: 'advisory',
+          confidence: 0.35, // >= 0.3 so not dropped, but < 0.4 would demote critical
+          total_findings: 10,
+          dismissed_count: 5,
+          accepted_count: 3,
+          fixed_count: 1,
+          ignored_count: 1,
+          owner: 'owner',
+          repo: 'repo',
+        },
+      ],
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    // Non-critical comments are not demoted by pattern weights, only critical ones are
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('suggestion');
+  });
+
+  it('handles comments without ruleId (no pattern weight lookup)', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'no-rule',
+        severity: 'critical',
+        // no ruleId
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'some-rule',
+        {
+          rule_id: 'some-rule',
+          pattern_type: 'advisory',
+          confidence: 0.1,
+          total_findings: 20,
+          dismissed_count: 18,
+          accepted_count: 1,
+          fixed_count: 1,
+          ignored_count: 0,
+          owner: 'owner',
+          repo: 'repo',
+        },
+      ],
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    // No ruleId → no pattern weight lookup → kept
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('critical');
+  });
+
+  it('handles empty patternWeights map', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'some-rule',
+        ruleId: 'some-rule',
+        severity: 'critical',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>();
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    // Empty map → no match → default behavior
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('critical');
+  });
+
+  it('handles undefined patternWeights', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'some-rule',
+        ruleId: 'some-rule',
+        severity: 'critical',
+      }),
+    ];
+
+    const result = filterLineCommentsByQuality(comments, undefined);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('critical');
+  });
+
+  it('drops multiple low-confidence comments in a batch', () => {
+    const comments = [
+      createReviewComment({
+        path: 'test.php',
+        line: 10,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'rule-a',
+        ruleId: 'rule-a',
+        severity: 'critical',
+      }),
+      createReviewComment({
+        path: 'test.php',
+        line: 20,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'rule-b',
+        ruleId: 'rule-b',
+        severity: 'critical',
+      }),
+      createReviewComment({
+        path: 'test.php',
+        line: 30,
+        body: '🔴 **Issue:** User input is concatenated into SQL, enabling SQL injection.\n\n💡 **Suggestion:** Use parameterized queries.',
+        issueKey: 'rule-c',
+        ruleId: 'rule-c',
+        severity: 'critical',
+      }),
+    ];
+
+    const patternWeights = new Map<string, PatternWeight>([
+      [
+        'rule-a',
+        { rule_id: 'rule-a', pattern_type: 'style', confidence: 0.1, total_findings: 15, dismissed_count: 13, accepted_count: 1, fixed_count: 1, ignored_count: 0, owner: 'owner', repo: 'repo' },
+      ],
+      [
+        'rule-b',
+        { rule_id: 'rule-b', pattern_type: 'style', confidence: 0.2, total_findings: 12, dismissed_count: 10, accepted_count: 1, fixed_count: 1, ignored_count: 0, owner: 'owner', repo: 'repo' },
+      ],
+      // rule-c not in map → kept
+    ]);
+
+    const result = filterLineCommentsByQuality(comments, patternWeights);
+    expect(result).toHaveLength(1); // Only rule-c survives
+    expect(result[0].ruleId).toBe('rule-c');
   });
 });

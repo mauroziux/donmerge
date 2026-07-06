@@ -15,6 +15,87 @@ export interface WorkerEnv {
   REVIEW_TRIGGER?: string;
   DONMERGE_POST_FIXED_REPLIES?: string;
   CODE_REVIEW_WORKFLOW?: Workflow;
+  DB?: D1Database;
+}
+
+// ── Memory system types ─────────────────────────────────────────────────────
+
+export interface ReviewOutcome {
+  id?: number;
+  owner: string;
+  repo: string;
+  pr_number: number;
+  head_sha: string;
+  fingerprint: string;
+  logical_key: string;
+  rule_id: string;
+  file_path: string;
+  line: number;
+  severity: 'critical' | 'suggestion' | 'low';
+  body: string;
+  status: 'new' | 'open' | 'fixed' | 'reintroduced' | 'dismissed';
+  outcome: 'new' | 'dismissed' | 'accepted' | 'fixed' | 'ignored' | 'overridden';
+  outcome_source?: 'reaction' | 'reply' | 'command' | 'implicit';
+  previous_severity?: 'critical' | 'suggestion' | 'low';
+  new_severity?: 'critical' | 'suggestion' | 'low';
+  github_comment_id?: number;
+  reviewer_type: 'human' | 'ai';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Feedback {
+  id?: number;
+  owner: string;
+  repo: string;
+  pr_number: number;
+  fingerprint: string;
+  feedback_type: 'dismiss' | 'accept' | 'override' | 'preference';
+  feedback_source: 'reaction' | 'reply' | 'command' | 'api';
+  feedback_text?: string;
+  previous_severity?: 'critical' | 'suggestion' | 'low';
+  new_severity?: 'critical' | 'suggestion' | 'low';
+  github_user: string;
+  github_comment_id?: number;
+  created_at?: string;
+}
+
+export interface Learning {
+  id?: number;
+  owner: string;
+  repo: string;
+  learning_text: string;
+  source: 'feedback' | 'inferred' | 'manual';
+  category: 'scope' | 'focus' | 'ignore' | 'style' | 'severity';
+  confidence: number;
+  sample_size: number;
+  last_applied_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PatternWeight {
+  id?: number;
+  owner: string;
+  repo: string;
+  rule_id: string;
+  pattern_type: 'style' | 'advisory' | 'critical' | 'vulnerability';
+  confidence: number;
+  total_findings: number;
+  dismissed_count: number;
+  accepted_count: number;
+  fixed_count: number;
+  ignored_count: number;
+  last_calculation_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MemoryContext {
+  ignorePatterns: string[];
+  focusAreas: string[];
+  highConfidenceRules: { ruleId: string; confidence: number }[];
+  preferences: string[];
 }
 
 /**
