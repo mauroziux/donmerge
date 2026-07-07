@@ -8,10 +8,10 @@
  * acks/retries each message individually.
  *
  * At-least-once delivery: duplicate messages are possible on retry. The
- * ReviewProcessor DO's startReview() de-dupes within STALE_PENDING_THRESHOLD_MS,
- * and Workflow.create() with a deterministic id will throw on the duplicate —
- * that throw is caught here and treated as a soft failure (the original
- * workflow instance from the first delivery continues to run).
+ * ReviewProcessor DO's startReview() de-dupes within STALE_PENDING_THRESHOLD_MS.
+ * If Workflow.create() throws "already_exists" (instance from a previous errored
+ * run still within retention), the consumer restarts the existing instance per
+ * CF docs rather than retrying into the DLQ.
  */
 
 import type { WorkerEnv, WebhookContext } from '../workflows/code-review/types';
@@ -49,15 +49,45 @@ export async function handleCodeReviewQueue(
       await processGitHubCodeReviewWebhook(env, msg.body);
       msg.ack();
     } catch (error) {
-      console.error('code-review-jobs: message failed', {
-        messageId: msg.id,
-        owner: msg.body?.owner,
-        repo: msg.body?.repo,
-        prNumber: msg.body?.prNumber,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // Retry with backoff; after max_retries the platform routes to the DLQ.
-      msg.retry({ delaySeconds: 30 });
+      const errMsg = error instanceof Error ? error.message : String(error);
+
+      // Workflow instance already exists (previous errored run within retention).
+      // Per CF docs: "To re-run a workflow with the same ID, restart the existing instance."
+      if (errMsg.includes('already_exists') && env.CODE_REVIEW_WORKFLOW) {
+        try {
+          const { owner, repo, prNumber } = msg.body;
+          const instanceId = `review-${owner}-${repo}-${prNumber}`;
+          const instance = await env.CODE_REVIEW_WORKFLOW.get(instanceId);
+          await instance.restart();
+          console.log('code-review-jobs: restarted existing workflow instance', {
+            messageId: msg.id,
+            instanceId,
+            owner,
+            repo,
+            prNumber,
+          });
+          msg.ack();
+        } catch (restartError) {
+          console.error('code-review-jobs: failed to restart existing instance', {
+            messageId: msg.id,
+            owner: msg.body?.owner,
+            repo: msg.body?.repo,
+            prNumber: msg.body?.prNumber,
+            error: restartError instanceof Error ? restartError.message : String(restartError),
+          });
+          msg.retry({ delaySeconds: 30 });
+        }
+      } else {
+        console.error('code-review-jobs: message failed', {
+          messageId: msg.id,
+          owner: msg.body?.owner,
+          repo: msg.body?.repo,
+          prNumber: msg.body?.prNumber,
+          error: errMsg,
+        });
+        // Retry with backoff; after max_retries the platform routes to the DLQ.
+        msg.retry({ delaySeconds: 30 });
+      }
     }
   }
 }

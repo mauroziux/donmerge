@@ -155,4 +155,56 @@ describe('handleCodeReviewQueue', () => {
     await handleCodeReviewQueue(batch as never, baseEnv);
     expect(mockedProcess).not.toHaveBeenCalled();
   });
+
+  describe('already_exists recovery', () => {
+    it('restarts the existing workflow instance on already_exists error', async () => {
+      mockedProcess.mockRejectedValue(
+        new Error('(instance.already_exists) Instance already exists')
+      );
+
+      const restart = vi.fn().mockResolvedValue(undefined);
+      const getSpy = vi.fn().mockResolvedValue({ restart });
+      const envWithWorkflow = {
+        ...(baseEnv as unknown as Record<string, unknown>),
+        CODE_REVIEW_WORKFLOW: { get: getSpy } as unknown as Workflow,
+      } as never;
+
+      const ack = vi.fn();
+      const retry = vi.fn();
+      const msg = makeMessage(baseContext, { ack, retry });
+      const batch = makeBatch([msg]);
+
+      await handleCodeReviewQueue(batch as never, envWithWorkflow);
+
+      expect(getSpy).toHaveBeenCalledWith('review-tableoltd-test-repo-42');
+      expect(restart).toHaveBeenCalledTimes(1);
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(retry).not.toHaveBeenCalled();
+    });
+
+    it('retries with delaySeconds=30 when restart itself fails', async () => {
+      mockedProcess.mockRejectedValue(
+        new Error('(instance.already_exists) Instance already exists')
+      );
+
+      const restart = vi.fn().mockRejectedValue(new Error('restart blew up'));
+      const getSpy = vi.fn().mockResolvedValue({ restart });
+      const envWithWorkflow = {
+        ...(baseEnv as unknown as Record<string, unknown>),
+        CODE_REVIEW_WORKFLOW: { get: getSpy } as unknown as Workflow,
+      } as never;
+
+      const ack = vi.fn();
+      const retry = vi.fn();
+      const msg = makeMessage(baseContext, { ack, retry });
+      const batch = makeBatch([msg]);
+
+      await handleCodeReviewQueue(batch as never, envWithWorkflow);
+
+      expect(restart).toHaveBeenCalledTimes(1);
+      expect(ack).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalledTimes(1);
+      expect(retry).toHaveBeenCalledWith({ delaySeconds: 30 });
+    });
+  });
 });

@@ -235,6 +235,9 @@ interface WorkflowInstance {
   status(): Promise<{ status: string; output?: unknown }>;
   cancel(): Promise<void>;
   terminate(): Promise<void>;
+  // Re-runs an existing instance with the same id (CF Workflows docs:
+  // "To re-run a workflow with the same ID, restart the existing instance.")
+  restart(): Promise<void>;
 }
 
 // ── DurableObject base class ─────────────────────────────────────────────────
