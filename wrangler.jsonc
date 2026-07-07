@@ -135,7 +135,7 @@
 			{
 				"queue": "code-review-jobs",
 				"max_batch_size": 1,
-				"max_concurrent_invocations": 5,
+				"max_concurrency": 5,
 				"max_retries": 3,
 				"dead_letter_queue": "code-review-jobs-dlq"
 			}
@@ -252,7 +252,7 @@
 					{
 						"queue": "code-review-jobs",
 						"max_batch_size": 1,
-						"max_concurrent_invocations": 5,
+						"max_concurrency": 5,
 						"max_retries": 3,
 						"dead_letter_queue": "code-review-jobs-dlq"
 					}
