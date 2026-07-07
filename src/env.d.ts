@@ -204,11 +204,14 @@ interface DurableObjectTransaction {
 }
 
 // ── Cloudflare Workflows types ──────────────────────────────────────────────
+interface WorkflowStepConfig {
+  retries?: { limit: number; delay?: string | number; backoff?: string };
+  timeout?: string | number;
+}
+
 interface WorkflowStep {
-  do<T>(name: string, callback: () => Promise<T>, opts?: {
-    retries?: { limit: number; delay?: string | number; backoff?: string };
-    timeout?: string | number;
-  }): Promise<T>;
+  do<T>(name: string, callback: () => Promise<T>): Promise<T>;
+  do<T>(name: string, config: WorkflowStepConfig, callback: () => Promise<T>): Promise<T>;
 }
 
 interface WorkflowEvent<T = unknown> {
@@ -244,10 +247,8 @@ declare module 'cloudflare:workers' {
   }
 
   export interface WorkflowStep {
-    do<T>(name: string, callback: () => Promise<T>, opts?: {
-      retries?: { limit: number; delay?: string | number; backoff?: string };
-      timeout?: string | number;
-    }): Promise<T>;
+    do<T>(name: string, callback: () => Promise<T>): Promise<T>;
+    do<T>(name: string, config: WorkflowStepConfig, callback: () => Promise<T>): Promise<T>;
   }
 
   export interface WorkflowEvent<T = unknown> {

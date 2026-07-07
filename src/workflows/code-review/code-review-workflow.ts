@@ -132,35 +132,35 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     try {
       // Step 1: Fetch PR data
-      prData = await step.do('fetch-pr-data', async () => {
-        return this.fetchPrData(params);
-      }, {
+      prData = await step.do('fetch-pr-data', {
         retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
         timeout: '2 minutes',
+      }, async () => {
+        return this.fetchPrData(params);
       });
 
       // Step 2: Prepare files
-      const preparedFiles = await step.do('prepare-files', async () => {
-        return this.prepareFiles(prData);
-      }, {
+      const preparedFiles = await step.do('prepare-files', {
         retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
         timeout: '2 minutes',
+      }, async () => {
+        return this.prepareFiles(prData);
       });
 
       // Step 3: Run LLM review
-      const llmResult = await step.do('run-llm-review', async () => {
-        return this.runLlmReview(preparedFiles);
-      }, {
+      const llmResult = await step.do('run-llm-review', {
         retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
         timeout: '5 minutes',
+      }, async () => {
+        return this.runLlmReview(preparedFiles);
       });
 
       // Step 4: Publish review
-      await step.do('publish-review', async () => {
-        return this.publishReview(llmResult, processorStub);
-      }, {
+      await step.do('publish-review', {
         retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
         timeout: '3 minutes',
+      }, async () => {
+        return this.publishReview(llmResult, processorStub);
       });
     } catch (error) {
       const { code, detail } = classifyError(error);
