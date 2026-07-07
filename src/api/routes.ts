@@ -50,7 +50,11 @@ async function checkRateLimit(
   return (await response.json()) as RateLimitInfo;
 }
 
-/** Build the job_id that maps 1:1 to the ReviewProcessor DO name. */
+/**
+ * Build the job_id that maps 1:1 to the ReviewProcessor DO name.
+ * NOTE: This slash-form is for the DO namespace ONLY. For Workflow.create({id})
+ * use dash-form (`review-owner-repo-N`) — CF Workflows reject slashes.
+ */
 function buildReviewJobId(owner: string, repo: string, prNumber: number): string {
   return `review/${owner}/${repo}/${prNumber}`;
 }
@@ -195,8 +199,9 @@ export const handlePushReview = withAuth(async (c, auth) => {
 
   // Create the workflow to handle execution
   if (c.env.CODE_REVIEW_WORKFLOW) {
+    // Workflow instance IDs reject slashes (CF throws instance.invalid_id) — use dashes, NOT buildReviewJobId (slash-form is for the DO name at L212).
     await c.env.CODE_REVIEW_WORKFLOW.create({
-      id: buildReviewJobId(body.owner, body.repo, body.pr_number),
+      id: `review-${body.owner}-${body.repo}-${body.pr_number}`,
       params: {
         owner: body.owner,
         repo: body.repo,

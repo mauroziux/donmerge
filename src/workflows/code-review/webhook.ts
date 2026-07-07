@@ -225,7 +225,7 @@ export async function processGitHubCodeReviewWebhook(
   // Create the workflow to handle execution
   if (env.CODE_REVIEW_WORKFLOW) {
     await env.CODE_REVIEW_WORKFLOW.create({
-      id: `review/${owner}/${repo}/${prNumber}`,
+      id: `review-${owner}-${repo}-${prNumber}`,
       params: {
         owner,
         repo,
