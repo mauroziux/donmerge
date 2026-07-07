@@ -120,6 +120,27 @@
 			"class_name": "CodeReviewWorkflow"
 		}
 	],
+	// Code review queue: decouples the GitHub webhook HTTP request (30s cap)
+	// from Workflow creation. Consumer wall-clock budget is 15min. DLQ captures
+	// messages that fail max_retries times for inspection. NOTE: the queue
+	// itself is NOT auto-created on deploy — run `wrangler queues create code-review-jobs` once.
+	"queues": {
+		"producers": [
+			{
+				"queue": "code-review-jobs",
+				"binding": "CODE_REVIEW_QUEUE"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "code-review-jobs",
+				"max_batch_size": 1,
+				"max_concurrent_invocations": 5,
+				"max_retries": 3,
+				"dead_letter_queue": "code-review-jobs-dlq"
+			}
+		]
+	},
 	// Staging environment — used for push API testing; Wrangler does NOT inherit
 	// vars, durable_objects, containers, or migrations into named environments,
 	// so everything must be duplicated here.
@@ -217,7 +238,26 @@
 					"binding": "CODE_REVIEW_WORKFLOW",
 					"class_name": "CodeReviewWorkflow"
 				}
-			]
+			],
+			// Mirror of top-level queues config — Wrangler does NOT inherit
+			// queues into named envs, so this must be duplicated for staging.
+			"queues": {
+				"producers": [
+					{
+						"queue": "code-review-jobs",
+						"binding": "CODE_REVIEW_QUEUE"
+					}
+				],
+				"consumers": [
+					{
+						"queue": "code-review-jobs",
+						"max_batch_size": 1,
+						"max_concurrent_invocations": 5,
+						"max_retries": 3,
+						"dead_letter_queue": "code-review-jobs-dlq"
+					}
+				]
+			}
 		}
 	}
 }

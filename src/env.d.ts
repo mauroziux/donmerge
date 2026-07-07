@@ -312,6 +312,28 @@ declare module '@cloudflare/sandbox' {
   }
 }
 
+// ── Cloudflare Queues types ──────────────────────────────────────────────────
+
+interface Message<T = unknown> {
+  id: string;
+  timestamp: number;
+  body: T;
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+}
+
+interface MessageBatch<T = unknown> {
+  messages: Message<T>[];
+  queue: string;
+  retryAll(options?: { delaySeconds?: number }): void;
+  ackAll(): void;
+}
+
+interface Queue<T = unknown> {
+  send(message: T, options?: { contentType?: string; delaySeconds?: number }): Promise<string>;
+  sendBatch(messages: T[], options?: { contentType?: string; delaySeconds?: number }): Promise<string[]>;
+}
+
 // ── @flue/cloudflare shim ────────────────────────────────────────────────────
 declare module '@flue/cloudflare' {
   export class FlueRuntime {
@@ -327,5 +349,8 @@ declare module '@flue/cloudflare/worker' {
   export class FlueWorker<Env = unknown> {
     get(path: string, handler: (c: any) => any): void;
     post(path: string, handler: (c: any) => any): void;
+    // Hono-inherited: exposes the Worker fetch handler so the default export
+    // can be `{ fetch: app.fetch.bind(app), queue: handler }`.
+    fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>;
   }
 }

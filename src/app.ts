@@ -1,12 +1,13 @@
 import { FlueWorker } from '@flue/cloudflare/worker';
-import { processGitHubCodeReviewWebhook, validateWebhookFast } from './workflows/code-review';
-import type { WorkerEnv } from './workflows/code-review';
+import { validateWebhookFast } from './workflows/code-review';
+import type { WorkerEnv, WebhookContext } from './workflows/code-review';
 import { ReviewProcessor } from './workflows/code-review/processor';
 import { CodeReviewWorkflow } from './workflows/code-review/code-review-workflow';
 import { TriageProcessor } from './workflows/triage/processor';
 import { handlePushReview, handleTriage, handleJobStatus } from './api/routes';
 import { RateLimiter } from './api/rate-limit';
 import { handleSentryWebhook } from './webhooks/sentry';
+import { handleCodeReviewQueue } from './queues/code-review-consumer';
 
 // Extended env type that includes all DO bindings
 interface AppEnv extends WorkerEnv {
@@ -18,6 +19,7 @@ interface AppEnv extends WorkerEnv {
   SENTRY_REPO_MAP?: string;
   SENTRY_GITHUB_TOKEN?: string;
   CODE_REVIEW_WORKFLOW?: Workflow;
+  CODE_REVIEW_QUEUE: Queue<WebhookContext>;
   // Multi-tenant D1 database (Phase 1)
   DB?: D1Database;
   TENANT_ENCRYPTION_KEY?: string;
@@ -42,11 +44,10 @@ app.post('/webhook/github', async (c) => {
     return c.json(validation.body, validation.status);
   }
 
-  // Start review via ReviewProcessor Durable Object
-  // This is non-blocking - the DO will handle everything via alarms
-  c.executionCtx.waitUntil(
-    processGitHubCodeReviewWebhook(c.env, validation.context!)
-  );
+  // Enqueue to the code-review queue. The consumer (handleCodeReviewQueue)
+  // runs the pipeline with a 15-minute wall-clock budget — vs the 30s
+  // waitUntil cap that was cancelling Workflow.create() mid-flight.
+  await c.env.CODE_REVIEW_QUEUE.send(validation.context!);
 
   // Return 202 Accepted immediately
   return c.json(
@@ -74,4 +75,11 @@ export { ReviewProcessor };
 export { CodeReviewWorkflow };
 export { TriageProcessor };
 export { RateLimiter };
-export default app;
+
+// Worker entrypoint: Hono fetch + Queue consumer.
+// FlueWorker extends Hono so app.fetch is the standard Worker fetch handler;
+// binding it preserves `this` for route lookup.
+export default {
+  fetch: app.fetch.bind(app),
+  queue: handleCodeReviewQueue,
+};

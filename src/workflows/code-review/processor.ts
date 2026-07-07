@@ -20,6 +20,18 @@ const STATE_KEYS = {
   status: 'reviewStatus',
 };
 
+/**
+ * How long a 'pending' or 'running' review may stay in that state before it is
+ * considered stale and overridden by a new startReview() call.
+ *
+ * Background: the webhook pipeline enqueues to CODE_REVIEW_QUEUE, whose consumer
+ * calls startReview() (sets 'pending') then Workflow.create(). If the consumer
+ * is killed between those two steps (e.g. duplicate-delivery throw, deploy),
+ * the DO would otherwise be stuck in 'pending' forever and block ALL future
+ * reviews for that PR. This threshold allows recovery.
+ */
+const STALE_PENDING_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
+
 interface ReviewContext {
   owner: string;
   repo: string;
@@ -66,11 +78,26 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
    * Stores context and initializes status. Execution is handled by CodeReviewWorkflow.
    */
   async startReview(context: ReviewContext): Promise<void> {
-    // Check if there's already a review in progress
+    // Check if there's already a review in progress. Allow overriding stale
+    // 'pending'/'running' states so a crashed consumer doesn't permanently
+    // block future reviews for this PR.
     const existingStatus = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
-    if (existingStatus?.state === 'running' || existingStatus?.state === 'pending') {
-      console.log('Review already in progress, skipping');
-      return;
+    if (existingStatus && (existingStatus.state === 'running' || existingStatus.state === 'pending')) {
+      const startedAtMs = existingStatus.startedAt ? Date.parse(existingStatus.startedAt) : 0;
+      const ageMs = Date.now() - startedAtMs;
+      const isStale =
+        (existingStatus.state === 'pending' && ageMs > STALE_PENDING_THRESHOLD_MS) ||
+        (existingStatus.state === 'running' && ageMs > STALE_PENDING_THRESHOLD_MS);
+      if (!isStale) {
+        console.log('Review already in progress, skipping', { state: existingStatus.state, ageMs });
+        return;
+      }
+      console.log('Stale in-progress review detected, overriding', {
+        state: existingStatus.state,
+        ageMs,
+        threshold: STALE_PENDING_THRESHOLD_MS,
+      });
+      // fall through to overwrite
     }
 
     // Store the context
