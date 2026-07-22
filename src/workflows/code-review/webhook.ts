@@ -11,6 +11,7 @@ import { parseTrigger } from './triggers';
 import { getReviewProcessor } from './processor';
 import { fetchCommentById } from './github-api';
 import { parseFingerprint } from './fingerprint';
+import { buildReviewWorkflowInstanceId } from './workflow-id';
 
 interface EnvWithReviewProcessor extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
@@ -222,10 +223,11 @@ export async function processGitHubCodeReviewWebhook(
     focusFiles,
   });
 
-  // Create the workflow to handle execution
+  // Comment-triggered re-reviews use a comment-specific ID so they run with
+  // fresh webhook credentials/instructions rather than stale workflow params.
   if (env.CODE_REVIEW_WORKFLOW) {
     await env.CODE_REVIEW_WORKFLOW.create({
-      id: `review-${owner}-${repo}-${prNumber}`,
+      id: buildReviewWorkflowInstanceId(owner, repo, prNumber, commentId),
       params: {
         owner,
         repo,
