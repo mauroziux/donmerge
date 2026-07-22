@@ -57,8 +57,8 @@ AI-powered code review and Sentry triage as a service. DonMerge runs as a Cloudf
 │       ▼              ▼                                      │
 │  ┌──────────┐   ┌──────────┐                                │
 │  │ GitHub   │   │ LLM      │                                │
-│  │ API      │   │ (OpenAI/ │                                │
-│  │          │   │ via Flue)│                                │
+│  │ API      │   │ Kimi K3  │                                │
+│  │          │   │ → OpenAI │                                │
 │  └──────────┘   └──────────┘                                │
 │       │                                                     │
 │       ▼                                                     │
@@ -169,9 +169,26 @@ npm test
 ### Deploy
 
 ```bash
-wrangler deploy          # production
+wrangler deploy                # production
 wrangler deploy --env staging  # staging
 ```
+
+### Configure LLM secrets
+
+Kimi K3 is the primary model and OpenAI is the automatic fallback. Configure
+both secrets before deploying; never put them in `wrangler.jsonc`:
+
+```bash
+wrangler secret put KIMI_API_KEY
+wrangler secret put OPENAI_API_KEY
+
+wrangler secret put KIMI_API_KEY --env staging
+wrangler secret put OPENAI_API_KEY --env staging
+```
+
+After a deploy that rebuilds the Sandbox container, wait for the Cloudflare
+Containers rollout to settle before triggering a review. A review started
+mid-rollout can be reset before OpenCode starts.
 
 ## Environment Variables
 
@@ -181,7 +198,10 @@ Key variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | OpenAI API key for LLM calls |
+| `KIMI_API_KEY` | Yes | Kimi Code API key for the primary `kimi/k3` reviewer |
+| `OPENAI_API_KEY` | Yes | OpenAI API key for automatic fallback (`openai/gpt-4o` by default) |
+| `CODEX_MODEL` | No | Primary model in `provider/model` format (default: `kimi/k3`) |
+| `FALLBACK_MODEL` | No | Fallback model attempted if the primary provider fails (default: `openai/gpt-4o`) |
 | `ANTHROPIC_API_KEY` | No | Anthropic API key (enables Claude models for auto-fix V2) |
 | `DONMERGE_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
 | `GITHUB_WEBHOOK_SECRET` | Webhook mode | Webhook signature validation |

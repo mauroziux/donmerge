@@ -45,7 +45,8 @@ graph TD
 
     subgraph ExternalServices ["External Services"]
         GH["GitHub API<br/>PR data, check runs, comments"]
-        OAI["OpenAI API<br/>LLM completions"]
+        KIMI["Kimi Code API<br/>K3 primary reviews"]
+        OAI["OpenAI API<br/>Automatic fallback"]
     end
 
     subgraph Downstream ["Downstream Integrations"]
@@ -60,7 +61,8 @@ graph TD
     RP --> CRW
     CRW --> GH
     CRW --> FLUE
-    FLUE --> OAI
+    FLUE --> KIMI
+    FLUE -. primary failure .-> OAI
     CRW --> RP
     TP --> GH
     TP --> GIH
@@ -74,7 +76,7 @@ graph TD
 |-----------|------|
 | **ReviewProcessor DO** | Stores review context and status, provides RPC methods for workflow. Does NOT execute the review — that's the workflow's job. |
 | **CodeReviewWorkflow** | 4-step durable pipeline: fetch PR data → prepare files → run LLM review → publish review. Retries with exponential backoff. |
-| **Sandbox + Flue** | Cloudflare container running an OpenCode server that proxies LLM requests to the OpenAI API. |
+| **Sandbox + Flue** | Cloudflare container running OpenCode. It registers Kimi Code as an OpenAI-compatible `kimi` provider for primary reviews and retains built-in OpenAI for automatic fallback. |
 | **RateLimiter DO** | Enforces API rate limits for Push API keys (per-key: 30 req/min for live, 10 req/min for test). |
 | **TriageProcessor DO** | Handles Sentry error triage — root cause analysis and auto-fix PR creation. |
 
@@ -91,12 +93,13 @@ sequenceDiagram
     participant WF as CodeReviewWorkflow
     participant GA as GitHub API
     participant SB as Sandbox + Flue
-    participant OAI as OpenAI API
+    participant KIMI as Kimi Code API
+    participant OAI as OpenAI API (fallback)
 
     GH->>DO: startReview(context)
     DO-->>GH: 202 Accepted
 
-    DO->>WF: create WorkflowInstance<br/>(deterministic ID: owner/repo/prNumber)
+    DO->>WF: create WorkflowInstance<br/>(PR ID, or comment-specific ID for @donmerge re-reviews)
 
     WF->>DO: updateFromWorkflow(state: running)
 
@@ -124,10 +127,14 @@ sequenceDiagram
     rect rgb(255, 248, 240)
         Note over WF,OAI: Step 3: run-llm-review
         WF->>SB: Provision sandbox + Flue runtime
-        WF->>SB: Inject OPENAI_API_KEY
-        WF->>SB: flue.client.prompt(reviewPrompt)
-        SB->>OAI: LLM completion request
-        OAI-->>SB: JSON review result
+        WF->>SB: Inject KIMI_API_KEY + OPENAI_API_KEY
+        WF->>SB: Prompt primary model (default: kimi/k3)
+        SB->>KIMI: OpenAI-compatible completion request
+        KIMI-->>SB: JSON review result
+        alt Provider or output failure
+            SB->>OAI: Retry fallback model (default: openai/gpt-4o)
+            OAI-->>SB: JSON review result
+        end
         SB-->>WF: Raw review JSON
         WF->>WF: Validate + normalize result
         WF->>WF: Apply quality gate (filterLineCommentsByQuality)
@@ -165,10 +172,13 @@ sequenceDiagram
 
 ### Deterministic Workflow IDs
 
-Each review creates a Workflow instance with a deterministic ID: `{owner}/{repo}/{prNumber}`. This ensures that:
-- Only one review runs per PR at a time (concurrency control via the DO)
-- Retries don't create duplicate instances
-- Status queries map cleanly to a single instance
+Regular PR events use a stable Workflow ID: `review-{owner}-{repo}-{prNumber}`. A comment-triggered `@donmerge` re-review adds the GitHub comment ID: `review-{owner}-{repo}-{prNumber}-comment-{commentId}`.
+
+This ensures that:
+- The ReviewProcessor DO still provides one concurrency/status scope per PR
+- Duplicate delivery of the same webhook maps to the same workflow instance
+- A later comment re-review runs with its **fresh** webhook payload (installation credentials, focus files, and instructions), rather than restarting stale workflow params
+- Status queries retain the stable PR-level job ID
 
 ---
 
@@ -398,6 +408,10 @@ if (update.state === 'complete' || update.state === 'failed') {
 
 This ensures tokens are not persisted in DO storage after the review lifecycle ends.
 
+### Workflow Output Credential Rule
+
+Cloudflare Workflow step outputs are inspectable through the Workflows API and CLI. Never return a GitHub token or any other credential in a step's serialized return value. Resolve credentials inside the step that uses them, or keep them in internal storage that is not exposed as step output.
+
 ---
 
 ## Configuration
@@ -406,11 +420,13 @@ This ensures tokens are not persisted in DO storage after the review lifecycle e
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | OpenAI API key for LLM calls via Flue |
+| `KIMI_API_KEY` | Yes | Kimi Code key for the primary `kimi/k3` provider registered in OpenCode |
+| `OPENAI_API_KEY` | Yes | OpenAI key for the automatic fallback provider |
+| `FALLBACK_MODEL` | No | Fallback model (default: `openai/gpt-4o`) when the primary provider fails |
 | `GITHUB_WEBHOOK_SECRET` | Webhook mode | HMAC secret for webhook signature validation |
 | `GITHUB_APP_ID` | Webhook mode | GitHub App ID for installation token resolution |
 | `GITHUB_APP_PRIVATE_KEY` | Webhook mode | GitHub App private key (PEM format) |
-| `CODEX_MODEL` | No | LLM model (default: `openai/gpt-4o`). Format: `provider/model` |
+| `CODEX_MODEL` | No | Primary LLM model (default: `kimi/k3`). Format: `provider/model` |
 | `MAX_REVIEW_FILES` | No | Maximum files per PR review (default: `50`) |
 | `REPO_CONFIGS` | No | Per-repo base branch config: `owner/repo:branch,...` |
 | `REVIEW_TRIGGER` | No | Comment trigger tag (default: `@donmerge`) |
@@ -421,6 +437,14 @@ This ensures tokens are not persisted in DO storage after the review lifecycle e
 | `SENTRY_GITHUB_TOKEN` | Sentry | GitHub token for Sentry-triggered code fetching |
 | `TENANT_ENCRYPTION_KEY` | D1 multi-tenant | Base64-encoded 256-bit key for secret encryption |
 | `LOG_LEVEL` | No | Logging verbosity: `debug`, `info`, `warn`, `error` |
+
+### LLM Provider Routing
+
+`CODEX_MODEL` selects the primary model for code review and triage. The default is `kimi/k3`, implemented as a custom OpenCode provider using Kimi Code's OpenAI-compatible endpoint (`https://api.kimi.com/coding/v1`). `FALLBACK_MODEL` defaults to `openai/gpt-4o` and is attempted if the primary provider fails or cannot produce a valid review response after its format retry.
+
+The model provider is independent of DonMerge's review quality gate: every response still passes JSON validation, normalization, quality filtering, severity calibration, and issue matching before publication.
+
+**Operational note:** Kimi can exceed the current five-minute LLM workflow step timeout on large diffs (for example, a 34-file PR took about 6.4 minutes in production validation). Keep `MAX_REVIEW_FILES` conservative or increase the step timeout before relying on Kimi for large reviews.
 
 ### `.donmerge` Configuration File
 

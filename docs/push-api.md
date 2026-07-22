@@ -83,8 +83,12 @@ Triggers an AI code review for a pull request. Returns a `job_id` for status pol
 | `owner` | `string` | Yes | Repository owner (e.g. `"tableoltd"`) |
 | `repo` | `string` | Yes | Repository name (e.g. `"my-project"`) |
 | `pr_number` | `number` | Yes | Pull request number (positive integer) |
-| `model` | `string` | No | Override the LLM model (e.g. `"openai/gpt-4o"`) |
+| `model` | `string` | No | Override the primary LLM model in `provider/model` form (e.g. `"kimi/k3"` or `"openai/gpt-4o"`) |
 | `max_files` | `number` | No | Max files to review (default: 50) |
+
+#### Model selection
+
+When `model` is omitted, DonMerge uses the worker's configured primary model (`CODEX_MODEL`, default `kimi/k3`). The worker retains its configured fallback (`FALLBACK_MODEL`, default `openai/gpt-4o`) if the primary provider fails. Supplying `model` overrides only the primary attempt for that job; it does not remove the fallback.
 
 #### Response — 202 Accepted
 
