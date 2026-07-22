@@ -241,22 +241,22 @@
 					"class_name": "CodeReviewWorkflow"
 				}
 			],
-			// Mirror of top-level queues config — Wrangler does NOT inherit
-			// queues into named envs, so this must be duplicated for staging.
+			// Staging queues — uses code-review-jobs-staging to avoid
+			// consumer collision with production code-review-jobs.
 			"queues": {
 				"producers": [
 					{
-						"queue": "code-review-jobs",
+						"queue": "code-review-jobs-staging",
 						"binding": "CODE_REVIEW_QUEUE"
 					}
 				],
 				"consumers": [
 					{
-						"queue": "code-review-jobs",
+						"queue": "code-review-jobs-staging",
 						"max_batch_size": 1,
 						"max_concurrency": 5,
 						"max_retries": 3,
-						"dead_letter_queue": "code-review-jobs-dlq"
+						"dead_letter_queue": "code-review-jobs-staging-dlq"
 					}
 				]
 			}
