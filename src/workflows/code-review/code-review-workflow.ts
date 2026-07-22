@@ -46,6 +46,11 @@ import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReint
 import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError } from './utils';
 import { buildReviewPrompt } from './prompts';
 import {
+  buildOpencodeConfig,
+  resolveFallbackModel,
+  type ModelConfig,
+} from '../../lib/llm-providers';
+import {
   fetchDonmergeConfig,
   shouldExcludeFile,
   resolveDonmergeSkills,
@@ -430,6 +435,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
   /**
    * Step 3: Run LLM review via Sandbox + Flue.
+   *
+   * Uses the primary model (default Kimi K3) and automatically falls back to the
+   * configured fallback model (default OpenAI gpt-4o) if the primary provider
+   * fails or returns unparseable output after a format-correcting retry.
    */
   private async runLlmReview(preparedFiles: PreparedFiles): Promise<LlmReviewResult> {
     const { prData, diffText, repoContext, donmergeResolved, activePreviousComments } = preparedFiles;
@@ -448,17 +457,34 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     const sessionId = `review-${prData.owner}-${prData.repo}-${prData.prNumber}-${Date.now()}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
-    const flue = new FlueRuntime({ sandbox, sessionId, workdir: '/home/user' });
+    const flue = new FlueRuntime({
+      sandbox,
+      sessionId,
+      workdir: '/home/user',
+      // Register Kimi K3 (OpenAI-compatible endpoint) as a custom provider so
+      // OpenCode can route "kimi/k3" model IDs. OpenAI stays available as the
+      // built-in provider via OPENAI_API_KEY and is used for fallback.
+      opencodeConfig: buildOpencodeConfig(this.env.KIMI_API_KEY),
+    });
 
     await sandbox.setEnvVars({
       OPENAI_API_KEY: this.env.OPENAI_API_KEY,
+      KIMI_API_KEY: this.env.KIMI_API_KEY,
       GITHUB_TOKEN: prData.githubToken,
     });
     await flue.setup();
 
-    const model = prData.model
+    // Resolve primary + fallback models. Primary comes from the per-request
+    // override (push API) or CODEX_MODEL (default kimi/k3).
+    const primaryModel = prData.model
       ? parseModelConfig(prData.model)
       : parseModelConfig(this.env.CODEX_MODEL);
+    const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
+    const models =
+      primaryModel.providerID === fallbackModel.providerID &&
+      primaryModel.modelID === fallbackModel.modelID
+        ? [primaryModel]
+        : [primaryModel, fallbackModel];
 
     const prompt = buildReviewPrompt(
       {
@@ -483,6 +509,55 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     const severityOverrides = donmergeResolved?.config.severity;
 
+    // Try each model in order (primary → fallback). Within a model we retry
+    // once with a format-correcting hint. Stop at the first valid result.
+    let lastError: unknown;
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      const isLast = i === models.length - 1;
+      try {
+        const result = await this.promptForModel(
+          flue,
+          prompt,
+          promptErrorHint,
+          model,
+          activePreviousComments,
+          severityOverrides,
+          patternWeights
+        );
+        return { preparedFiles, result };
+      } catch (error) {
+        lastError = error;
+        const msg = error instanceof Error ? error.message : String(error);
+        console.warn('[code-review] model failed, will fallback', {
+          model: `${model.providerID}/${model.modelID}`,
+          error: msg,
+          willFallback: !isLast,
+        });
+        if (isLast) break;
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('All LLM providers failed for code review');
+  }
+
+  /**
+   * Run the review prompt against a single model, with one format-correcting
+   * retry. Extracted from runLlmReview so the primary/fallback loop can call
+   * it per-provider without duplicating the parse/validate/retry logic.
+   */
+  private async promptForModel(
+    flue: FlueRuntime,
+    prompt: string,
+    promptErrorHint: string,
+    model: ModelConfig,
+    activePreviousComments: PreviousComment[],
+    severityOverrides: Record<string, 'critical' | 'suggestion' | 'low'> | undefined,
+    patternWeights: Map<string, PatternWeight> | undefined
+  ): Promise<ReviewResult> {
+    const modelLabel = `${model.providerID}/${model.modelID}`;
     let response = '';
     let parsed: ReviewResult;
 
@@ -496,10 +571,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           parsed = safeJsonParse<ReviewResult>(jsonText);
           const validation = validateReviewResult(parsed);
           if (validation.valid) {
-            return {
-              preparedFiles,
-              result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
-            };
+            return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
           }
           response = rawResponse;
         } catch {
@@ -507,17 +579,14 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         }
       }
       if (!response) {
-        throw new Error(formatPromptError(error, `${model.providerID}/${model.modelID}`));
+        throw new Error(formatPromptError(error, modelLabel));
       }
     }
 
     parsed = safeJsonParse<ReviewResult>(response);
     const validation = validateReviewResult(parsed);
     if (validation.valid) {
-      return {
-        preparedFiles,
-        result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
-      };
+      return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
     }
 
     // Retry once
@@ -532,10 +601,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           parsed = safeJsonParse<ReviewResult>(jsonText);
           const retryValidation = validateReviewResult(parsed);
           if (retryValidation.valid) {
-            return {
-              preparedFiles,
-              result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
-            };
+            return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
           }
           response = rawResponse;
         } catch {
@@ -543,20 +609,17 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         }
       }
       if (!response) {
-        throw new Error(formatPromptError(error, `${model.providerID}/${model.modelID}`));
+        throw new Error(formatPromptError(error, modelLabel));
       }
     }
 
     parsed = safeJsonParse<ReviewResult>(response);
     const retryValidation = validateReviewResult(parsed);
     if (retryValidation.valid) {
-      return {
-        preparedFiles,
-        result: normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights),
-      };
+      return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
     }
 
-    throw new Error(`Invalid review output after retry: ${retryValidation.reason}`);
+    throw new Error(`Invalid review output after retry (${modelLabel}): ${retryValidation.reason}`);
   }
 
   /**

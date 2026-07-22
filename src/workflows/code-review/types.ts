@@ -5,11 +5,18 @@
 export interface WorkerEnv {
   Sandbox: unknown;
   OPENAI_API_KEY: string;
+  /** Kimi K3 API key (Kimi Code, OpenAI-compatible). Primary review model when set. */
+  KIMI_API_KEY?: string;
+  /** Optional Anthropic key (used by triage auto-fix). */
+  ANTHROPIC_API_KEY?: string;
   GITHUB_WEBHOOK_SECRET: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_TOKEN_PAT?: string;
+  /** Primary model in "provider/model" form (e.g. "kimi/k3"). */
   CODEX_MODEL?: string;
+  /** Fallback model used when the primary provider fails (e.g. "openai/gpt-4o"). */
+  FALLBACK_MODEL?: string;
   MAX_REVIEW_FILES?: string;
   REPO_CONFIGS?: string;     // "owner/repo:branch,owner/repo2:branch2" - branch is optional
   REVIEW_TRIGGER?: string;

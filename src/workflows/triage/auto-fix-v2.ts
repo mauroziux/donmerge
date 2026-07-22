@@ -24,6 +24,12 @@ import {
   addPrEnrichmentComment,
   recordSourceUrl,
 } from './auto-fix-dedup';
+import {
+  OPENAI_BASE_URL,
+  resolveOpenAIBaseURL,
+  resolveFallbackModel,
+  selectApiKey,
+} from '../../lib/llm-providers';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -265,14 +271,18 @@ async function deleteBranch(repo: string, branchName: string, token: string): Pr
 // ── LLM API (direct, multi-turn, provider-aware) ──────────────────────────────
 
 /**
- * Call the OpenAI Chat Completions API (also used as fallback for unknown providers).
+ * Call an OpenAI-compatible Chat Completions endpoint.
+ *
+ * Used for OpenAI itself and for any OpenAI-compatible provider (e.g. Kimi K3
+ * via Kimi Code) by passing a provider-specific `baseURL` and API key.
  */
 async function callOpenAI(
   apiKey: string,
   messages: Array<{ role: string; content: string }>,
   modelConfig: { providerID: string; modelID: string },
+  baseURL = OPENAI_BASE_URL,
 ): Promise<string> {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch(`${baseURL}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -288,7 +298,7 @@ async function callOpenAI(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`OpenAI API error ${response.status}: ${body.slice(0, 500)}`);
+    throw new Error(`LLM API (${modelConfig.providerID}) error ${response.status}: ${body.slice(0, 500)}`);
   }
 
   const data = (await response.json()) as {
@@ -296,7 +306,7 @@ async function callOpenAI(
   };
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
-    throw new Error('Empty response from OpenAI API');
+    throw new Error(`Empty response from LLM API (${modelConfig.providerID})`);
   }
   return content;
 }
@@ -347,14 +357,14 @@ async function callAnthropic(
   return textBlock.text;
 }
 
-type LlmApiKey = { openai: string; anthropic?: string };
+type LlmApiKey = { openai: string; kimi?: string; anthropic?: string };
 
 /**
  * Route LLM calls to the correct provider based on modelConfig.providerID.
  *
- * - `openai`  → OpenAI Chat Completions API
- * - `anthropic` → Anthropic Messages API
- * - other    → OpenAI-compatible endpoint (fallback for proxies/gateways)
+ * - `kimi` / `moonshot` → Kimi Code (OpenAI-compatible endpoint, custom baseURL)
+ * - `anthropic`         → Anthropic Messages API
+ * - `openai` / other   → OpenAI Chat Completions API (default baseURL)
  */
 async function callLLM(
   apiKeys: LlmApiKey,
@@ -366,9 +376,16 @@ async function callLLM(
       const key = apiKeys.anthropic ?? apiKeys.openai;
       return callAnthropic(key, messages, modelConfig);
     }
+    case 'kimi':
+    case 'moonshot': {
+      // Kimi Code is OpenAI-compatible; route through callOpenAI with its baseURL
+      const key = selectApiKey(modelConfig.providerID, apiKeys);
+      if (!key) throw new Error(`No API key configured for provider '${modelConfig.providerID}'`);
+      return callOpenAI(key, messages, modelConfig, resolveOpenAIBaseURL(modelConfig.providerID));
+    }
     default: {
-      // 'openai' and any unknown providers (proxies, gateways) use OpenAI-compatible format
-      return callOpenAI(apiKeys.openai, messages, modelConfig);
+      // 'openai' and any unknown OpenAI-compatible providers use the default baseURL
+      return callOpenAI(apiKeys.openai, messages, modelConfig, OPENAI_BASE_URL);
     }
   }
 }
@@ -520,7 +537,18 @@ async function runAgentLoop(
   pathResolveResult: ResolveResult | null,
   initialSha: string,
 ): Promise<AgentResult> {
-  const model = parseModelConfig(env.CODEX_MODEL);
+  const primaryModel = parseModelConfig(env.CODEX_MODEL);
+  const fallbackModel = resolveFallbackModel(env.FALLBACK_MODEL);
+  const models =
+    primaryModel.providerID === fallbackModel.providerID &&
+    primaryModel.modelID === fallbackModel.modelID
+      ? [primaryModel]
+      : [primaryModel, fallbackModel];
+  const apiKeys: LlmApiKey = {
+    openai: env.OPENAI_API_KEY,
+    kimi: env.KIMI_API_KEY,
+    anthropic: env.ANTHROPIC_API_KEY,
+  };
   const systemPrompt = buildSystemPrompt(context.errorTitle, context.triageOutput, pathResolveResult);
 
   const messages: Array<{ role: string; content: string }> = [
@@ -531,22 +559,39 @@ async function runAgentLoop(
   for (let step = 0; step < MAX_AGENT_STEPS; step++) {
     console.log(`[auto-fix-v2] Agent step ${step + 1}/${MAX_AGENT_STEPS}`);
 
-    // Call LLM
+    // Call LLM — try the primary model, fall back to the next provider on failure
     let response: string;
     try {
-      response = await callLLM(
-        { openai: env.OPENAI_API_KEY, anthropic: env.ANTHROPIC_API_KEY },
-        messages,
-        model,
-      );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : 'unknown';
-      console.error('[auto-fix-v2] LLM call failed', { step, error: msg });
-      return {
-        type: 'max_steps',
-        summary: `LLM call failed at step ${step + 1}: ${msg}`,
-        filesChanged: [],
-      };
+      response = await callLLM(apiKeys, messages, models[0]);
+    } catch (primaryError) {
+      if (models.length < 2) {
+        const msg = primaryError instanceof Error ? primaryError.message : 'unknown';
+        console.error('[auto-fix-v2] LLM call failed (no fallback)', { step, error: msg });
+        return {
+          type: 'max_steps',
+          summary: `LLM call failed at step ${step + 1}: ${msg}`,
+          filesChanged: [],
+        };
+      }
+      // Fall back to the secondary provider for this step
+      const primaryMsg = primaryError instanceof Error ? primaryError.message : 'unknown';
+      console.warn('[auto-fix-v2] primary model failed, falling back', {
+        step,
+        primary: `${models[0].providerID}/${models[0].modelID}`,
+        fallback: `${models[1].providerID}/${models[1].modelID}`,
+        error: primaryMsg,
+      });
+      try {
+        response = await callLLM(apiKeys, messages, models[1]);
+      } catch (fallbackError) {
+        const msg = fallbackError instanceof Error ? fallbackError.message : 'unknown';
+        console.error('[auto-fix-v2] LLM call failed (primary + fallback)', { step, error: msg });
+        return {
+          type: 'max_steps',
+          summary: `LLM call failed at step ${step + 1} (all providers): ${msg}`,
+          filesChanged: [],
+        };
+      }
     }
 
     // Parse action

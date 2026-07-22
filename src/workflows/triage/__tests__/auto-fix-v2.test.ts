@@ -1739,3 +1739,92 @@ describe('runAutoFixV2 — PR dedup paths', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Provider routing & fallback (Kimi K3 primary, OpenAI fallback) ────────────
+
+describe('runAutoFixV2 provider routing', () => {
+  /** Fetch mock that routes by URL: LLM calls get an agent action, GitHub
+   *  calls get permissive success responses so the pipeline can progress. */
+  function routeByUrl(llmResponse: string, llmFailFirst = false) {
+    let llmCalled = false;
+    mockFetch.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      // LLM Chat Completions call (OpenAI or Kimi)
+      if (url.includes('/chat/completions')) {
+        if (llmFailFirst && !llmCalled) {
+          llmCalled = true;
+          return openaiFail(500, 'kimi downstream error');
+        }
+        return openaiOk(llmResponse);
+      }
+      // GitHub: default branch lookup
+      if (url.includes('/branches/')) return githubOk({ commit: { sha: 'base123sha' } });
+      // GitHub: ref lookup (get base sha)
+      if (url.includes('/git/ref/')) return githubOk({ object: { sha: 'base123sha' } });
+      // GitHub: create branch
+      if (url.includes('/git/refs') && method === 'POST') return githubOk({});
+      // GitHub: get contents (base64)
+      if (url.includes('/contents')) return githubOk({ content: utf8ToBase64('x'), encoding: 'base64' });
+      // GitHub: create/update file
+      if (url.includes('/contents/') && method === 'PUT') return githubOk({ commit: { sha: 'newsha' } });
+      // GitHub: create PR
+      if (url.includes('/pulls') && method === 'POST') return githubOk({ html_url: 'https://github.com/owner/repo/pull/1' });
+      return githubOk({});
+    });
+  }
+
+  /** Extract only the LLM (chat/completions) calls from the fetch mock. */
+  function llmCalls() {
+    return mockFetch.mock.calls.filter(([u]) => String(u).includes('/chat/completions'));
+  }
+
+  it('routes the primary LLM call to the Kimi endpoint when CODEX_MODEL=kimi/k3', async () => {
+    const env = {
+      ...testEnv,
+      CODEX_MODEL: 'kimi/k3',
+      KIMI_API_KEY: 'sk-kimi-test',
+      FALLBACK_MODEL: 'openai/gpt-4o',
+    } as any;
+
+    routeByUrl(JSON.stringify({ action: 'done', summary: 'fixed', files_changed: [] }));
+
+    await runAutoFixV2(makeContext(), env, makeDeps().deps);
+
+    const calls = llmCalls();
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    // First LLM call must target the Kimi Code endpoint
+    expect(String(calls[0][0])).toContain('api.kimi.com');
+
+    // Authorization header carries the Kimi API key
+    const init = calls[0][1] as { headers: Record<string, string> } | undefined;
+    expect(init?.headers?.Authorization).toBe('Bearer sk-kimi-test');
+  });
+
+  it('falls back to the OpenAI endpoint when the Kimi provider fails', async () => {
+    const env = {
+      ...testEnv,
+      CODEX_MODEL: 'kimi/k3',
+      KIMI_API_KEY: 'sk-kimi-test',
+      FALLBACK_MODEL: 'openai/gpt-4o',
+    } as any;
+
+    // First LLM call (Kimi) fails, the retry must go to OpenAI and succeed
+    routeByUrl(
+      JSON.stringify({ action: 'done', summary: 'fixed', files_changed: [] }),
+      /* llmFailFirst */ true,
+    );
+
+    await runAutoFixV2(makeContext(), env, makeDeps().deps);
+
+    const calls = llmCalls();
+    // Two LLM calls: the failed Kimi attempt + the OpenAI fallback
+    expect(calls.length).toBe(2);
+    expect(String(calls[0][0])).toContain('api.kimi.com');
+    expect(String(calls[1][0])).toContain('api.openai.com');
+
+    // Fallback call must carry the OpenAI API key, not the Kimi one
+    const fallbackInit = calls[1][1] as { headers: Record<string, string> } | undefined;
+    expect(fallbackInit?.headers?.Authorization).toBe('Bearer test-openai-key');
+  });
+});

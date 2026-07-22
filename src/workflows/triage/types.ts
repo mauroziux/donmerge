@@ -153,8 +153,13 @@ export interface TriageResult {
 export interface TriageEnv {
   Sandbox: unknown;
   OPENAI_API_KEY: string;
+  /** Kimi K3 API key (Kimi Code, OpenAI-compatible). Primary model when set. */
+  KIMI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  /** Primary model in "provider/model" form (e.g. "kimi/k3"). */
   CODEX_MODEL?: string;
+  /** Fallback model used when the primary provider fails (e.g. "openai/gpt-4o"). */
+  FALLBACK_MODEL?: string;
   TriageProcessor: DurableObjectNamespace;
   DB?: D1Database;
 }

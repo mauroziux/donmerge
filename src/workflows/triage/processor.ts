@@ -25,6 +25,11 @@ import { buildTriagePrompt } from './prompts';
 import { runAutoFixV2 } from './auto-fix-v2';
 import { runCreateIssueWithDedup } from './trackers';
 import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, unwrapFlueResponse } from './utils';
+import {
+  buildOpencodeConfig,
+  resolveFallbackModel,
+  type ModelConfig,
+} from '../../lib/llm-providers';
 
 // State keys
 const STATE_KEYS = {
@@ -167,8 +172,18 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     // 2. Create shared sandbox+flue for both triage and auto-fix
     const sessionId = `triage-${context.jobId}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
-    const flue = new FlueRuntime({ sandbox, sessionId, workdir: '/home/user' });
-    await sandbox.setEnvVars({ OPENAI_API_KEY: this.env.OPENAI_API_KEY });
+    const flue = new FlueRuntime({
+      sandbox,
+      sessionId,
+      workdir: '/home/user',
+      // Register Kimi K3 (OpenAI-compatible) as a custom provider so OpenCode can
+      // route "kimi/k3" model IDs. OpenAI stays available as fallback.
+      opencodeConfig: buildOpencodeConfig(this.env.KIMI_API_KEY),
+    });
+    await sandbox.setEnvVars({
+      OPENAI_API_KEY: this.env.OPENAI_API_KEY,
+      KIMI_API_KEY: this.env.KIMI_API_KEY,
+    });
     await flue.setup();
 
     // 3. Run LLM triage
@@ -254,13 +269,23 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
 
   /**
    * Run the LLM triage using Flue.
+   *
+   * Uses the primary model (default Kimi K3) and falls back to the configured
+   * fallback model (default OpenAI gpt-4o) if the primary fails.
    */
   private async runLlmTriage(
     context: TriageContext,
     sourceCode: Map<string, string>,
     flue: FlueRuntime
   ): Promise<TriageOutput> {
-    const model = parseModelConfig(this.env.CODEX_MODEL);
+    const primaryModel = parseModelConfig(this.env.CODEX_MODEL);
+    const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
+    const models =
+      primaryModel.providerID === fallbackModel.providerID &&
+      primaryModel.modelID === fallbackModel.modelID
+        ? [primaryModel]
+        : [primaryModel, fallbackModel];
+
     const prompt = buildTriagePrompt({
       errorContext: context.errorContext,
       sourceCode,
@@ -269,6 +294,38 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
       options: context.options,
     });
 
+    let lastError: unknown;
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      const isLast = i === models.length - 1;
+      try {
+        return await this.promptTriageForModel(flue, prompt, model);
+      } catch (error) {
+        lastError = error;
+        const msg = error instanceof Error ? error.message : String(error);
+        console.warn('[triage] model failed, will fallback', {
+          model: `${model.providerID}/${model.modelID}`,
+          error: msg,
+          willFallback: !isLast,
+        });
+        if (isLast) break;
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('All LLM providers failed for triage');
+  }
+
+  /**
+   * Run the triage prompt against a single model, with one format-correcting retry.
+   */
+  private async promptTriageForModel(
+    flue: FlueRuntime,
+    prompt: string,
+    model: ModelConfig
+  ): Promise<TriageOutput> {
+    const modelLabel = `${model.providerID}/${model.modelID}`;
     const promptErrorHint =
       'Your previous response was invalid. Produce valid JSON matching the schema exactly. ' +
       'Ensure root_cause, stack_trace_summary, affected_files (array), suggested_fix, confidence (high|medium|low), ' +
@@ -291,7 +348,7 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
         } catch { /* parse/validate failed — response already set to raw */ }
       }
       if (!response) {
-        throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
+        throw new Error(this.formatPromptError(error, modelLabel));
       }
     }
 
@@ -318,7 +375,7 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
         } catch { /* parse/validate failed — response already set to raw */ }
       }
       if (!response) {
-        throw new Error(this.formatPromptError(error, `${model.providerID}/${model.modelID}`));
+        throw new Error(this.formatPromptError(error, modelLabel));
       }
     }
 
@@ -327,7 +384,7 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
       return parsed;
     }
 
-    throw new Error('Invalid triage output after retry: missing or incorrectly typed fields');
+    throw new Error(`Invalid triage output after retry (${modelLabel}): missing or incorrectly typed fields`);
   }
 
   // ── Helper methods ───────────────────────────────────────────────────────────

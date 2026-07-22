@@ -19,7 +19,8 @@
 		//   "org/repo1:main,org/repo2:develop" - repo1 only reviews PRs to main, repo2 only to develop
 		//   "org/repo1,org/repo2:main" - repo1 reviews all PRs, repo2 only reviews PRs to main
 		"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
-		"CODEX_MODEL": "openai/gpt-4o",
+		"CODEX_MODEL": "kimi/k3",
+		"FALLBACK_MODEL": "openai/gpt-4o",
 		"MAX_REVIEW_FILES": "50",
 		"REVIEW_TRIGGER": "@donmerge",
 		// Sentry webhook integration (optional)
@@ -150,7 +151,8 @@
 			"vars": {
 				"DONMERGE_API_KEYS": "dm_test_2cd266c2995a8db0a2270eddded52fec28d7f2ed99e7157d,dm_live_f5b0a81a5aff7ec415158a1092658f2eeb9a0ad1ce6064b4",
 				"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
-				"CODEX_MODEL": "openai/gpt-4o",
+				"CODEX_MODEL": "kimi/k3",
+				"FALLBACK_MODEL": "openai/gpt-4o",
 				"MAX_REVIEW_FILES": "50",
 				"REVIEW_TRIGGER": "@donmerge",
 				"SENTRY_WEBHOOK_SECRET": "8985db9836f18ca919fc75803b49051ae776ffb8f473add014763c789aeec52b,2eeca971c16e6018b0e40bcb9111378324c3ae62d2933a91a46162107bbf634f",
