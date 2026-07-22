@@ -199,19 +199,30 @@ export const handlePushReview = withAuth(async (c, auth) => {
 
   // Create the workflow to handle execution
   if (c.env.CODE_REVIEW_WORKFLOW) {
-    // Workflow instance IDs reject slashes (CF throws instance.invalid_id) — use dashes, NOT buildReviewJobId (slash-form is for the DO name at L212).
-    await c.env.CODE_REVIEW_WORKFLOW.create({
-      id: `review-${body.owner}-${body.repo}-${body.pr_number}`,
-      params: {
-        owner: body.owner,
-        repo: body.repo,
-        prNumber: body.pr_number,
-        githubToken: body.github_token,
-        model: body.model,
-        maxFiles: body.max_files,
-        retrigger: false,
-      },
-    });
+    const instanceId = `review-${body.owner}-${body.repo}-${body.pr_number}`;
+    try {
+      // Workflow instance IDs reject slashes (CF throws instance.invalid_id) — use dashes, NOT buildReviewJobId (slash-form is for the DO name at L212).
+      await c.env.CODE_REVIEW_WORKFLOW.create({
+        id: instanceId,
+        params: {
+          owner: body.owner,
+          repo: body.repo,
+          prNumber: body.pr_number,
+          githubToken: body.github_token,
+          model: body.model,
+          maxFiles: body.max_files,
+          retrigger: false,
+        },
+      });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (errMsg.includes('already_exists')) {
+        const instance = await c.env.CODE_REVIEW_WORKFLOW.get(instanceId);
+        await instance.restart();
+      } else {
+        throw e;
+      }
+    }
   }
 
   const jobId = buildReviewJobId(body.owner, body.repo, body.pr_number);
