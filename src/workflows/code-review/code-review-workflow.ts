@@ -144,12 +144,17 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         return this.fetchPrData(params);
       });
 
+      if (!prData) {
+        throw new Error('Failed to fetch PR data');
+      }
+      const activePrData = prData;
+
       // Step 2: Prepare files
       const preparedFiles = await step.do('prepare-files', {
         retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
         timeout: '2 minutes',
       }, async () => {
-        return this.prepareFiles(prData);
+        return this.prepareFiles(activePrData);
       });
 
       // Step 3: Run LLM review

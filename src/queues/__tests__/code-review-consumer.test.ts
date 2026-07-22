@@ -182,6 +182,30 @@ describe('handleCodeReviewQueue', () => {
       expect(retry).not.toHaveBeenCalled();
     });
 
+    it('restarts the comment-specific instance for duplicate @donmerge delivery', async () => {
+      mockedProcess.mockRejectedValue(
+        new Error('(instance.already_exists) Instance already exists')
+      );
+
+      const restart = vi.fn().mockResolvedValue(undefined);
+      const getSpy = vi.fn().mockResolvedValue({ restart });
+      const envWithWorkflow = {
+        ...(baseEnv as unknown as Record<string, unknown>),
+        CODE_REVIEW_WORKFLOW: { get: getSpy } as unknown as Workflow,
+      } as never;
+
+      const msg = makeMessage({ ...baseContext, commentId: 5041217452 });
+      await handleCodeReviewQueue(makeBatch([msg]) as never, envWithWorkflow);
+
+      expect(mockedProcess).toHaveBeenCalledWith(
+        envWithWorkflow,
+        expect.objectContaining({ commentId: 5041217452 })
+      );
+      expect(getSpy).toHaveBeenCalledWith('review-tableoltd-test-repo-42-comment-5041217452');
+      expect(restart).toHaveBeenCalledTimes(1);
+      expect(msg.ack).toHaveBeenCalledTimes(1);
+    });
+
     it('retries with delaySeconds=30 when restart itself fails', async () => {
       mockedProcess.mockRejectedValue(
         new Error('(instance.already_exists) Instance already exists')

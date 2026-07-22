@@ -267,8 +267,8 @@ describe('extractRawFlueResponse', () => {
 
   it('should extract rawOutput from error.data.rawOutput (SkillOutputError)', () => {
     const error = new Error('No ---RESULT_START--- block found');
-    (error as Record<string, unknown>).name = 'SkillOutputError';
-    (error as Record<string, unknown>).data = {
+    (error as unknown as Record<string, unknown>).name = 'SkillOutputError';
+    (error as unknown as Record<string, unknown>).data = {
       sessionId: 'abc-123',
       rawOutput: '{"approved": true, "summary": "Looks good"}',
     };
@@ -361,7 +361,7 @@ describe('extractRawFlueResponse', () => {
 
   it('should return null when data.rawOutput is missing', () => {
     const error = new Error('delimiter missing');
-    (error as Record<string, unknown>).data = { sessionId: 'abc' };
+    (error as unknown as Record<string, unknown>).data = { sessionId: 'abc' };
     expect(extractRawFlueResponse(error)).toBeNull();
   });
 

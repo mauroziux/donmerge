@@ -16,6 +16,7 @@
 
 import type { WorkerEnv, WebhookContext } from '../workflows/code-review/types';
 import { processGitHubCodeReviewWebhook } from '../workflows/code-review/webhook';
+import { buildReviewWorkflowInstanceId } from '../workflows/code-review/workflow-id';
 
 /**
  * Env required by the consumer: every binding the webhook pipeline needs
@@ -55,8 +56,8 @@ export async function handleCodeReviewQueue(
       // Per CF docs: "To re-run a workflow with the same ID, restart the existing instance."
       if (errMsg.includes('already_exists') && env.CODE_REVIEW_WORKFLOW) {
         try {
-          const { owner, repo, prNumber } = msg.body;
-          const instanceId = `review-${owner}-${repo}-${prNumber}`;
+          const { owner, repo, prNumber, commentId } = msg.body;
+          const instanceId = buildReviewWorkflowInstanceId(owner, repo, prNumber, commentId);
           const instance = await env.CODE_REVIEW_WORKFLOW.get(instanceId);
           await instance.restart();
           console.log('code-review-jobs: restarted existing workflow instance', {

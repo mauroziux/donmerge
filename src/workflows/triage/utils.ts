@@ -4,6 +4,8 @@
  * Extracted from processor.ts and auto-fix.ts to avoid duplication.
  */
 
+import { Buffer } from 'node:buffer';
+
 /**
  * Parse model configuration from environment variable.
  * Format: "provider/model" or just "model" (defaults to openai).

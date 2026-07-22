@@ -220,9 +220,11 @@ async function generateFix(
     return null;
   }
 
+  const sourceCode = context.sourceCode;
+
   // Pick the first affected file that exists in sourceCode
   const targetFile = context.triageOutput.affected_files.find(
-    (f) => context.sourceCode.has(f)
+    (f) => sourceCode.has(f)
   );
   if (!targetFile) {
     console.log('Auto-fix: no target file found in source code');
