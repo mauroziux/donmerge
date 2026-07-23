@@ -19,6 +19,9 @@
 /** Kimi Code (managed coding service) base URL. OpenAI-compatible. */
 export const KIMI_BASE_URL = 'https://api.kimi.com/coding/v1';
 
+/** Zhipu GLM Coding Plan base URL. OpenAI-compatible. */
+export const GLM_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
+
 /** OpenAI public API base URL. */
 export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
@@ -34,7 +37,7 @@ export interface ModelConfig {
 }
 
 /** Provider identifiers with special handling. */
-export type KnownProvider = 'kimi' | 'moonshot' | 'openai' | 'anthropic';
+export type KnownProvider = 'kimi' | 'moonshot' | 'glm' | 'zhipu' | 'openai' | 'anthropic';
 
 /**
  * Returns true when a provider speaks the OpenAI Chat Completions protocol
@@ -43,7 +46,7 @@ export type KnownProvider = 'kimi' | 'moonshot' | 'openai' | 'anthropic';
  */
 export function isOpenAICompatibleProvider(providerID: string): boolean {
   const id = providerID.toLowerCase();
-  return id === 'openai' || id === 'kimi' || id === 'moonshot';
+  return id === 'openai' || id === 'kimi' || id === 'moonshot' || id === 'glm' || id === 'zhipu';
 }
 
 /**
@@ -54,6 +57,9 @@ export function resolveOpenAIBaseURL(providerID: string): string {
   const id = providerID.toLowerCase();
   if (id === 'kimi' || id === 'moonshot') {
     return KIMI_BASE_URL;
+  }
+  if (id === 'glm' || id === 'zhipu') {
+    return GLM_BASE_URL;
   }
   // 'openai' and any unknown OpenAI-compatible provider (proxies, gateways)
   return OPENAI_BASE_URL;
@@ -84,21 +90,40 @@ export function buildKimiProviderConfig(apiKey: string): Record<string, unknown>
 }
 
 /**
- * Build a full `opencodeConfig` object for the Flue sandbox, registering the
- * Kimi provider so OpenCode can route model IDs like "kimi/k3".
- *
- * When no Kimi API key is configured, returns an empty provider map so OpenCode
- * falls back to its built-in providers (e.g. OpenAI via OPENAI_API_KEY).
+ * Build a single OpenCode provider config entry for GLM 5.2.
  */
-export function buildOpencodeConfig(kimiApiKey?: string): { provider: Record<string, unknown> } {
-  if (!kimiApiKey || !kimiApiKey.trim()) {
-    return { provider: {} };
-  }
+export function buildGlmProviderConfig(apiKey: string): Record<string, unknown> {
   return {
-    provider: {
-      kimi: buildKimiProviderConfig(kimiApiKey),
+    npm: '@ai-sdk/openai-compatible',
+    name: 'GLM 5.2',
+    options: {
+      baseURL: GLM_BASE_URL,
+      apiKey,
+    },
+    models: {
+      '5.2': {
+        name: 'GLM 5.2',
+      },
     },
   };
+}
+
+/**
+ * Build a full `opencodeConfig` object for the Flue sandbox, registering the
+ * Kimi and GLM providers so OpenCode can route model IDs like "kimi/k3" or "glm/5.2".
+ */
+export function buildOpencodeConfig(
+  kimiApiKey?: string,
+  glmApiKey?: string
+): { provider: Record<string, unknown> } {
+  const providers: Record<string, unknown> = {};
+  if (kimiApiKey && kimiApiKey.trim()) {
+    providers.kimi = buildKimiProviderConfig(kimiApiKey);
+  }
+  if (glmApiKey && glmApiKey.trim()) {
+    providers.glm = buildGlmProviderConfig(glmApiKey);
+  }
+  return { provider: providers };
 }
 
 /**
@@ -123,11 +148,14 @@ export function resolveFallbackModel(envFallback?: string): ModelConfig {
  */
 export function selectApiKey(
   providerID: string,
-  keys: { openai?: string; kimi?: string; anthropic?: string }
+  keys: { openai?: string; kimi?: string; glm?: string; anthropic?: string }
 ): string | undefined {
   const id = providerID.toLowerCase();
   if (id === 'kimi' || id === 'moonshot') {
     return keys.kimi ?? keys.openai;
+  }
+  if (id === 'glm' || id === 'zhipu') {
+    return keys.glm ?? keys.openai;
   }
   if (id === 'anthropic') {
     return keys.anthropic ?? keys.openai;

@@ -155,6 +155,8 @@ export interface TriageEnv {
   OPENAI_API_KEY: string;
   /** Kimi K3 API key (Kimi Code, OpenAI-compatible). Primary model when set. */
   KIMI_API_KEY?: string;
+  /** GLM 5.2 API key (Zhipu Coding Plan, OpenAI-compatible). */
+  GLM_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   /** Primary model in "provider/model" form (e.g. "kimi/k3"). */
   CODEX_MODEL?: string;

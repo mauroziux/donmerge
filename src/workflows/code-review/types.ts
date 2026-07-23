@@ -7,6 +7,8 @@ export interface WorkerEnv {
   OPENAI_API_KEY: string;
   /** Kimi K3 API key (Kimi Code, OpenAI-compatible). Primary review model when set. */
   KIMI_API_KEY?: string;
+  /** GLM 5.2 API key (Zhipu Coding Plan, OpenAI-compatible). */
+  GLM_API_KEY?: string;
   /** Optional Anthropic key (used by triage auto-fix). */
   ANTHROPIC_API_KEY?: string;
   GITHUB_WEBHOOK_SECRET: string;

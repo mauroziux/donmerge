@@ -10,12 +10,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   KIMI_BASE_URL,
+  GLM_BASE_URL,
   OPENAI_BASE_URL,
   DEFAULT_PRIMARY_MODEL,
   DEFAULT_FALLBACK_MODEL,
   isOpenAICompatibleProvider,
   resolveOpenAIBaseURL,
   buildKimiProviderConfig,
+  buildGlmProviderConfig,
   buildOpencodeConfig,
   resolveFallbackModel,
   selectApiKey,
@@ -26,6 +28,7 @@ describe('llm-providers', () => {
 
   it('exposes the Kimi Code and OpenAI base URLs', () => {
     expect(KIMI_BASE_URL).toBe('https://api.kimi.com/coding/v1');
+    expect(GLM_BASE_URL).toBe('https://open.bigmodel.cn/api/coding/paas/v4');
     expect(OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
     expect(DEFAULT_PRIMARY_MODEL).toBe('kimi/k3');
     expect(DEFAULT_FALLBACK_MODEL).toBe('openai/gpt-4o');
@@ -37,6 +40,8 @@ describe('llm-providers', () => {
     expect(isOpenAICompatibleProvider('openai')).toBe(true);
     expect(isOpenAICompatibleProvider('kimi')).toBe(true);
     expect(isOpenAICompatibleProvider('moonshot')).toBe(true);
+    expect(isOpenAICompatibleProvider('glm')).toBe(true);
+    expect(isOpenAICompatibleProvider('zhipu')).toBe(true);
     expect(isOpenAICompatibleProvider('KIMI')).toBe(true); // case-insensitive
     expect(isOpenAICompatibleProvider('anthropic')).toBe(false);
     expect(isOpenAICompatibleProvider('')).toBe(false);
@@ -48,6 +53,12 @@ describe('llm-providers', () => {
     expect(resolveOpenAIBaseURL('kimi')).toBe(KIMI_BASE_URL);
     expect(resolveOpenAIBaseURL('moonshot')).toBe(KIMI_BASE_URL);
     expect(resolveOpenAIBaseURL('Moonshot')).toBe(KIMI_BASE_URL);
+  });
+
+  it('resolves the GLM base URL for glm/zhipu providers', () => {
+    expect(resolveOpenAIBaseURL('glm')).toBe(GLM_BASE_URL);
+    expect(resolveOpenAIBaseURL('zhipu')).toBe(GLM_BASE_URL);
+    expect(resolveOpenAIBaseURL('Zhipu')).toBe(GLM_BASE_URL);
   });
 
   it('resolves the OpenAI base URL for openai and unknown providers', () => {
@@ -66,6 +77,16 @@ describe('llm-providers', () => {
     expect((config.models as Record<string, unknown>).k3).toBeDefined();
   });
 
+  // ── buildGlmProviderConfig ────────────────────────────────────────────────
+
+  it('builds an OpenCode provider entry for GLM 5.2 with the GLM baseURL', () => {
+    const config = buildGlmProviderConfig('sk-glm-123');
+    expect(config.npm).toBe('@ai-sdk/openai-compatible');
+    expect((config.options as Record<string, unknown>).baseURL).toBe(GLM_BASE_URL);
+    expect((config.options as Record<string, unknown>).apiKey).toBe('sk-glm-123');
+    expect((config.models as Record<string, unknown>)['5.2']).toBeDefined();
+  });
+
   // ── buildOpencodeConfig ────────────────────────────────────────────────────
 
   it('builds a full opencodeConfig registering the kimi provider when a key is present', () => {
@@ -77,10 +98,20 @@ describe('llm-providers', () => {
     ).toBe(KIMI_BASE_URL);
   });
 
-  it('returns an empty provider map when no Kimi key is configured', () => {
-    expect(buildOpencodeConfig(undefined)).toEqual({ provider: {} });
-    expect(buildOpencodeConfig('')).toEqual({ provider: {} });
-    expect(buildOpencodeConfig('   ')).toEqual({ provider: {} });
+  it('builds a full opencodeConfig registering both kimi and glm providers when keys are present', () => {
+    const opencodeConfig = buildOpencodeConfig('sk-kimi-123', 'sk-glm-123');
+    expect(opencodeConfig.provider).toBeDefined();
+    expect(opencodeConfig.provider.kimi).toBeDefined();
+    expect(opencodeConfig.provider.glm).toBeDefined();
+    expect(
+      ((opencodeConfig.provider.glm as Record<string, unknown>).options as Record<string, unknown>).baseURL
+    ).toBe(GLM_BASE_URL);
+  });
+
+  it('returns an empty provider map when no keys are configured', () => {
+    expect(buildOpencodeConfig(undefined, undefined)).toEqual({ provider: {} });
+    expect(buildOpencodeConfig('', '')).toEqual({ provider: {} });
+    expect(buildOpencodeConfig('   ', '   ')).toEqual({ provider: {} });
   });
 
   // ── resolveFallbackModel ───────────────────────────────────────────────────
@@ -115,15 +146,25 @@ describe('llm-providers', () => {
 
   it('selects the Kimi key for kimi/moonshot providers', () => {
     expect(
-      selectApiKey('kimi', { openai: 'sk-oai', kimi: 'sk-kimi' })
+      selectApiKey('kimi', { openai: 'sk-oai', kimi: 'sk-kimi', glm: 'sk-glm' })
     ).toBe('sk-kimi');
     expect(
-      selectApiKey('Moonshot', { openai: 'sk-oai', kimi: 'sk-kimi' })
+      selectApiKey('Moonshot', { openai: 'sk-oai', kimi: 'sk-kimi', glm: 'sk-glm' })
     ).toBe('sk-kimi');
   });
 
-  it('falls back to the OpenAI key when no Kimi key is set', () => {
+  it('selects the GLM key for glm/zhipu providers', () => {
+    expect(
+      selectApiKey('glm', { openai: 'sk-oai', kimi: 'sk-kimi', glm: 'sk-glm' })
+    ).toBe('sk-glm');
+    expect(
+      selectApiKey('Zhipu', { openai: 'sk-oai', kimi: 'sk-kimi', glm: 'sk-glm' })
+    ).toBe('sk-glm');
+  });
+
+  it('falls back to the OpenAI key when no Kimi or GLM key is set', () => {
     expect(selectApiKey('kimi', { openai: 'sk-oai' })).toBe('sk-oai');
+    expect(selectApiKey('glm', { openai: 'sk-oai' })).toBe('sk-oai');
   });
 
   it('selects the OpenAI key for openai and unknown providers', () => {

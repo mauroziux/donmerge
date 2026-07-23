@@ -176,13 +176,14 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
       sandbox,
       sessionId,
       workdir: '/home/user',
-      // Register Kimi K3 (OpenAI-compatible) as a custom provider so OpenCode can
-      // route "kimi/k3" model IDs. OpenAI stays available as fallback.
-      opencodeConfig: buildOpencodeConfig(this.env.KIMI_API_KEY),
+      // Register Kimi K3 and GLM 5.2 as custom OpenAI-compatible providers so OpenCode
+      // can route "kimi/k3" and "glm/5.2" model IDs. OpenAI stays available as fallback.
+      opencodeConfig: buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
     });
     await sandbox.setEnvVars({
       OPENAI_API_KEY: this.env.OPENAI_API_KEY,
       KIMI_API_KEY: this.env.KIMI_API_KEY,
+      GLM_API_KEY: this.env.GLM_API_KEY,
     });
     await flue.setup();
 
@@ -280,11 +281,22 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
   ): Promise<TriageOutput> {
     const primaryModel = parseModelConfig(this.env.CODEX_MODEL);
     const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
-    const models =
-      primaryModel.providerID === fallbackModel.providerID &&
-      primaryModel.modelID === fallbackModel.modelID
-        ? [primaryModel]
-        : [primaryModel, fallbackModel];
+
+    // Build the prioritized fallback model list
+    const models: ModelConfig[] = [primaryModel];
+    const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
+    if (hasGlmKey) {
+      const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
+      if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
+        models.push(glmModel);
+      }
+    }
+    const fallbackAlreadyInList = models.some(
+      m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
+    );
+    if (!fallbackAlreadyInList) {
+      models.push(fallbackModel);
+    }
 
     const prompt = buildTriagePrompt({
       errorContext: context.errorContext,
