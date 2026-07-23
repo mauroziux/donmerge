@@ -43,7 +43,7 @@ import { buildCurrentIssues, type IssueBuilderContext } from './issue-builder';
 import { matchCurrentFindingsToStored, type CurrentIssue } from './issue-matcher';
 import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
 import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
-import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError } from './utils';
+import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError, withTimeout } from './utils';
 import { buildReviewPrompt } from './prompts';
 import {
   buildOpencodeConfig,
@@ -567,7 +567,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     let parsed: ReviewResult;
 
     try {
-      response = await flue.client.prompt(prompt, { model, result: v.string() });
+      response = await withTimeout(
+        flue.client.prompt(prompt, { model, result: v.string() }),
+        120000,
+        `LLM prompt timed out after 120s (${modelLabel})`
+      );
     } catch (error) {
       const rawResponse = extractRawFlueResponse(error);
       if (rawResponse) {
@@ -597,7 +601,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     // Retry once
     const retryPrompt = `${prompt}\n\n${promptErrorHint}\nReason: ${validation.reason}`;
     try {
-      response = await flue.client.prompt(retryPrompt, { model, result: v.string() });
+      response = await withTimeout(
+        flue.client.prompt(retryPrompt, { model, result: v.string() }),
+        120000,
+        `LLM prompt timed out after 120s (${modelLabel})`
+      );
     } catch (error) {
       const rawResponse = extractRawFlueResponse(error);
       if (rawResponse) {

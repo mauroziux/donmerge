@@ -1,0 +1,274 @@
+- generic [ref=e27]:
+  - link "Skip to main content" [ref=e28] [cursor=pointer]:
+    - /url: "#main"
+  - generic [ref=e29]:
+    - navigation "Primary Navigation" [ref=e30]:
+      - button "Toggle organization menu" [ref=e32] [cursor=pointer]:
+        - img [ref=e35]:
+          - generic [ref=e37]: M
+      - list [ref=e38]:
+        - listitem [ref=e39]:
+          - link "Issues" [ref=e40] [cursor=pointer]:
+            - /url: /issues/
+            - img [ref=e42]
+            - generic [ref=e44]: Issues
+        - listitem [ref=e45]:
+          - link "Explore" [ref=e46] [cursor=pointer]:
+            - /url: /explore/traces/
+            - img [ref=e48]
+            - generic [ref=e50]: Explore
+        - listitem [ref=e51]:
+          - link "Dashboards" [ref=e52] [cursor=pointer]:
+            - /url: /dashboards/
+            - img [ref=e54]
+            - generic [ref=e56]: Dashboards
+        - listitem [ref=e57]:
+          - link "Insights" [ref=e58] [cursor=pointer]:
+            - /url: /insights/
+            - img [ref=e60]
+            - generic [ref=e62]: Insights
+        - listitem [ref=e63]:
+          - link "Settings" [ref=e64] [cursor=pointer]:
+            - /url: /settings/organization/
+            - img [ref=e66]
+            - generic [ref=e68]: Settings
+      - generic [ref=e69]:
+        - generic [ref=e72]:
+          - button "Search support, docs and more" [ref=e73] [cursor=pointer]:
+            - img [ref=e76]
+          - button "Onboarding" [ref=e78] [cursor=pointer]:
+            - img [ref=e82]:
+              - generic [ref=e86]: "7"
+          - button "Try Business" [ref=e88] [cursor=pointer]:
+            - img [ref=e91]
+          - button "Service status" [ref=e94] [cursor=pointer]:
+            - img [ref=e97]
+          - button "What's New" [ref=e100] [cursor=pointer]:
+            - img [ref=e103]
+          - button "Help" [ref=e106] [cursor=pointer]:
+            - img [ref=e109]
+        - button "mauroziux@gmail.com" [ref=e114] [cursor=pointer]:
+          - img [ref=e117]:
+            - generic [ref=e119]: M
+    - navigation "Secondary Navigation" [ref=e122]:
+      - generic [ref=e123]:
+        - generic [ref=e124]: Settings
+        - button "Collapse" [ref=e126] [cursor=pointer]:
+          - img [ref=e129]
+      - generic [ref=e131]:
+        - generic [ref=e132]:
+          - button "Account" [ref=e133] [cursor=pointer]:
+            - generic [ref=e134]:
+              - generic [ref=e135]: Account
+              - img [ref=e137]
+          - list [ref=e141]:
+            - listitem [ref=e142]:
+              - link "Account Details" [ref=e143] [cursor=pointer]:
+                - /url: /settings/account/details/
+                - generic [ref=e144]: Account Details
+            - listitem [ref=e145]:
+              - link "Security" [ref=e146] [cursor=pointer]:
+                - /url: /settings/account/security/
+                - generic [ref=e147]: Security
+            - listitem [ref=e148]:
+              - link "Notifications" [ref=e149] [cursor=pointer]:
+                - /url: /settings/account/notifications/
+                - generic [ref=e150]: Notifications
+            - listitem [ref=e151]:
+              - link "Email Addresses" [ref=e152] [cursor=pointer]:
+                - /url: /settings/account/emails/
+                - generic [ref=e153]: Email Addresses
+            - listitem [ref=e154]:
+              - link "Subscriptions" [ref=e155] [cursor=pointer]:
+                - /url: /settings/account/subscriptions/
+                - generic [ref=e156]: Subscriptions
+            - listitem [ref=e157]:
+              - link "Authorized Applications" [ref=e158] [cursor=pointer]:
+                - /url: /settings/account/authorizations/
+                - generic [ref=e159]: Authorized Applications
+            - listitem [ref=e160]:
+              - link "Identities" [ref=e161] [cursor=pointer]:
+                - /url: /settings/account/identities/
+                - generic [ref=e162]: Identities
+            - listitem [ref=e163]:
+              - link "Close Account" [ref=e164] [cursor=pointer]:
+                - /url: /settings/account/close-account/
+                - generic [ref=e165]: Close Account
+        - separator [ref=e167]
+        - generic [ref=e168]:
+          - button "Organization" [ref=e169] [cursor=pointer]:
+            - generic [ref=e170]:
+              - generic [ref=e171]: Organization
+              - img [ref=e173]
+          - list [ref=e177]:
+            - listitem [ref=e178]:
+              - link "General Settings" [ref=e179] [cursor=pointer]:
+                - /url: /settings/organization/
+                - generic [ref=e180]: General Settings
+            - listitem [ref=e181]:
+              - link "Stats & Usage" [ref=e182] [cursor=pointer]:
+                - /url: /settings/stats/
+                - generic [ref=e183]: Stats & Usage
+            - listitem [ref=e184]:
+              - link "Projects" [ref=e185] [cursor=pointer]:
+                - /url: /settings/projects/
+                - generic [ref=e186]: Projects
+            - listitem [ref=e187]:
+              - link "Teams" [ref=e188] [cursor=pointer]:
+                - /url: /settings/teams/
+                - generic [ref=e189]: Teams
+            - listitem [ref=e190]:
+              - link "Members" [ref=e191] [cursor=pointer]:
+                - /url: /settings/members/
+                - generic [ref=e192]: Members
+            - listitem [ref=e193]:
+              - link "Security & Privacy" [ref=e194] [cursor=pointer]:
+                - /url: /settings/security-and-privacy/
+                - generic [ref=e195]: Security & Privacy
+            - listitem [ref=e196]:
+              - link "Auth" [ref=e197] [cursor=pointer]:
+                - /url: /settings/auth/
+                - generic [ref=e199]:
+                  - text: Auth
+                  - img [ref=e201]
+            - listitem [ref=e203]:
+              - link "Audit Log" [ref=e204] [cursor=pointer]:
+                - /url: /settings/audit-log/
+                - generic [ref=e205]: Audit Log
+            - listitem [ref=e206]:
+              - link "Data Forwarding" [ref=e207] [cursor=pointer]:
+                - /url: /settings/data-forwarding/
+                - generic [ref=e208]: Data Forwarding
+            - listitem [ref=e209]:
+              - link "Relay" [ref=e210] [cursor=pointer]:
+                - /url: /settings/relay/
+                - generic [ref=e211]: Relay
+            - listitem [ref=e212]:
+              - link "Feature Flags" [ref=e213] [cursor=pointer]:
+                - /url: /settings/feature-flags/
+                - generic [ref=e214]: Feature Flags
+            - listitem [ref=e215]:
+              - link "Seer" [ref=e216] [cursor=pointer]:
+                - /url: /settings/seer/
+                - generic [ref=e217]: Seer
+        - separator [ref=e219]
+        - generic [ref=e220]:
+          - button "Integrations" [ref=e221] [cursor=pointer]:
+            - generic [ref=e222]:
+              - generic [ref=e223]: Integrations
+              - img [ref=e225]
+          - list [ref=e229]:
+            - listitem [ref=e230]:
+              - link "MCP & CLI" [ref=e231] [cursor=pointer]:
+                - /url: /settings/mcp-cli/
+                - generic [ref=e232]: MCP & CLI
+            - listitem [ref=e233]:
+              - link "Integrations" [ref=e234] [cursor=pointer]:
+                - /url: /settings/integrations/
+                - generic [ref=e235]: Integrations
+            - listitem [ref=e236]:
+              - link "Repositories" [ref=e237] [cursor=pointer]:
+                - /url: /settings/repos/
+                - generic [ref=e238]: Repositories
+            - listitem [ref=e239]:
+              - link "Custom Integrations" [ref=e240] [cursor=pointer]:
+                - /url: /settings/developer-settings/
+                - generic [ref=e241]: Custom Integrations
+        - separator [ref=e243]
+        - generic [ref=e244]:
+          - button "Developer Settings" [ref=e245] [cursor=pointer]:
+            - generic [ref=e246]:
+              - generic [ref=e247]: Developer Settings
+              - img [ref=e249]
+          - list [ref=e253]:
+            - listitem [ref=e254]:
+              - link "Organization Tokens" [ref=e255] [cursor=pointer]:
+                - /url: /settings/auth-tokens/
+                - generic [ref=e256]: Organization Tokens
+            - listitem [ref=e257]:
+              - link "Personal Tokens" [ref=e258] [cursor=pointer]:
+                - /url: /settings/account/api/auth-tokens/
+                - generic [ref=e259]: Personal Tokens
+            - listitem [ref=e260]:
+              - link "OAuth Applications" [ref=e261] [cursor=pointer]:
+                - /url: /settings/account/api/applications/
+                - generic [ref=e262]: OAuth Applications
+        - separator [ref=e264]
+        - generic [ref=e265]:
+          - button "Usage & Billing" [ref=e266] [cursor=pointer]:
+            - generic [ref=e267]:
+              - generic [ref=e268]: Usage & Billing
+              - img [ref=e270]
+          - list [ref=e274]:
+            - listitem [ref=e275]:
+              - link "Subscription" [ref=e276] [cursor=pointer]:
+                - /url: /settings/billing/
+                - generic [ref=e277]: Subscription
+            - listitem [ref=e278]:
+              - link "Spike Protection" [ref=e279] [cursor=pointer]:
+                - /url: /settings/spike-protection/
+                - generic [ref=e280]: Spike Protection
+            - listitem [ref=e281]:
+              - link "Redeem Promo Code" [ref=e282] [cursor=pointer]:
+                - /url: /settings/subscription/redeem-code/
+                - generic [ref=e283]: Redeem Promo Code
+            - listitem [ref=e284]:
+              - link "Legal & Compliance" [ref=e285] [cursor=pointer]:
+                - /url: /settings/legal/
+                - generic [ref=e286]: Legal & Compliance
+  - generic [ref=e288]:
+    - generic [ref=e289]:
+      - navigation "Settings Breadcrumbs" [ref=e291]:
+        - generic [ref=e292]:
+          - link "Settings" [ref=e293] [cursor=pointer]:
+            - /url: /settings/
+          - img [ref=e294]
+        - generic [ref=e296]:
+          - link "Integrations" [ref=e297] [cursor=pointer]:
+            - /url: /settings/integrations/
+          - img [ref=e298]
+        - generic [ref=e300]: GitHub
+      - generic [ref=e301]:
+        - search [ref=e303]:
+          - generic [ref=e304]:
+            - img [ref=e306]
+            - textbox "Search Settings" [ref=e308]:
+              - /placeholder: Search
+        - button "Ask Seer" [ref=e309] [cursor=pointer]:
+          - generic [ref=e310]:
+            - img [ref=e313]
+            - generic [ref=e315]:
+              - text: Ask Seer
+              - generic [ref=e316]:
+                - generic "⌘" [ref=e317]:
+                  - img [ref=e318]
+                - generic [ref=e320]: /
+        - button "Give Feedback" [ref=e322] [cursor=pointer]:
+          - img [ref=e325]
+    - main [ref=e327]:
+      - generic [ref=e331]:
+        - generic [ref=e332]:
+          - generic [ref=e336]:
+            - generic [ref=e337]:
+              - generic [ref=e338]: GitHub
+              - generic [ref=e342]: Not Installed
+            - generic [ref=e343]:
+              - generic [ref=e345]: Source Code Management
+              - generic [ref=e347]: Issue Tracking
+              - generic [ref=e349]: Stacktrace Link
+              - generic [ref=e351]: Codeowners
+              - generic [ref=e353]: Ticket Rules
+          - button "Add integration" [ref=e357] [cursor=pointer]:
+            - generic [ref=e358]: Add Installation
+        - tablist [ref=e362]:
+          - tab "overview" [ref=e363] [cursor=pointer]:
+            - generic [ref=e365]: overview
+          - tab "configurations" [active] [selected] [ref=e366] [cursor=pointer]:
+            - generic [ref=e368]: configurations
+          - tab "features" [ref=e369] [cursor=pointer]:
+            - generic [ref=e371]: features
+        - generic [ref=e437]:
+          - generic [ref=e438]: You haven't set anything up yet
+          - generic [ref=e439]: But that doesn't have to be the case for long! Add an installation to get started.
+          - button "Add integration" [ref=e443] [cursor=pointer]:
+            - generic [ref=e444]: Add Installation

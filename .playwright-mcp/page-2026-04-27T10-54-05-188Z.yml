@@ -1,0 +1,378 @@
+- generic [ref=e27]:
+  - link "Skip to main content" [ref=e28] [cursor=pointer]:
+    - /url: "#main"
+  - generic [ref=e29]:
+    - navigation "Primary Navigation" [ref=e30]:
+      - button "Toggle organization menu" [ref=e32] [cursor=pointer]:
+        - img [ref=e35]:
+          - generic [ref=e37]: M
+      - list [ref=e38]:
+        - listitem [ref=e39]:
+          - link "Issues" [ref=e40] [cursor=pointer]:
+            - /url: /issues/
+            - img [ref=e42]
+            - generic [ref=e44]: Issues
+        - listitem [ref=e45]:
+          - link "Explore" [ref=e46] [cursor=pointer]:
+            - /url: /explore/traces/
+            - img [ref=e48]
+            - generic [ref=e50]: Explore
+        - listitem [ref=e51]:
+          - link "Dashboards" [ref=e52] [cursor=pointer]:
+            - /url: /dashboards/
+            - img [ref=e54]
+            - generic [ref=e56]: Dashboards
+        - listitem [ref=e57]:
+          - link "Insights" [ref=e58] [cursor=pointer]:
+            - /url: /insights/
+            - img [ref=e60]
+            - generic [ref=e62]: Insights
+        - listitem [ref=e63]:
+          - link "Settings" [ref=e64] [cursor=pointer]:
+            - /url: /settings/organization/
+            - img [ref=e66]
+            - generic [ref=e68]: Settings
+      - generic [ref=e69]:
+        - generic [ref=e72]:
+          - button "Search support, docs and more" [ref=e73] [cursor=pointer]:
+            - img [ref=e76]
+          - button "Onboarding" [ref=e78] [cursor=pointer]:
+            - img [ref=e82]:
+              - generic [ref=e86]: "7"
+          - button "Try Business" [ref=e88] [cursor=pointer]:
+            - img [ref=e91]
+          - button "What's New" [ref=e94] [cursor=pointer]:
+            - img [ref=e97]
+          - button "Help" [ref=e100] [cursor=pointer]:
+            - img [ref=e103]
+        - button "mauroziux@gmail.com" [ref=e108] [cursor=pointer]:
+          - img [ref=e111]:
+            - generic [ref=e113]: M
+    - navigation "Secondary Navigation" [ref=e116]:
+      - generic [ref=e117]:
+        - generic [ref=e118]: Issues
+        - button "Collapse" [ref=e120] [cursor=pointer]:
+          - img [ref=e123]
+      - generic [ref=e125]:
+        - list [ref=e129]:
+          - listitem [ref=e130]:
+            - link "Feed" [ref=e131] [cursor=pointer]:
+              - /url: /issues/
+              - generic [ref=e132]: Feed
+        - separator [ref=e134]
+        - list [ref=e138]:
+          - listitem [ref=e139]:
+            - link "Errors & Outages" [ref=e140] [cursor=pointer]:
+              - /url: /issues/errors-outages/
+              - generic [ref=e141]: Errors & Outages
+          - listitem [ref=e142]:
+            - link "Breached Metrics" [ref=e143] [cursor=pointer]:
+              - /url: /issues/breached-metrics/
+              - generic [ref=e144]: Breached Metrics
+          - listitem [ref=e145]:
+            - link "Warnings" [ref=e146] [cursor=pointer]:
+              - /url: /issues/warnings/
+              - generic [ref=e147]: Warnings
+          - listitem [ref=e148]:
+            - link "User Feedback" [ref=e149] [cursor=pointer]:
+              - /url: /issues/feedback/
+              - generic [ref=e150]: User Feedback
+        - separator [ref=e152]
+        - list [ref=e156]:
+          - listitem [ref=e157]:
+            - link "All Views" [ref=e158] [cursor=pointer]:
+              - /url: /issues/views/
+              - generic [ref=e159]: All Views
+        - separator [ref=e161]
+        - generic [ref=e162]:
+          - generic [ref=e164]: Configure
+          - list [ref=e165]:
+            - listitem [ref=e166]:
+              - link "Alerts" [ref=e167] [cursor=pointer]:
+                - /url: /issues/alerts/rules/
+                - generic [ref=e168]: Alerts
+  - generic [ref=e170]:
+    - generic [ref=e171]:
+      - generic [ref=e172]: New Alert Rule
+      - generic [ref=e173]:
+        - button "Ask Seer" [ref=e174] [cursor=pointer]:
+          - generic [ref=e175]:
+            - img [ref=e178]
+            - generic [ref=e180]:
+              - text: Ask Seer
+              - generic [ref=e181]:
+                - generic "⌘" [ref=e182]:
+                  - img [ref=e183]
+                - generic [ref=e185]: /
+        - button "Give Feedback" [ref=e187] [cursor=pointer]:
+          - img [ref=e190]
+    - main [ref=e192]:
+      - generic [ref=e291]:
+        - navigation [ref=e294]:
+          - link "Alerts" [ref=e295] [cursor=pointer]:
+            - /url: /issues/alerts/rules/?project=mantto-web
+            - generic [ref=e296]: Alerts
+          - img [ref=e298]
+          - link "New Alert Rule" [ref=e300] [cursor=pointer]:
+            - /url: /issues/alerts/mantto-web/wizard/?project=mantto-web
+            - generic [ref=e301]: New Alert Rule
+          - img [ref=e303]
+          - generic [ref=e305]: Set Conditions
+        - generic [ref=e308]:
+          - list [ref=e310]:
+            - listitem [ref=e311]:
+              - heading "Select an environment and project" [level=5] [ref=e312]
+            - generic [ref=e314]:
+              - generic [ref=e320]:
+                - generic [ref=e321] [cursor=pointer]:
+                  - generic [ref=e324]: All Environments
+                  - textbox [ref=e327]
+                - img [ref=e330] [cursor=pointer]
+              - generic [ref=e337]:
+                - generic [ref=e338] [cursor=pointer]:
+                  - generic [ref=e340]:
+                    - img [ref=e343]
+                    - generic [ref=e346]: mantto-web
+                  - textbox [ref=e349]
+                - img [ref=e352] [cursor=pointer]
+            - listitem [ref=e354]:
+              - heading "Set conditions" [level=5] [ref=e355]
+              - button "Connect to messaging" [disabled] [ref=e357]:
+                - generic [ref=e358]: Connect to messaging
+            - generic [ref=e369]:
+              - generic [ref=e372]:
+                - img [ref=e374]
+                - generic [ref=e376]:
+                  - generic [ref=e377]:
+                    - generic [ref=e378]: When
+                    - text: an event is captured by Sentry and
+                    - generic [ref=e385]:
+                      - generic [ref=e386] [cursor=pointer]:
+                        - generic [ref=e389]: any
+                        - textbox
+                      - img [ref=e392] [cursor=pointer]
+                    - text: of the following happens
+                  - generic [ref=e396]:
+                    - generic [ref=e398]: A new issue is created
+                    - button "Delete Node" [ref=e399] [cursor=pointer]:
+                      - img [ref=e402]
+                  - generic [ref=e406]:
+                    - generic [ref=e407] [cursor=pointer]:
+                      - generic [ref=e408]: Add optional trigger...
+                      - textbox [ref=e411]
+                    - img [ref=e414] [cursor=pointer]
+              - generic [ref=e418]:
+                - img [ref=e420]
+                - generic [ref=e422]:
+                  - generic [ref=e423]:
+                    - generic [ref=e424]: If
+                    - generic [ref=e431]:
+                      - generic [ref=e432] [cursor=pointer]:
+                        - generic [ref=e435]: all
+                        - textbox
+                      - img [ref=e438] [cursor=pointer]
+                    - text: of these filters match
+                  - generic [ref=e442]:
+                    - generic [ref=e443] [cursor=pointer]:
+                      - generic [ref=e444]: Add optional filter...
+                      - textbox [ref=e447]
+                    - img [ref=e450] [cursor=pointer]
+              - generic [ref=e453]:
+                - img [ref=e455]
+                - generic [ref=e457]:
+                  - generic [ref=e458]:
+                    - generic [ref=e459]: Then
+                    - text: perform these actions
+                  - generic [ref=e460]:
+                    - generic [ref=e461]: option Suggested Assignees, Team, or Member focused, 0 of 2. 3 results available. Use Up and Down to choose options, press Enter to select the currently focused option, press Escape to exit the menu.
+                    - generic [ref=e462]:
+                      - generic [ref=e463] [cursor=pointer]:
+                        - generic [ref=e464]: Add action...
+                        - textbox [active] [ref=e467]
+                      - img [ref=e470] [cursor=pointer]
+                    - generic [ref=e769]:
+                      - generic [ref=e770]:
+                        - generic [ref=e771]: Send notification to…
+                        - menuitemradio "Suggested Assignees, Team, or Member" [ref=e773] [cursor=pointer]:
+                          - paragraph [ref=e779]: Suggested Assignees, Team, or Member
+                      - generic [ref=e780]:
+                        - generic [ref=e781]: Notify integration…
+                        - generic [ref=e782]:
+                          - menuitemradio "Send a notification to all legacy integrations" [ref=e783] [cursor=pointer]:
+                            - paragraph [ref=e789]: Send a notification to all legacy integrations
+                          - menuitemradio "Missing an integration? Click here to refresh" [ref=e790] [cursor=pointer]:
+                            - paragraph [ref=e796]: Missing an integration? Click here to refresh
+                  - button "Send Test Notification" [disabled] [ref=e473]:
+                    - generic [ref=e474]: Send Test Notification
+            - listitem [ref=e475]:
+              - heading "Set action interval" [level=5] [ref=e476]
+              - generic [ref=e477]: Perform the actions above once this often for an issue
+            - generic [ref=e484]:
+              - generic [ref=e485] [cursor=pointer]:
+                - generic [ref=e488]: 24 hours
+                - textbox [ref=e491]
+              - img [ref=e494] [cursor=pointer]
+            - listitem [ref=e496]:
+              - heading "Preview" [level=5] [ref=e497]
+              - generic [ref=e498]:
+                - text: 14 issues would have triggered this rule in the past 14 days
+                - generic [ref=e546]: approximately
+                - text: . If you're looking to reduce noise then make sure to
+                - link "read the docs" [ref=e547] [cursor=pointer]:
+                  - /url: https://docs.sentry.io/product/alerts/alert-types/#issue-alerts
+                - text: .
+            - generic [ref=e499]:
+              - generic [ref=e500]:
+                - generic [ref=e501]:
+                  - generic [ref=e502]: Issue
+                  - generic [ref=e503]: Last Triggered
+                  - generic [ref=e504]: Events
+                  - generic [ref=e505]: Assignee
+                - generic [ref=e506]:
+                  - generic [ref=e548]:
+                    - generic [ref=e549]:
+                      - generic [ref=e550]:
+                        - link "ReferenceError" [ref=e552] [cursor=pointer]:
+                          - /url: /issues/7443067664/?project=4511264510836736&referrer=issue-stream
+                          - generic [ref=e555]: ReferenceError
+                        - generic [ref=e556]:
+                          - generic [ref=e558]: "Level: Error"
+                          - generic [ref=e559]: useRef is not defined
+                      - generic [ref=e560]:
+                        - generic [ref=e561]:
+                          - link "View Project Details" [ref=e563] [cursor=pointer]:
+                            - /url: /insights/projects/mantto-web/?project=4511264510836736
+                            - img [ref=e567]
+                          - generic [ref=e568]: MANTTO-WEB-E
+                        - generic [ref=e569]: Unhandled
+                        - generic [ref=e570]: /import
+                        - link "replay-count" [ref=e571] [cursor=pointer]:
+                          - /url: /issues/7443067664/replays/
+                          - img [ref=e572]
+                          - text: "1"
+                    - time [ref=e575]: 17hr ago
+                    - generic "2" [ref=e579]
+                    - button "Modify issue assignee" [ref=e583] [cursor=pointer]:
+                      - img [ref=e588]
+                  - generic [ref=e590]:
+                    - generic [ref=e591]:
+                      - generic [ref=e592]:
+                        - link "ReferenceError" [ref=e594] [cursor=pointer]:
+                          - /url: /issues/7443065896/?project=4511264510836736&referrer=issue-stream
+                          - generic [ref=e597]: ReferenceError
+                        - generic [ref=e598]:
+                          - generic [ref=e600]: "Level: Error"
+                          - generic [ref=e601]: useRef is not defined
+                      - generic [ref=e602]:
+                        - generic [ref=e603]:
+                          - link "View Project Details" [ref=e605] [cursor=pointer]:
+                            - /url: /insights/projects/mantto-web/?project=4511264510836736
+                            - img [ref=e609]
+                          - generic [ref=e610]: MANTTO-WEB-D
+                        - generic [ref=e611]: Unhandled
+                        - generic [ref=e612]: /import
+                    - time [ref=e614]: 17hr ago
+                    - generic "1" [ref=e618]
+                    - button "Modify issue assignee" [ref=e622] [cursor=pointer]:
+                      - img [ref=e627]
+                  - generic [ref=e629]:
+                    - generic [ref=e630]:
+                      - generic [ref=e631]:
+                        - link "ReferenceError" [ref=e633] [cursor=pointer]:
+                          - /url: /issues/7443064999/?project=4511264510836736&referrer=issue-stream
+                          - generic [ref=e636]: ReferenceError
+                        - generic [ref=e637]:
+                          - generic [ref=e639]: "Level: Error"
+                          - generic [ref=e640]: useMemo is not defined
+                      - generic [ref=e641]:
+                        - generic [ref=e642]:
+                          - link "View Project Details" [ref=e644] [cursor=pointer]:
+                            - /url: /insights/projects/mantto-web/?project=4511264510836736
+                            - img [ref=e648]
+                          - generic [ref=e649]: MANTTO-WEB-C
+                        - generic [ref=e650]: Unhandled
+                        - generic [ref=e651]: /import
+                        - link "replay-count" [ref=e652] [cursor=pointer]:
+                          - /url: /issues/7443064999/replays/
+                          - img [ref=e653]
+                          - text: "1"
+                    - time [ref=e656]: 17hr ago
+                    - generic "1" [ref=e660]
+                    - button "Modify issue assignee" [ref=e664] [cursor=pointer]:
+                      - img [ref=e669]
+                  - generic [ref=e671]:
+                    - generic [ref=e672]:
+                      - generic [ref=e673]:
+                        - link "ReferenceError" [ref=e675] [cursor=pointer]:
+                          - /url: /issues/7443062201/?project=4511264510836736&referrer=issue-stream
+                          - generic [ref=e678]: ReferenceError
+                        - generic [ref=e679]:
+                          - generic [ref=e681]: "Level: Error"
+                          - generic [ref=e682]: useMemo is not defined
+                      - generic [ref=e683]:
+                        - generic [ref=e684]:
+                          - link "View Project Details" [ref=e686] [cursor=pointer]:
+                            - /url: /insights/projects/mantto-web/?project=4511264510836736
+                            - img [ref=e690]
+                          - generic [ref=e691]: MANTTO-WEB-B
+                        - generic [ref=e692]: Unhandled
+                        - generic [ref=e693]: /import
+                        - link "replay-count" [ref=e694] [cursor=pointer]:
+                          - /url: /issues/7443062201/replays/
+                          - img [ref=e695]
+                          - text: "1"
+                    - time [ref=e698]: 17hr ago
+                    - generic "1" [ref=e702]
+                    - button "Modify issue assignee" [ref=e706] [cursor=pointer]:
+                      - img [ref=e711]
+                  - generic [ref=e713]:
+                    - generic [ref=e714]:
+                      - generic [ref=e715]:
+                        - link "ReferenceError" [ref=e717] [cursor=pointer]:
+                          - /url: /issues/7443017233/?project=4511264510836736&referrer=issue-stream
+                          - generic [ref=e720]: ReferenceError
+                        - generic [ref=e721]:
+                          - generic [ref=e723]: "Level: Error"
+                          - generic [ref=e724]: ENTITY_FIELDS is not defined
+                      - generic [ref=e725]:
+                        - generic [ref=e726]:
+                          - link "View Project Details" [ref=e728] [cursor=pointer]:
+                            - /url: /insights/projects/mantto-web/?project=4511264510836736
+                            - img [ref=e732]
+                          - generic [ref=e733]: MANTTO-WEB-A
+                        - generic [ref=e734]: Unhandled
+                        - generic [ref=e735]: /import
+                        - link "replay-count" [ref=e736] [cursor=pointer]:
+                          - /url: /issues/7443017233/replays/
+                          - img [ref=e737]
+                          - text: "1"
+                    - time [ref=e740]: 18hr ago
+                    - generic "1" [ref=e744]
+                    - button "Modify issue assignee" [ref=e748] [cursor=pointer]:
+                      - img [ref=e753]
+              - generic [ref=e755]:
+                - generic [ref=e756]: Showing 5 of 14 issues
+                - generic [ref=e757]:
+                  - button "Previous" [disabled] [ref=e758]:
+                    - img [ref=e761]
+                  - button "Next" [ref=e763] [cursor=pointer]:
+                    - img [ref=e766]
+            - listitem [ref=e509]:
+              - heading "Add a name and owner" [level=5] [ref=e510]
+              - generic [ref=e511]: This name will show up in notifications and the owner will give permissions to your whole team to edit and view this alert.
+            - generic [ref=e513]:
+              - textbox "Enter Alert Name" [ref=e517]
+              - generic [ref=e523]:
+                - generic [ref=e524] [cursor=pointer]:
+                  - generic [ref=e526]:
+                    - generic "mantto" [ref=e528]:
+                      - img [ref=e529]:
+                        - generic [ref=e531]: M
+                    - generic [ref=e532]: "#mantto"
+                  - textbox [ref=e535]
+                - img [ref=e538] [cursor=pointer]
+          - generic [ref=e541]:
+            - button "Cancel" [ref=e542] [cursor=pointer]:
+              - generic [ref=e543]: Cancel
+            - button "Save Rule" [ref=e544] [cursor=pointer]:
+              - generic [ref=e545]: Save Rule

@@ -296,3 +296,23 @@ export function classifyError(error: unknown): { code: ErrorCodeType; detail: st
   }
   return { code: ErrorCode.INTERNAL, detail: message };
 }
+
+/**
+ * Wraps a promise in a timeout. If the promise does not resolve within
+ * the specified timeoutMs, it rejects with an error.
+ */
+export function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  errorMsg = 'Operation timed out'
+): Promise<T> {
+  let timeoutId: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(errorMsg));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}

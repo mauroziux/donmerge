@@ -13,6 +13,7 @@ import {
   extractRawFlueResponse,
   extractJsonFromResponse,
   classifyError,
+  withTimeout,
 } from '../utils';
 import { ErrorCode } from '../error-codes';
 
@@ -515,5 +516,23 @@ describe('classifyError', () => {
     const error = new Error('Flue prompt failed for model openai/gpt-4o: No ---RESULT_START---');
     const result = classifyError(error);
     expect(result.detail).toContain('---RESULT_START---');
+  });
+});
+
+describe('withTimeout', () => {
+  it('should resolve if the promise resolves before timeout', async () => {
+    const promise = Promise.resolve('success');
+    const result = await withTimeout(promise, 100);
+    expect(result).toBe('success');
+  });
+
+  it('should reject if the promise rejects before timeout', async () => {
+    const promise = Promise.reject(new Error('fail'));
+    await expect(withTimeout(promise, 100)).rejects.toThrow('fail');
+  });
+
+  it('should reject with timeout error if the promise takes longer than timeout', async () => {
+    const promise = new Promise(resolve => setTimeout(() => resolve('delayed'), 200));
+    await expect(withTimeout(promise, 50, 'custom timeout')).rejects.toThrow('custom timeout');
   });
 });

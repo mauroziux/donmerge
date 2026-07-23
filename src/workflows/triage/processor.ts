@@ -24,7 +24,7 @@ import { fetchRepoCodeForTriage } from './repo-fetcher';
 import { buildTriagePrompt } from './prompts';
 import { runAutoFixV2 } from './auto-fix-v2';
 import { runCreateIssueWithDedup } from './trackers';
-import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, unwrapFlueResponse } from './utils';
+import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFromResponse, unwrapFlueResponse, withTimeout } from './utils';
 import {
   buildOpencodeConfig,
   resolveFallbackModel,
@@ -333,7 +333,11 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
 
     let response: string | undefined;
     try {
-      response = await flue.client.prompt(prompt, { model, result: v.string() });
+      response = await withTimeout(
+        flue.client.prompt(prompt, { model, result: v.string() }),
+        120000,
+        `LLM prompt timed out after 120s (${modelLabel})`
+      );
     } catch (error) {
       const raw = extractRawFlueResponse(error);
       if (raw) {
@@ -360,7 +364,11 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     // Retry once with error hint
     const retryPrompt = `${prompt}\n\n${promptErrorHint}`;
     try {
-      response = await flue.client.prompt(retryPrompt, { model, result: v.string() });
+      response = await withTimeout(
+        flue.client.prompt(retryPrompt, { model, result: v.string() }),
+        120000,
+        `LLM prompt timed out after 120s (${modelLabel})`
+      );
     } catch (error) {
       const raw = extractRawFlueResponse(error);
       if (raw) {

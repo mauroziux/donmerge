@@ -1,0 +1,1025 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - img [ref=e8]
+    - generic [ref=e10]: Your GitHub account has been associated with your Sentry account
+    - button "Close" [ref=e12] [cursor=pointer]:
+      - img [ref=e15]
+  - generic [ref=e17]:
+    - link "Skip to main content" [ref=e18] [cursor=pointer]:
+      - /url: "#main"
+    - generic [ref=e19]:
+      - navigation "Primary Navigation" [ref=e20]:
+        - button "Toggle organization menu" [ref=e22] [cursor=pointer]:
+          - img [ref=e25]:
+            - generic [ref=e27]: M
+        - list [ref=e28]:
+          - listitem [ref=e29]:
+            - link "Issues" [ref=e30] [cursor=pointer]:
+              - /url: /issues/
+              - img [ref=e32]
+              - generic [ref=e34]: Issues
+          - listitem [ref=e35]:
+            - link "Explore" [ref=e36] [cursor=pointer]:
+              - /url: /explore/traces/
+              - img [ref=e38]
+              - generic [ref=e40]: Explore
+          - listitem [ref=e41]:
+            - link "Dashboards" [ref=e42] [cursor=pointer]:
+              - /url: /dashboards/
+              - img [ref=e44]
+              - generic [ref=e46]: Dashboards
+          - listitem [ref=e47]:
+            - link "Insights" [ref=e48] [cursor=pointer]:
+              - /url: /insights/
+              - img [ref=e50]
+              - generic [ref=e52]: Insights
+          - listitem [ref=e53]:
+            - link "Settings" [ref=e54] [cursor=pointer]:
+              - /url: /settings/organization/
+              - img [ref=e56]
+              - generic [ref=e58]: Settings
+        - generic [ref=e59]:
+          - generic [ref=e62]:
+            - button "Search support, docs and more" [ref=e63] [cursor=pointer]:
+              - img [ref=e66]
+            - button "Onboarding" [ref=e68] [cursor=pointer]:
+              - img [ref=e72]:
+                - generic [ref=e76]: "7"
+            - button "Try Business" [ref=e78] [cursor=pointer]:
+              - img [ref=e81]
+            - button "What's New" [ref=e84] [cursor=pointer]:
+              - img [ref=e87]
+            - button "Help" [ref=e90] [cursor=pointer]:
+              - img [ref=e93]
+          - button "mauroziux@gmail.com" [ref=e98] [cursor=pointer]:
+            - img [ref=e101]:
+              - generic [ref=e103]: M
+      - navigation "Secondary Navigation" [ref=e106]:
+        - generic [ref=e107]:
+          - generic [ref=e108]: Settings
+          - button "Collapse" [ref=e110] [cursor=pointer]:
+            - img [ref=e113]
+        - generic [ref=e115]:
+          - generic [ref=e116]:
+            - button "Account" [ref=e117] [cursor=pointer]:
+              - generic [ref=e118]:
+                - generic [ref=e119]: Account
+                - img [ref=e121]
+            - list [ref=e125]:
+              - listitem [ref=e126]:
+                - link "Account Details" [ref=e127] [cursor=pointer]:
+                  - /url: /settings/account/details/
+                  - generic [ref=e128]: Account Details
+              - listitem [ref=e129]:
+                - link "Security" [ref=e130] [cursor=pointer]:
+                  - /url: /settings/account/security/
+                  - generic [ref=e131]: Security
+              - listitem [ref=e132]:
+                - link "Notifications" [ref=e133] [cursor=pointer]:
+                  - /url: /settings/account/notifications/
+                  - generic [ref=e134]: Notifications
+              - listitem [ref=e135]:
+                - link "Email Addresses" [ref=e136] [cursor=pointer]:
+                  - /url: /settings/account/emails/
+                  - generic [ref=e137]: Email Addresses
+              - listitem [ref=e138]:
+                - link "Subscriptions" [ref=e139] [cursor=pointer]:
+                  - /url: /settings/account/subscriptions/
+                  - generic [ref=e140]: Subscriptions
+              - listitem [ref=e141]:
+                - link "Authorized Applications" [ref=e142] [cursor=pointer]:
+                  - /url: /settings/account/authorizations/
+                  - generic [ref=e143]: Authorized Applications
+              - listitem [ref=e144]:
+                - link "Identities" [ref=e145] [cursor=pointer]:
+                  - /url: /settings/account/identities/
+                  - generic [ref=e146]: Identities
+              - listitem [ref=e147]:
+                - link "Close Account" [ref=e148] [cursor=pointer]:
+                  - /url: /settings/account/close-account/
+                  - generic [ref=e149]: Close Account
+          - separator [ref=e151]
+          - generic [ref=e152]:
+            - button "Organization" [ref=e153] [cursor=pointer]:
+              - generic [ref=e154]:
+                - generic [ref=e155]: Organization
+                - img [ref=e157]
+            - list [ref=e161]:
+              - listitem [ref=e162]:
+                - link "General Settings" [ref=e163] [cursor=pointer]:
+                  - /url: /settings/organization/
+                  - generic [ref=e164]: General Settings
+              - listitem [ref=e165]:
+                - link "Stats & Usage" [ref=e166] [cursor=pointer]:
+                  - /url: /settings/stats/
+                  - generic [ref=e167]: Stats & Usage
+              - listitem [ref=e168]:
+                - link "Projects" [ref=e169] [cursor=pointer]:
+                  - /url: /settings/projects/
+                  - generic [ref=e170]: Projects
+              - listitem [ref=e171]:
+                - link "Teams" [ref=e172] [cursor=pointer]:
+                  - /url: /settings/teams/
+                  - generic [ref=e173]: Teams
+              - listitem [ref=e174]:
+                - link "Members" [ref=e175] [cursor=pointer]:
+                  - /url: /settings/members/
+                  - generic [ref=e176]: Members
+              - listitem [ref=e177]:
+                - link "Security & Privacy" [ref=e178] [cursor=pointer]:
+                  - /url: /settings/security-and-privacy/
+                  - generic [ref=e179]: Security & Privacy
+              - listitem [ref=e180]:
+                - link "Auth" [ref=e181] [cursor=pointer]:
+                  - /url: /settings/auth/
+                  - generic [ref=e183]:
+                    - text: Auth
+                    - img [ref=e185]
+              - listitem [ref=e187]:
+                - link "Audit Log" [ref=e188] [cursor=pointer]:
+                  - /url: /settings/audit-log/
+                  - generic [ref=e189]: Audit Log
+              - listitem [ref=e190]:
+                - link "Data Forwarding" [ref=e191] [cursor=pointer]:
+                  - /url: /settings/data-forwarding/
+                  - generic [ref=e192]: Data Forwarding
+              - listitem [ref=e193]:
+                - link "Relay" [ref=e194] [cursor=pointer]:
+                  - /url: /settings/relay/
+                  - generic [ref=e195]: Relay
+              - listitem [ref=e196]:
+                - link "Feature Flags" [ref=e197] [cursor=pointer]:
+                  - /url: /settings/feature-flags/
+                  - generic [ref=e198]: Feature Flags
+              - listitem [ref=e199]:
+                - link "Seer" [ref=e200] [cursor=pointer]:
+                  - /url: /settings/seer/
+                  - generic [ref=e201]: Seer
+          - separator [ref=e203]
+          - generic [ref=e204]:
+            - button "Integrations" [ref=e205] [cursor=pointer]:
+              - generic [ref=e206]:
+                - generic [ref=e207]: Integrations
+                - img [ref=e209]
+            - list [ref=e213]:
+              - listitem [ref=e214]:
+                - link "MCP & CLI" [ref=e215] [cursor=pointer]:
+                  - /url: /settings/mcp-cli/
+                  - generic [ref=e216]: MCP & CLI
+              - listitem [ref=e217]:
+                - link "Integrations" [active] [ref=e218] [cursor=pointer]:
+                  - /url: /settings/integrations/
+                  - generic [ref=e219]: Integrations
+              - listitem [ref=e220]:
+                - link "Repositories" [ref=e221] [cursor=pointer]:
+                  - /url: /settings/repos/
+                  - generic [ref=e222]: Repositories
+              - listitem [ref=e223]:
+                - link "Custom Integrations" [ref=e224] [cursor=pointer]:
+                  - /url: /settings/developer-settings/
+                  - generic [ref=e225]: Custom Integrations
+          - separator [ref=e227]
+          - generic [ref=e228]:
+            - button "Developer Settings" [ref=e229] [cursor=pointer]:
+              - generic [ref=e230]:
+                - generic [ref=e231]: Developer Settings
+                - img [ref=e233]
+            - list [ref=e237]:
+              - listitem [ref=e238]:
+                - link "Organization Tokens" [ref=e239] [cursor=pointer]:
+                  - /url: /settings/auth-tokens/
+                  - generic [ref=e240]: Organization Tokens
+              - listitem [ref=e241]:
+                - link "Personal Tokens" [ref=e242] [cursor=pointer]:
+                  - /url: /settings/account/api/auth-tokens/
+                  - generic [ref=e243]: Personal Tokens
+              - listitem [ref=e244]:
+                - link "OAuth Applications" [ref=e245] [cursor=pointer]:
+                  - /url: /settings/account/api/applications/
+                  - generic [ref=e246]: OAuth Applications
+          - separator [ref=e248]
+          - generic [ref=e249]:
+            - button "Usage & Billing" [ref=e250] [cursor=pointer]:
+              - generic [ref=e251]:
+                - generic [ref=e252]: Usage & Billing
+                - img [ref=e254]
+            - list [ref=e258]:
+              - listitem [ref=e259]:
+                - link "Subscription" [ref=e260] [cursor=pointer]:
+                  - /url: /settings/billing/
+                  - generic [ref=e261]: Subscription
+              - listitem [ref=e262]:
+                - link "Spike Protection" [ref=e263] [cursor=pointer]:
+                  - /url: /settings/spike-protection/
+                  - generic [ref=e264]: Spike Protection
+              - listitem [ref=e265]:
+                - link "Redeem Promo Code" [ref=e266] [cursor=pointer]:
+                  - /url: /settings/subscription/redeem-code/
+                  - generic [ref=e267]: Redeem Promo Code
+              - listitem [ref=e268]:
+                - link "Legal & Compliance" [ref=e269] [cursor=pointer]:
+                  - /url: /settings/legal/
+                  - generic [ref=e270]: Legal & Compliance
+    - generic [ref=e272]:
+      - generic [ref=e273]:
+        - navigation "Settings Breadcrumbs" [ref=e275]:
+          - generic [ref=e276]:
+            - link "Settings" [ref=e277] [cursor=pointer]:
+              - /url: /settings/
+            - img [ref=e278]
+          - generic [ref=e385]: Integrations
+        - generic [ref=e281]:
+          - search [ref=e283]:
+            - generic [ref=e284]:
+              - img [ref=e286]
+              - textbox "Search Settings" [ref=e288]:
+                - /placeholder: Search
+          - button "Ask Seer" [ref=e289] [cursor=pointer]:
+            - generic [ref=e290]:
+              - img [ref=e293]
+              - generic [ref=e295]:
+                - text: Ask Seer
+                - generic [ref=e296]:
+                  - generic "⌘" [ref=e297]:
+                    - img [ref=e298]
+                  - generic [ref=e300]: /
+          - button "Give Feedback" [ref=e302] [cursor=pointer]:
+            - img [ref=e305]
+      - main [ref=e307]:
+        - generic [ref=e311]:
+          - generic [ref=e387]:
+            - generic [ref=e391]:
+              - generic [ref=e392] [cursor=pointer]:
+                - generic [ref=e395]: All Categories
+                - textbox [ref=e398]
+              - img [ref=e401] [cursor=pointer]
+            - generic [ref=e404]:
+              - generic:
+                - img
+              - textbox "Filter" [ref=e405]:
+                - /placeholder: Filter Integrations…
+            - button "Create New Integration" [ref=e406] [cursor=pointer]:
+              - generic [ref=e407]:
+                - img [ref=e409]
+                - text: Create New Integration
+          - generic [ref=e412]:
+            - generic [ref=e414]:
+              - generic [ref=e417]:
+                - link "Slack" [ref=e418] [cursor=pointer]:
+                  - /url: /settings/integrations/slack/
+                - generic [ref=e422]: Not Installed
+              - generic [ref=e423]:
+                - generic [ref=e425]: Chat
+                - generic [ref=e427]: Alert Rule
+            - generic [ref=e429]:
+              - generic [ref=e432]:
+                - link "GitHub" [ref=e433] [cursor=pointer]:
+                  - /url: /settings/integrations/github/
+                - generic [ref=e437]: Not Installed
+              - generic [ref=e438]:
+                - generic [ref=e440]: Source Code Management
+                - generic [ref=e442]: Issue Tracking
+                - generic [ref=e444]: Stacktrace Link
+                - generic [ref=e446]: Codeowners
+                - generic [ref=e448]: Ticket Rules
+            - generic [ref=e450]:
+              - generic [ref=e453]:
+                - link "Discord" [ref=e454] [cursor=pointer]:
+                  - /url: /settings/integrations/discord/
+                - generic [ref=e458]: Not Installed
+              - generic [ref=e459]:
+                - generic [ref=e461]: Chat
+                - generic [ref=e463]: Alert Rule
+            - generic [ref=e465]:
+              - generic [ref=e468]:
+                - link "Jira" [ref=e469] [cursor=pointer]:
+                  - /url: /settings/integrations/jira/
+                - generic [ref=e473]: Not Installed
+              - generic [ref=e474]:
+                - generic [ref=e476]: Issue Tracking
+                - generic [ref=e478]: Ticket Rules
+            - generic [ref=e480]:
+              - generic [ref=e483]:
+                - link "Microsoft Teams" [ref=e484] [cursor=pointer]:
+                  - /url: /settings/integrations/msteams/
+                - generic [ref=e488]: Not Installed
+              - generic [ref=e489]:
+                - generic [ref=e491]: Chat
+                - generic [ref=e493]: Alert Rule
+            - generic [ref=e495]:
+              - generic [ref=e498]:
+                - link "Vercel" [ref=e499] [cursor=pointer]:
+                  - /url: /settings/integrations/vercel/
+                - generic [ref=e503]: Not Installed
+              - generic [ref=e506]: Deployment
+            - generic [ref=e508]:
+              - generic [ref=e511]:
+                - link "Cursor Agent" [ref=e512] [cursor=pointer]:
+                  - /url: /settings/integrations/cursor/
+                - generic [ref=e516]: Not Installed
+              - generic [ref=e519]: Coding Agent
+            - generic [ref=e521]:
+              - img "Linear" [ref=e523]
+              - generic [ref=e524]:
+                - link "Linear" [ref=e525] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/linear/
+                - generic [ref=e529]: Not Installed
+              - generic [ref=e530]:
+                - generic [ref=e532]: Alert Rule
+                - generic [ref=e534]: Issue Tracking
+            - generic [ref=e536]:
+              - img "Linear (Sentry Agent)" [ref=e538]
+              - generic [ref=e539]:
+                - link "Linear (Sentry Agent)" [ref=e540] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/linear-sentry-agent/
+                - generic [ref=e544]: Not Installed
+              - generic [ref=e547]: API
+            - generic [ref=e549]:
+              - generic [ref=e552]:
+                - link "AWS Lambda" [ref=e553] [cursor=pointer]:
+                  - /url: /settings/integrations/aws_lambda/
+                - generic [ref=e557]: Not Installed
+              - generic [ref=e560]: Serverless
+            - generic [ref=e562]:
+              - generic [ref=e565]:
+                - link "Bitbucket" [ref=e566] [cursor=pointer]:
+                  - /url: /settings/integrations/bitbucket/
+                - generic [ref=e570]: Not Installed
+              - generic [ref=e571]:
+                - generic [ref=e573]: Source Code Management
+                - generic [ref=e575]: Issue Tracking
+                - generic [ref=e577]: Stacktrace Link
+                - generic [ref=e579]: Codeowners
+            - generic [ref=e581]:
+              - img "Expo" [ref=e583]
+              - generic [ref=e584]:
+                - link "Expo" [ref=e585] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/expo/
+                - generic [ref=e589]: Not Installed
+              - generic [ref=e592]: API
+            - generic [ref=e594]:
+              - generic [ref=e597]:
+                - link "GitHub Enterprise" [ref=e598] [cursor=pointer]:
+                  - /url: /settings/integrations/github_enterprise/
+                - generic [ref=e602]: Not Installed
+              - generic [ref=e603]:
+                - generic [ref=e605]: Source Code Management
+                - generic [ref=e607]: Issue Tracking
+                - generic [ref=e609]: Stacktrace Link
+                - generic [ref=e611]: Codeowners
+                - generic [ref=e613]: Ticket Rules
+            - generic [ref=e615]:
+              - generic [ref=e618]:
+                - link "GitLab" [ref=e619] [cursor=pointer]:
+                  - /url: /settings/integrations/gitlab/
+                - generic [ref=e623]: Not Installed
+              - generic [ref=e624]:
+                - generic [ref=e626]: Source Code Management
+                - generic [ref=e628]: Issue Tracking
+                - generic [ref=e630]: Stacktrace Link
+                - generic [ref=e632]: Codeowners
+            - generic [ref=e634]:
+              - img "Grafana" [ref=e636]
+              - generic [ref=e637]:
+                - link "Grafana" [ref=e638] [cursor=pointer]:
+                  - /url: /settings/document-integrations/grafana/
+                - link "Learn More" [ref=e640] [cursor=pointer]:
+                  - /url: /settings/document-integrations/grafana/
+              - generic [ref=e643]: Visualization
+            - generic [ref=e645]:
+              - generic [ref=e648]:
+                - link "PagerDuty" [ref=e649] [cursor=pointer]:
+                  - /url: /settings/integrations/pagerduty/
+                - generic [ref=e653]: Not Installed
+              - generic [ref=e654]:
+                - generic [ref=e656]: Incident Management
+                - generic [ref=e658]: Alert Rule
+            - generic [ref=e660]:
+              - img "Atlas" [ref=e662]
+              - generic [ref=e663]:
+                - link "Atlas" [ref=e664] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/atlas/
+                - generic [ref=e668]: Not Installed
+              - generic [ref=e669]:
+                - generic [ref=e671]: API
+                - generic [ref=e673]: Issue Tracking
+            - generic [ref=e675]:
+              - generic [ref=e678]:
+                - link "Bitbucket Server" [ref=e679] [cursor=pointer]:
+                  - /url: /settings/integrations/bitbucket_server/
+                - generic [ref=e683]: Not Installed
+              - generic [ref=e684]:
+                - generic [ref=e686]: Source Code Management
+                - generic [ref=e688]: Stacktrace Link
+                - generic [ref=e690]: Codeowners
+            - generic [ref=e692]:
+              - img [ref=e693]
+              - generic [ref=e695]:
+                - link "ClickUp" [ref=e696] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/clickup/
+                - generic [ref=e700]: Not Installed
+              - generic [ref=e703]: Issue Tracking
+            - generic [ref=e705]:
+              - img "Cloudflare Workers" [ref=e707]
+              - generic [ref=e708]:
+                - link "Cloudflare Workers" [ref=e709] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/cloudflare-workers/
+                - generic [ref=e713]: Not Installed
+              - generic [ref=e716]: API
+            - generic [ref=e718]:
+              - img "Height" [ref=e720]
+              - generic [ref=e721]:
+                - link "Height" [ref=e722] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/height/
+                - generic [ref=e726]: Not Installed
+              - generic [ref=e727]:
+                - generic [ref=e729]: Issue Tracking
+                - generic [ref=e731]: Alert Rule
+            - generic [ref=e733]:
+              - img "incident.io" [ref=e735]
+              - generic [ref=e736]:
+                - link "incident.io" [ref=e737] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/incidentio/
+                - generic [ref=e741]: Not Installed
+              - generic [ref=e744]: Issue Tracking
+            - generic [ref=e746]:
+              - img "Jam" [ref=e748]
+              - generic [ref=e749]:
+                - link "Jam" [ref=e750] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/jam/
+                - generic [ref=e754]: Not Installed
+              - generic [ref=e755]:
+                - generic [ref=e757]: API
+                - generic [ref=e759]: Session Replay
+            - generic [ref=e761]:
+              - generic [ref=e764]:
+                - link "Jira Server" [ref=e765] [cursor=pointer]:
+                  - /url: /settings/integrations/jira_server/
+                - generic [ref=e769]: Not Installed
+              - generic [ref=e770]:
+                - generic [ref=e772]: Issue Tracking
+                - generic [ref=e774]: Ticket Rules
+            - generic [ref=e776]:
+              - img "Komodor" [ref=e778]
+              - generic [ref=e779]:
+                - link "Komodor" [ref=e780] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/komodor/
+                - generic [ref=e784]: Not Installed
+              - generic [ref=e787]: Event Hooks
+            - generic [ref=e789]:
+              - img "LaunchDarkly" [ref=e791]
+              - generic [ref=e792]:
+                - link "LaunchDarkly" [ref=e793] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/launchdarkly/
+                - generic [ref=e797]: Not Installed
+              - generic [ref=e798]:
+                - generic [ref=e800]: Event Hooks
+                - generic [ref=e802]: Feature Flag
+                - generic [ref=e804]: API
+            - generic [ref=e806]:
+              - img "Rookout" [ref=e808]
+              - generic [ref=e809]:
+                - link "Rookout" [ref=e810] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/rookout/
+                - generic [ref=e814]: Not Installed
+              - generic [ref=e817]: Stacktrace Link
+            - generic [ref=e819]:
+              - img "Shortcut" [ref=e821]
+              - generic [ref=e822]:
+                - link "Shortcut" [ref=e823] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/shortcut/
+                - generic [ref=e827]: Not Installed
+              - generic [ref=e830]: Issue Tracking
+            - generic [ref=e832]:
+              - img "SIGNL4" [ref=e834]
+              - generic [ref=e835]:
+                - link "SIGNL4" [ref=e836] [cursor=pointer]:
+                  - /url: /settings/document-integrations/signl4/
+                - link "Learn More" [ref=e838] [cursor=pointer]:
+                  - /url: /settings/document-integrations/signl4/
+              - generic [ref=e841]: Alert Rule
+            - generic [ref=e843]:
+              - img "Spike.sh" [ref=e845]
+              - generic [ref=e846]:
+                - link "Spike.sh" [ref=e847] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/spikesh/
+                - generic [ref=e851]: Not Installed
+              - generic [ref=e854]: Alert Rule
+            - generic [ref=e856]:
+              - img "Split" [ref=e858]
+              - generic [ref=e859]:
+                - link "Split" [ref=e860] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/split/
+                - generic [ref=e864]: Not Installed
+              - generic [ref=e867]: Event Hooks
+            - generic [ref=e869]:
+              - img "TaskCall" [ref=e871]
+              - generic [ref=e872]:
+                - link "TaskCall" [ref=e873] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/taskcall/
+                - generic [ref=e877]: Not Installed
+              - generic [ref=e880]: Incident Management
+            - generic [ref=e882]:
+              - img "Teamwork" [ref=e884]
+              - generic [ref=e885]:
+                - link "Teamwork" [ref=e886] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/teamwork/
+                - generic [ref=e890]: Not Installed
+              - generic [ref=e893]: Issue Tracking
+            - generic [ref=e895]:
+              - img "Vanta" [ref=e897]
+              - generic [ref=e898]:
+                - link "Vanta" [ref=e899] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/vanta/
+                - generic [ref=e903]: Not Installed
+              - generic [ref=e906]: API
+            - generic [ref=e908]:
+              - generic [ref=e911]:
+                - link "Azure DevOps" [ref=e912] [cursor=pointer]:
+                  - /url: /settings/integrations/vsts/
+                - generic [ref=e916]: Not Installed
+              - generic [ref=e917]:
+                - generic [ref=e919]: Source Code Management
+                - generic [ref=e921]: Issue Tracking
+                - generic [ref=e923]: Stacktrace Link
+                - generic [ref=e925]: Codeowners
+                - generic [ref=e927]: Ticket Rules
+            - generic [ref=e929]:
+              - img "OpenReplay" [ref=e931]
+              - generic [ref=e932]:
+                - link "OpenReplay" [ref=e933] [cursor=pointer]:
+                  - /url: /settings/document-integrations/asayer/
+                - link "Learn More" [ref=e935] [cursor=pointer]:
+                  - /url: /settings/document-integrations/asayer/
+              - generic [ref=e938]: Session Replay
+            - generic [ref=e940]:
+              - img "Bitbucket Pipelines" [ref=e942]
+              - generic [ref=e943]:
+                - link "Bitbucket Pipelines" [ref=e944] [cursor=pointer]:
+                  - /url: /settings/document-integrations/bitbucket-pipelines/
+                - link "Learn More" [ref=e946] [cursor=pointer]:
+                  - /url: /settings/document-integrations/bitbucket-pipelines/
+              - generic [ref=e949]: Release Management
+            - generic [ref=e951]:
+              - img "Datadog" [ref=e953]
+              - generic [ref=e954]:
+                - link "Datadog" [ref=e955] [cursor=pointer]:
+                  - /url: /settings/document-integrations/datadog/
+                - link "Learn More" [ref=e957] [cursor=pointer]:
+                  - /url: /settings/document-integrations/datadog/
+              - generic [ref=e958]:
+                - generic [ref=e960]: Incident Management
+                - generic [ref=e962]: Alert Rule
+            - generic [ref=e964]:
+              - img "FullStory" [ref=e966]
+              - generic [ref=e967]:
+                - link "FullStory" [ref=e968] [cursor=pointer]:
+                  - /url: /settings/document-integrations/fullstory/
+                - link "Learn More" [ref=e970] [cursor=pointer]:
+                  - /url: /settings/document-integrations/fullstory/
+              - generic [ref=e973]: Session Replay
+            - generic [ref=e975]:
+              - generic [ref=e978]:
+                - link "Heroku" [ref=e979] [cursor=pointer]:
+                  - /url: /settings/plugins/heroku/
+                - generic [ref=e983]: Not Installed
+              - generic [ref=e986]: Deployment
+            - generic [ref=e988]:
+              - img "InsightFinder" [ref=e990]
+              - generic [ref=e991]:
+                - link "InsightFinder" [ref=e992] [cursor=pointer]:
+                  - /url: /settings/document-integrations/insightfinder/
+                - link "Learn More" [ref=e994] [cursor=pointer]:
+                  - /url: /settings/document-integrations/insightfinder/
+              - generic [ref=e997]: Event Hooks
+            - generic [ref=e999]:
+              - img "Octohook" [ref=e1001]
+              - generic [ref=e1002]:
+                - link "Octohook" [ref=e1003] [cursor=pointer]:
+                  - /url: /settings/document-integrations/octohook/
+                - link "Learn More" [ref=e1005] [cursor=pointer]:
+                  - /url: /settings/document-integrations/octohook/
+              - generic [ref=e1006]:
+                - generic [ref=e1008]: Event Hooks
+                - generic [ref=e1010]: Alert Rule
+            - generic [ref=e1012]:
+              - img "Jenkins" [ref=e1014]
+              - generic [ref=e1015]:
+                - link "Jenkins" [ref=e1016] [cursor=pointer]:
+                  - /url: /settings/document-integrations/jenkins/
+                - link "Learn More" [ref=e1018] [cursor=pointer]:
+                  - /url: /settings/document-integrations/jenkins/
+              - generic [ref=e1021]: Release Management
+            - generic [ref=e1023]:
+              - img "Travis CI" [ref=e1025]
+              - generic [ref=e1026]:
+                - link "Travis CI" [ref=e1027] [cursor=pointer]:
+                  - /url: /settings/document-integrations/travis-ci/
+                - link "Learn More" [ref=e1029] [cursor=pointer]:
+                  - /url: /settings/document-integrations/travis-ci/
+              - generic [ref=e1032]: Release Management
+            - generic [ref=e1034]:
+              - img "Appwrite" [ref=e1036]
+              - generic [ref=e1037]:
+                - link "Appwrite" [ref=e1038] [cursor=pointer]:
+                  - /url: /settings/document-integrations/appwrite/
+                - link "Learn More" [ref=e1040] [cursor=pointer]:
+                  - /url: /settings/document-integrations/appwrite/
+              - generic [ref=e1043]: Issue Tracking
+            - generic [ref=e1045]:
+              - img "CircleCI" [ref=e1047]
+              - generic [ref=e1048]:
+                - link "CircleCI" [ref=e1049] [cursor=pointer]:
+                  - /url: /settings/document-integrations/circle-ci/
+                - link "Learn More" [ref=e1051] [cursor=pointer]:
+                  - /url: /settings/document-integrations/circle-ci/
+              - generic [ref=e1054]: Release Management
+            - generic [ref=e1056]:
+              - generic [ref=e1059]:
+                - link "Opsgenie" [ref=e1060] [cursor=pointer]:
+                  - /url: /settings/integrations/opsgenie/
+                - generic [ref=e1064]: Not Installed
+              - generic [ref=e1065]:
+                - generic [ref=e1067]: Enterprise Incident Management
+                - generic [ref=e1069]: Enterprise Alert Rule
+            - generic [ref=e1071]:
+              - img "Aether" [ref=e1073]
+              - generic [ref=e1074]:
+                - link "Aether" [ref=e1075] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/aether/
+                - generic [ref=e1079]: Not Installed
+              - generic [ref=e1082]: API
+            - generic [ref=e1084]:
+              - img "Apigene" [ref=e1086]
+              - generic [ref=e1087]:
+                - link "Apigene" [ref=e1088] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/apigene/
+                - generic [ref=e1092]: Not Installed
+              - generic [ref=e1095]: API
+            - generic [ref=e1097]:
+              - img "BetterBugs" [ref=e1099]
+              - generic [ref=e1100]:
+                - link "BetterBugs" [ref=e1101] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/betterbugs/
+                - generic [ref=e1105]: Not Installed
+              - generic [ref=e1108]: API
+            - generic [ref=e1110]:
+              - img "Blar" [ref=e1112]
+              - generic [ref=e1113]:
+                - link "Blar" [ref=e1114] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/blar/
+                - generic [ref=e1118]: Not Installed
+              - generic [ref=e1121]: API
+            - generic [ref=e1123]:
+              - img "Bosun" [ref=e1125]
+              - generic [ref=e1126]:
+                - link "Bosun" [ref=e1127] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/bosun/
+                - generic [ref=e1131]: Not Installed
+              - generic [ref=e1134]: API
+            - generic [ref=e1136]:
+              - img "Bug Sniff" [ref=e1138]
+              - generic [ref=e1139]:
+                - link "Bug Sniff" [ref=e1140] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/bug-sniff/
+                - generic [ref=e1144]: Not Installed
+              - generic [ref=e1147]: API
+            - generic [ref=e1149]:
+              - img "Cased" [ref=e1151]
+              - generic [ref=e1152]:
+                - link "Cased" [ref=e1153] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/cased/
+                - generic [ref=e1157]: Not Installed
+              - generic [ref=e1160]: API
+            - generic [ref=e1162]:
+              - generic [ref=e1165]:
+                - link "Claude Agent" [ref=e1166] [cursor=pointer]:
+                  - /url: /settings/integrations/claude_code/
+                - generic [ref=e1170]: Not Installed
+              - generic [ref=e1173]: Coding Agent
+            - generic [ref=e1175]:
+              - img "CloudEagle.ai" [ref=e1177]
+              - generic [ref=e1178]:
+                - link "CloudEagle.ai" [ref=e1179] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/cloudeagleai/
+                - generic [ref=e1183]: Not Installed
+              - generic [ref=e1186]: API
+            - generic [ref=e1188]:
+              - img "CodeComet" [ref=e1190]
+              - generic [ref=e1191]:
+                - link "CodeComet" [ref=e1192] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/codecomet/
+                - generic [ref=e1196]: Not Installed
+              - generic [ref=e1199]: API
+            - generic [ref=e1201]:
+              - img "Continue" [ref=e1203]
+              - generic [ref=e1204]:
+                - link "Continue" [ref=e1205] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/continue/
+                - generic [ref=e1209]: Not Installed
+              - generic [ref=e1212]: API
+            - generic [ref=e1214]:
+              - img "Cursor" [ref=e1216]
+              - generic [ref=e1217]:
+                - link "Cursor" [ref=e1218] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/cursor/
+                - generic [ref=e1222]: Not Installed
+              - generic [ref=e1225]: API
+            - generic [ref=e1227]:
+              - img "Tembo" [ref=e1229]
+              - generic [ref=e1230]:
+                - link "Tembo" [ref=e1231] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/dbaai/
+                - generic [ref=e1235]: Not Installed
+              - generic [ref=e1238]: API
+            - generic [ref=e1240]:
+              - img "Elba" [ref=e1242]
+              - generic [ref=e1243]:
+                - link "Elba" [ref=e1244] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/elba-alpha/
+                - generic [ref=e1248]: Not Installed
+              - generic [ref=e1251]: API
+            - generic [ref=e1253]:
+              - img "Factory" [ref=e1255]
+              - generic [ref=e1256]:
+                - link "Factory" [ref=e1257] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/factory/
+                - generic [ref=e1261]: Not Installed
+              - generic [ref=e1264]: API
+            - generic [ref=e1266]:
+              - img "Flow Relay" [ref=e1268]
+              - generic [ref=e1269]:
+                - link "Flow Relay" [ref=e1270] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/flow-relay/
+                - generic [ref=e1274]: Not Installed
+              - generic [ref=e1277]: API
+            - generic [ref=e1279]:
+              - img "foam" [ref=e1281]
+              - generic [ref=e1282]:
+                - link "foam" [ref=e1283] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/foam/
+                - generic [ref=e1287]: Not Installed
+              - generic [ref=e1288]:
+                - generic [ref=e1290]: Event Hooks
+                - generic [ref=e1292]: Alert Rule
+                - generic [ref=e1294]: API
+            - generic [ref=e1296]:
+              - img "Foam AI (legacy)" [ref=e1298]
+              - generic [ref=e1299]:
+                - link "Foam AI (legacy)" [ref=e1300] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/foam-ai/
+                - generic [ref=e1304]: Not Installed
+              - generic [ref=e1305]:
+                - generic [ref=e1307]: Alert Rule
+                - generic [ref=e1309]: API
+            - generic [ref=e1311]:
+              - img "Glue" [ref=e1313]
+              - generic [ref=e1314]:
+                - link "Glue" [ref=e1315] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/glue/
+                - generic [ref=e1319]: Not Installed
+              - generic [ref=e1322]: API
+            - generic [ref=e1324]:
+              - img "Glue Tools" [ref=e1326]
+              - generic [ref=e1327]:
+                - link "Glue Tools" [ref=e1328] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/glue-tools/
+                - generic [ref=e1332]: Not Installed
+              - generic [ref=e1335]: API
+            - generic [ref=e1337]:
+              - img "goast.ai" [ref=e1339]
+              - generic [ref=e1340]:
+                - link "goast.ai" [ref=e1341] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/goastai/
+                - generic [ref=e1345]: Not Installed
+              - generic [ref=e1346]:
+                - generic [ref=e1348]: Issue Tracking
+                - generic [ref=e1350]: API
+            - generic [ref=e1352]:
+              - img "Kawach.AI" [ref=e1354]
+              - generic [ref=e1355]:
+                - link "Kawach.AI" [ref=e1356] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/kawachai/
+                - generic [ref=e1360]: Not Installed
+              - generic [ref=e1363]: API
+            - generic [ref=e1365]:
+              - img "Keyflow" [ref=e1367]
+              - generic [ref=e1368]:
+                - link "Keyflow" [ref=e1369] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/keyflow/
+                - generic [ref=e1373]: Not Installed
+              - generic [ref=e1376]: API
+            - generic [ref=e1378]:
+              - img "Kitemaker" [ref=e1380]
+              - generic [ref=e1381]:
+                - link "Kitemaker" [ref=e1382] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/kitemaker/
+                - generic [ref=e1386]: Not Installed
+              - generic [ref=e1389]: API
+            - generic [ref=e1391]:
+              - img "LogicStar AI" [ref=e1393]
+              - generic [ref=e1394]:
+                - link "LogicStar AI" [ref=e1395] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/logicstar/
+                - generic [ref=e1399]: Not Installed
+              - generic [ref=e1402]: API
+            - generic [ref=e1404]:
+              - img "Plane" [ref=e1406]
+              - generic [ref=e1407]:
+                - link "Plane" [ref=e1408] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/makeplane/
+                - generic [ref=e1412]: Not Installed
+              - generic [ref=e1413]:
+                - generic [ref=e1415]: Issue Tracking
+                - generic [ref=e1417]: Alert Rule
+            - generic [ref=e1419]:
+              - img "Mendral" [ref=e1421]
+              - generic [ref=e1422]:
+                - link "Mendral" [ref=e1423] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/mendral/
+                - generic [ref=e1427]: Not Installed
+              - generic [ref=e1430]: API
+            - generic [ref=e1432]:
+              - img "Nominal" [ref=e1434]
+              - generic [ref=e1435]:
+                - link "Nominal" [ref=e1436] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/nominal/
+                - generic [ref=e1440]: Not Installed
+              - generic [ref=e1443]: API
+            - generic [ref=e1445]:
+              - img "OpsBrief" [ref=e1447]
+              - generic [ref=e1448]:
+                - link "OpsBrief" [ref=e1449] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/opsbrief/
+                - generic [ref=e1453]: Not Installed
+              - generic [ref=e1456]: API
+            - generic [ref=e1458]:
+              - img "PagerTree" [ref=e1460]
+              - generic [ref=e1461]:
+                - link "PagerTree" [ref=e1462] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/pagertree/
+                - generic [ref=e1466]: Not Installed
+              - generic [ref=e1469]: API
+            - generic [ref=e1471]:
+              - img "Phoebe" [ref=e1473]
+              - generic [ref=e1474]:
+                - link "Phoebe" [ref=e1475] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/phoebe-ai/
+                - generic [ref=e1479]: Not Installed
+              - generic [ref=e1482]: API
+            - generic [ref=e1484]:
+              - img "qckfx_test" [ref=e1486]
+              - generic [ref=e1487]:
+                - link "qckfx_test" [ref=e1488] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/qckfx/
+                - generic [ref=e1492]: Not Installed
+              - generic [ref=e1495]: API
+            - generic [ref=e1497]:
+              - img "ReleaseTag" [ref=e1499]
+              - generic [ref=e1500]:
+                - link "ReleaseTag" [ref=e1501] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/releasetag/
+                - generic [ref=e1505]: Not Installed
+              - generic [ref=e1508]: API
+            - generic [ref=e1510]:
+              - img "Revise" [ref=e1512]
+              - generic [ref=e1513]:
+                - link "Revise" [ref=e1514] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/revise/
+                - generic [ref=e1518]: Not Installed
+              - generic [ref=e1521]: API
+            - generic [ref=e1523]:
+              - img "Rootly" [ref=e1525]
+              - generic [ref=e1526]:
+                - link "Rootly" [ref=e1527] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/rootly/
+                - generic [ref=e1531]: Not Installed
+              - generic [ref=e1534]: API
+            - generic [ref=e1536]:
+              - img "Corelayer" [ref=e1538]
+              - generic [ref=e1539]:
+                - link "Corelayer" [ref=e1540] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/sevvy/
+                - generic [ref=e1544]: Not Installed
+              - generic [ref=e1547]: API
+            - generic [ref=e1549]:
+              - img "Shake" [ref=e1551]
+              - generic [ref=e1552]:
+                - link "Shake" [ref=e1553] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/shake/
+                - generic [ref=e1557]: Not Installed
+              - generic [ref=e1560]: API
+            - generic [ref=e1562]:
+              - img "Shiprail" [ref=e1564]
+              - generic [ref=e1565]:
+                - link "Shiprail" [ref=e1566] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/shiprail/
+                - generic [ref=e1570]: Not Installed
+              - generic [ref=e1573]: API
+            - generic [ref=e1575]:
+              - img "Sonarly" [ref=e1577]
+              - generic [ref=e1578]:
+                - link "Sonarly" [ref=e1579] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/sonarly-integration/
+                - generic [ref=e1583]: Not Installed
+              - generic [ref=e1586]: API
+            - generic [ref=e1588]:
+              - img "Sourcery" [ref=e1590]
+              - generic [ref=e1591]:
+                - link "Sourcery" [ref=e1592] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/sourcery/
+                - generic [ref=e1596]: Not Installed
+              - generic [ref=e1599]: API
+            - generic [ref=e1601]:
+              - img "SpecSource" [ref=e1603]
+              - generic [ref=e1604]:
+                - link "SpecSource" [ref=e1605] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/specsource/
+                - generic [ref=e1609]: Not Installed
+              - generic [ref=e1612]: API
+            - generic [ref=e1614]:
+              - img "StarSling" [ref=e1616]
+              - generic [ref=e1617]:
+                - link "StarSling" [ref=e1618] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/starsling-dev/
+                - generic [ref=e1622]: Not Installed
+              - generic [ref=e1623]:
+                - generic [ref=e1625]: API
+                - generic [ref=e1627]: Alert Rule
+            - generic [ref=e1629]:
+              - img "Steadwing" [ref=e1631]
+              - generic [ref=e1632]:
+                - link "Steadwing" [ref=e1633] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/steadwing-rca/
+                - generic [ref=e1637]: Not Installed
+              - generic [ref=e1640]: API
+            - generic [ref=e1642]:
+              - img "Synkrony" [ref=e1644]
+              - generic [ref=e1645]:
+                - link "Synkrony" [ref=e1646] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/synkrony/
+                - generic [ref=e1650]: Not Installed
+              - generic [ref=e1653]: API
+            - generic [ref=e1655]:
+              - img "Teamcamp" [ref=e1657]
+              - generic [ref=e1658]:
+                - link "Teamcamp" [ref=e1659] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/teamcamp/
+                - generic [ref=e1663]: Not Installed
+              - generic [ref=e1666]: Issue Tracking
+            - generic [ref=e1668]:
+              - img "Telegram Alerts Bot" [ref=e1670]
+              - generic [ref=e1671]:
+                - link "Telegram Alerts Bot" [ref=e1672] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/telegram-alerts-bot/
+                - generic [ref=e1676]: Not Installed
+              - generic [ref=e1679]: API
+            - generic [ref=e1681]:
+              - img "Terramind" [ref=e1683]
+              - generic [ref=e1684]:
+                - link "Terramind" [ref=e1685] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/terramind/
+                - generic [ref=e1689]: Not Installed
+              - generic [ref=e1692]: API
+            - generic [ref=e1694]:
+              - img "Toolbar" [ref=e1696]
+              - generic [ref=e1697]:
+                - link "Toolbar" [ref=e1698] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/toolbar/
+                - generic [ref=e1702]: Not Installed
+              - generic [ref=e1705]: API
+            - generic [ref=e1707]:
+              - img "Twill" [ref=e1709]
+              - generic [ref=e1710]:
+                - link "Twill" [ref=e1711] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/twill/
+                - generic [ref=e1715]: Not Installed
+              - generic [ref=e1718]: API
+            - generic [ref=e1720]:
+              - img "VantaGov" [ref=e1722]
+              - generic [ref=e1723]:
+                - link "VantaGov" [ref=e1724] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/vanta-gov/
+                - generic [ref=e1728]: Not Installed
+              - generic [ref=e1731]: API
+            - generic [ref=e1733]:
+              - img "WatchDog Security" [ref=e1735]
+              - generic [ref=e1736]:
+                - link "WatchDog Security" [ref=e1737] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/watchdog-security/
+                - generic [ref=e1741]: Not Installed
+              - generic [ref=e1744]: API
+            - generic [ref=e1746]:
+              - img "WorkOS" [ref=e1748]
+              - generic [ref=e1749]:
+                - link "WorkOS" [ref=e1750] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/workos/
+                - generic [ref=e1754]: Not Installed
+              - generic [ref=e1757]: API
+            - generic [ref=e1759]:
+              - img "Xurrent IMR (Zenduty)" [ref=e1761]
+              - generic [ref=e1762]:
+                - link "Xurrent IMR (Zenduty)" [ref=e1763] [cursor=pointer]:
+                  - /url: /settings/sentry-apps/xurrent-imr/
+                - generic [ref=e1767]: Not Installed
+              - generic [ref=e1770]: API
