@@ -23,6 +23,7 @@ import type {
   DonmergeResolved,
   MemoryContext,
   PatternWeight,
+  FilePatch,
 } from './types';
 import {
   githubFetch,
@@ -43,6 +44,7 @@ import { buildCurrentIssues, type IssueBuilderContext } from './issue-builder';
 import { matchCurrentFindingsToStored, type CurrentIssue } from './issue-matcher';
 import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
 import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
+import { applyApprovalGate } from './approval-gate';
 import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError, withTimeout } from './utils';
 import { buildReviewPrompt } from './prompts';
 import {
@@ -109,6 +111,8 @@ interface PreparedFiles {
   repoContext: RepoContextType;
   donmergeResolved?: DonmergeResolved;
   activePreviousComments: PreviousComment[];
+  /** PR file patches captured in step 2, reused by step 4 for anchor validation. */
+  filePatches: FilePatch[];
 }
 
 interface LlmReviewResult {
@@ -435,6 +439,13 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       repoContext,
       donmergeResolved,
       activePreviousComments,
+      // Capture the reviewed file patches so step 4 can validate comment anchors
+      // without re-fetching listFiles. filesToReview is the filtered set the LLM
+      // actually saw, so it is the correct anchor scope.
+      filePatches: filesToReview.map((file) => ({
+        filename: file.filename,
+        patch: file.patch,
+      })),
     };
   }
 
@@ -752,8 +763,29 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       ),
     });
 
-    // Publish review
-    await publishReview(owner, repo, prNumber, headSha, filteredResult, githubToken, activePreviousComments);
+    // Approval gate: never approve while prior DonMerge threads are unresolved.
+    // Degrades (approved -> false, blocking REQUEST_CHANGES) rather than throwing,
+    // so valid new findings still post. activePreviousComments is pre-filtered
+    // to unresolved + DonMerge-authored in step 2.
+    const gated = applyApprovalGate(filteredResult, activePreviousComments);
+    if (gated.overridden) {
+      console.log('Approval gated by outstanding threads', {
+        outstandingCount: gated.outstandingCount,
+      });
+    }
+
+    // Publish review (validates anchors against threaded patches; returns dropped comments)
+    const droppedComments = await publishReview(
+      owner,
+      repo,
+      prNumber,
+      headSha,
+      gated.review,
+      githubToken,
+      activePreviousComments,
+      preparedFiles.filePatches,
+      prData.baseBranch
+    );
 
     // Attach comment IDs to new issues
     if (matchResult.newIssues.length > 0) {
@@ -773,24 +805,25 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       await (processorStub as any).saveTrackedIssuesRpc(merged);
     }
 
-    // Complete check run
-    await completeCheckRun(owner, repo, checkRunId, filteredResult, githubToken);
+    // Complete check run (surfaces dropped comments when present)
+    await completeCheckRun(owner, repo, checkRunId, gated.review, githubToken, droppedComments);
 
     // Update PR description
-    await updatePRDescription(owner, repo, prNumber, filteredResult, githubToken);
+    await updatePRDescription(owner, repo, prNumber, gated.review, githubToken);
 
     // Update DO status
     await (processorStub as any).updateFromWorkflow({
       state: 'complete',
       completedAt: new Date().toISOString(),
-      result: filteredResult,
+      result: gated.review,
     });
 
     console.log('Review completed successfully', {
       owner,
       repo,
       prNumber,
-      approved: filteredResult.approved,
+      approved: gated.review.approved,
+      approvalOverridden: gated.overridden,
     });
   }
 }

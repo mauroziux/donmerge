@@ -159,6 +159,21 @@ export interface ReviewComment {
   codeSnippet?: string;
 }
 
+/** A PR file with its unified-diff patch, threaded from prepare-files to publish-review. */
+export interface FilePatch {
+  filename: string;
+  patch?: string;
+}
+
+/** A review comment that was dropped because its anchor was invalid. */
+export interface DroppedComment {
+  path: string;
+  line: number;
+  startLine?: number;
+  side: 'LEFT' | 'RIGHT';
+  reason: string;
+}
+
 export interface PreviousComment {
   id: number;
   path: string;

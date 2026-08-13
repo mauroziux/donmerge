@@ -2,15 +2,33 @@
  * GitHub API operations for the code review workflow.
  */
 
-import type { PreviousComment, RepoContext, ReviewResult } from './types';
+import type { PreviousComment, RepoContext, ReviewResult, FilePatch, DroppedComment } from './types';
 import { ErrorCodeDescriptions, type ErrorCode } from './error-codes';
 import { attachFingerprint, computeFingerprint, parseFingerprint } from './fingerprint';
 import { normalizeEntityType, normalizeRuleId, normalizeSymbolName } from './issue-identity';
 import { deriveIssueKey } from './issue-key';
 import { filterCriticalIssuesByQuality, filterLineCommentsByQuality, hasBlockingFindings } from './processor-utils';
+import { buildCommentableMap, validateInlineComments } from './comment-anchors';
+import { GitHubApiError, withBoundedRetry, isTransientGitHubError, TRANSIENT_RETRY_DELAYS_MS } from './github-retry';
+import { isDegenerateReviewBody, DEGENERATE_BODY_FALLBACK, reviewSkipDecision } from './review-body-guard';
 
 const RESOLVED_REPLY_MARKER = '✅ **Fixed!**';
 const META_MARKER_PREFIX = '<!-- DONMERGE_META:';
+const REVIEW_META_PREFIX = '<!-- DONMERGE_REVIEW:';
+
+/**
+ * Build a per-review metadata HTML comment pinning the reviewed commit and base ref.
+ * Invisible in rendered markdown but machine-parseable, so a reader can tell whether
+ * findings are stale after a push. Distinct from the per-comment DONMERGE marker.
+ */
+function buildReviewMeta(input: { headSha: string; baseRef?: string }): string {
+  const payload = {
+    headSha: input.headSha,
+    baseRef: input.baseRef,
+    reviewedAt: new Date().toISOString(),
+  };
+  return `${REVIEW_META_PREFIX} ${JSON.stringify(payload)} -->\n\n`;
+}
 
 /**
  * Generic GitHub API fetch helper.
@@ -35,7 +53,7 @@ export async function githubFetch<T>(
 
   if (!response.ok) {
     const errorBody = await response.text();
-    throw new Error(`GitHub API error ${response.status}: ${errorBody}`);
+    throw new GitHubApiError(response.status, errorBody);
   }
 
   return (await response.json()) as T;
@@ -71,7 +89,8 @@ export async function completeCheckRun(
   repo: string,
   checkRunId: number,
   review: ReviewResult,
-  token: string
+  token: string,
+  droppedComments: DroppedComment[] = []
 ): Promise<void> {
   const approved = !hasBlockingFindings(review);
   const title = approved ? '✅ All good, compadre!' : '⚠️ Ojo, some things need attention';
@@ -85,6 +104,11 @@ export async function completeCheckRun(
       ? review.suggestions.map((issue) => `- ${issue}`).join('\n')
       : '- All clean!';
 
+  const droppedNote = formatDroppedCommentsNote(droppedComments);
+  const text = `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}${droppedNote}`;
+  // When comments were dropped, flag it in the title so it is visible at a glance.
+  const finalTitle = droppedComments.length > 0 ? `${title} · ${droppedComments.length} comment(s) dropped` : title;
+
   await githubFetch(
     `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}`,
     token,
@@ -94,9 +118,9 @@ export async function completeCheckRun(
       conclusion: approved ? 'success' : 'failure',
       completed_at: new Date().toISOString(),
       output: {
-        title,
+        title: finalTitle,
         summary: review.summary,
-        text: `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}`,
+        text,
       },
     }
   );
@@ -205,6 +229,11 @@ export async function fetchCommentById(
 
 /**
  * Publish a review with line comments.
+ *
+ * Pre-validates inline comment anchors against the PR file patches (when provided)
+ * so a single comment targeting a line outside a diff hunk cannot sink the whole
+ * review with a 422. Returns the list of dropped comments so the caller can
+ * surface them in the check-run summary.
  */
 export async function publishReview(
   owner: string,
@@ -213,8 +242,10 @@ export async function publishReview(
   headSha: string,
   review: ReviewResult,
   token: string,
-  previousComments?: PreviousComment[]
-): Promise<void> {
+  previousComments?: PreviousComment[],
+  filePatches?: FilePatch[],
+  baseRef?: string
+): Promise<DroppedComment[]> {
   const existingFingerprints = new Set<string>();
   if (previousComments && previousComments.length > 0) {
     for (const comment of previousComments) {
@@ -230,6 +261,22 @@ export async function publishReview(
     }
   }
 
+  // Pre-validate anchors before dedup: drop comments whose line is not inside a
+  // diff hunk so GitHub never 422s the whole review over one bad anchor.
+  let droppedComments: DroppedComment[] = [];
+  let candidateComments = review.lineComments;
+  if (filePatches && filePatches.length > 0) {
+    const commentableMap = buildCommentableMap(filePatches);
+    const validation = validateInlineComments(review.lineComments, commentableMap);
+    candidateComments = validation.valid;
+    droppedComments = validation.dropped;
+    if (droppedComments.length > 0) {
+      console.log(
+        `Dropping ${droppedComments.length}/${review.lineComments.length} inline comment(s) that do not anchor to PR diff lines`
+      );
+    }
+  }
+
   const uniqueLineComments: Array<{
     path: string;
     body: string;
@@ -237,7 +284,7 @@ export async function publishReview(
     side: 'LEFT' | 'RIGHT';
   }> = [];
 
-  for (const comment of review.lineComments) {
+  for (const comment of candidateComments) {
     const fingerprint = await computeFingerprint({
       path: comment.path,
       issueKey: comment.issueKey,
@@ -268,19 +315,58 @@ export async function publishReview(
 
   const comments = uniqueLineComments.slice(0, 40);
 
+  // Skip decision FIRST (on original intent): if there is nothing to post and
+  // it would 422 (empty non-approve COMMENT), skip the POST entirely. An empty
+  // APPROVE is legitimate and is NOT skipped.
+  const skip = reviewSkipDecision({
+    approved: review.approved,
+    body: review.summary,
+    hasComments: comments.length > 0,
+  });
+  if (skip) {
+    console.log(`Skipping review submission: ${skip.reason}`);
+    return droppedComments;
+  }
+
+  // THEN guard the body for reviews that will actually post: never publish a
+  // degenerate/placeholder summary verbatim. Substitute a safe fallback so the
+  // review still posts (with any valid comments) but never with placeholder text.
+  let body = review.summary;
+  if (isDegenerateReviewBody(body)) {
+    console.warn('Review summary is degenerate, substituting fallback', {
+      originalLength: body.length,
+    });
+    body = DEGENERATE_BODY_FALLBACK;
+  }
+
   const payload = {
     commit_id: headSha,
-    body: review.summary,
+    body: buildReviewMeta({ headSha, baseRef }) + body,
     event: review.approved ? 'COMMENT' : 'REQUEST_CHANGES',
     comments,
   };
 
-  await githubFetch(
-    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
-    token,
-    'POST',
-    payload
+  // Wrap the POST in a bounded retry for GitHub's transient "internal error" 422.
+  // bail predicate scopes retries to the transient body only — real validation 422s
+  // (anchor / body-length / suggestion) fail fast so they surface, not loop.
+  // Idempotency-safe: githubFetch throws on non-2xx before returning, so a
+  // successful post is never retried.
+  await withBoundedRetry(
+    () =>
+      githubFetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
+        token,
+        'POST',
+        payload
+      ),
+    {
+      delays: TRANSIENT_RETRY_DELAYS_MS,
+      bail: (err) => !isTransientGitHubError(err),
+      name: 'publishReview',
+    }
   );
+
+  return droppedComments;
 }
 
 export async function fetchReviewComments(
@@ -412,6 +498,28 @@ function collectCriticalFindings(review: ReviewResult): string[] {
 function summarizeCommentBody(body: string): string {
   const issueMatch = body.match(/(?:🔴\s*)?\*\*(?:Critical\s+)?Issue:\*\*\s*([^\n]+)/i);
   return issueMatch?.[1]?.trim() || body.split('\n')[0]?.trim() || 'Critical inline finding';
+}
+
+/** Cap the dropped-comment list so a pathological run doesn't blow past GitHub's ~65KB body limit. */
+const MAX_DROPPED_COMMENT_LINES = 10;
+
+/**
+ * Format dropped comments into a markdown note for the check-run text.
+ * Returns an empty string when there is nothing to report.
+ */
+export function formatDroppedCommentsNote(dropped: DroppedComment[]): string {
+  if (dropped.length === 0) return '';
+  const renderEntry = (d: DroppedComment): string => {
+    return `- \`${d.path}:${d.line}\` (${d.side}) — ${d.reason}`;
+  };
+  const shown = dropped.slice(0, MAX_DROPPED_COMMENT_LINES).map(renderEntry);
+  const remainder = dropped.length - shown.length;
+  if (remainder > 0) shown.push(`- …and ${remainder} more dropped comment(s) not shown`);
+  return (
+    `\n\n---\n\n` +
+    `**Note:** ${dropped.length} inline comment(s) dropped because they did not anchor to lines inside the PR diff:\n` +
+    shown.join('\n')
+  );
 }
 
 /**
