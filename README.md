@@ -198,8 +198,11 @@ Key variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `KIMI_API_KEY` | Yes | Kimi Code API key for the primary `kimi/k3` reviewer |
-| `OPENAI_API_KEY` | Yes | OpenAI API key for automatic fallback (`openai/gpt-4o` by default) |
+| `CF_AI_GATEWAY_URL` | Gateway mode | CF AI Gateway base (`https://gateway.ai.cloudflare.com/v1/{acct}/{gw}`). When set with the two below, ALL LLM traffic routes through the gateway (DeepSeek→GLM→Gemini). See [docs/PULLFROG-GAP-CLOSURES.md](./docs/PULLFROG-GAP-CLOSURES.md). |
+| `CF_AI_GATEWAY_TOKEN` | Gateway mode | CF API token for gateway invocation |
+| `CF_AI_GATEWAY_ROUTE` | Gateway mode | Gateway route **name** (e.g. `donmerge-text-fallback`) |
+| `KIMI_API_KEY` | Non-gateway | Kimi Code API key for the primary `kimi/k3` reviewer (unused when gateway mode is on) |
+| `OPENAI_API_KEY` | Non-gateway | OpenAI API key for automatic fallback (`openai/gpt-4o` by default) |
 | `CODEX_MODEL` | No | Primary model in `provider/model` format (default: `kimi/k3`) |
 | `FALLBACK_MODEL` | No | Fallback model attempted if the primary provider fails (default: `openai/gpt-4o`) |
 | `ANTHROPIC_API_KEY` | No | Anthropic API key (enables Claude models for auto-fix V2) |

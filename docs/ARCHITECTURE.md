@@ -10,6 +10,7 @@ This document describes the system architecture of DonMerge — an AI-powered co
 - [Code Review Pipeline](#code-review-pipeline)
 - [Quality Calibration System](#quality-calibration-system)
 - [Issue Tracking Lifecycle](#issue-tracking-lifecycle)
+- [Publish-Path Guards](#publish-path-guards)
 - [Error Handling and Retries](#error-handling-and-retries)
 - [Configuration](#configuration)
 
@@ -329,6 +330,18 @@ When a re-trigger occurs, previous DonMerge comments are fetched and used to:
 
 ---
 
+## Publish-Path Guards
+
+Step 4 (publish) applies a series of mechanical guards before posting a review, so a single malformed comment or a flaky GitHub moment can never sink a review or post garbage to a customer PR. See [docs/PULLFROG-GAP-CLOSURES.md](./PULLFROG-GAP-CLOSURES.md) for the full rationale (adapted from pullfrog).
+
+1. **Anchor validation** (`comment-anchors.ts`): inline comments whose line is outside a diff hunk are dropped before the POST. Dropped comments are listed in the check-run summary and the review body.
+2. **Degenerate body guard** (`review-body-guard.ts`): placeholder/empty LLM summaries are replaced with a safe fallback before publishing.
+3. **Empty-submission skip**: a non-approving review with no body and no comments is skipped (GitHub 422s an empty `COMMENT`). Empty `APPROVE` is still posted.
+4. **Transient 422 retry** (`github-retry.ts`): GitHub's transient "internal error" 422 is retried with bounded backoff; validation 422s fail fast.
+5. **Outstanding-threads approval gate** (`approval-gate.ts`): `approved` is forced to `false` if any prior DonMerge-originated thread is unresolved, so a PR is never approved while known issues remain open.
+6. **Reviewed-SHA metadata**: every review body carries a `<!-- DONMERGE_REVIEW: {headSha, baseRef, reviewedAt} -->` marker so staleness is visible after a push.
+7. **Patch cache**: PR file patches thread from step 2 to step 4, avoiding a redundant `listFiles` call.
+
 ## Error Handling and Retries
 
 ### Workflow Step Retries
@@ -440,11 +453,15 @@ Cloudflare Workflow step outputs are inspectable through the Workflows API and C
 
 ### LLM Provider Routing
 
-`CODEX_MODEL` selects the primary model for code review and triage. The default is `kimi/k3`, implemented as a custom OpenCode provider using Kimi Code's OpenAI-compatible endpoint (`https://api.kimi.com/coding/v1`). `FALLBACK_MODEL` defaults to `openai/gpt-4o` and is attempted if the primary provider fails or cannot produce a valid review response after its format retry.
+DonMerge supports two LLM routing modes:
+
+**1. Per-provider mode (default).** `CODEX_MODEL` selects the primary model (`kimi/k3` by default, a custom OpenCode provider using Kimi Code's OpenAI-compatible endpoint). `FALLBACK_MODEL` defaults to `openai/gpt-4o` and is attempted if the primary fails. The app-layer fallback list (primary → GLM → OpenAI) is built in code.
+
+**2. AI Gateway mode.** When `CF_AI_GATEWAY_URL` + `CF_AI_GATEWAY_TOKEN` + `CF_AI_GATEWAY_ROUTE` are set, ALL LLM traffic (code review and triage, both the Flue/OpenCode sandbox path and the direct-fetch auto-fix path) routes through a single Cloudflare AI Gateway route. The gateway's routing config owns the fallback chain (e.g. DeepSeek v4 Flash → GLM 5.2 → Gemini Flash 3.6), retries, and caching — collapsing the per-provider fallback into one infra-managed endpoint. In this mode a single `aigateway` provider is registered and the app-layer fallback is disabled. See [docs/PULLFROG-GAP-CLOSURES.md](./PULLFROG-GAP-CLOSURES.md) for the invocation format and provisioning reference.
 
 The model provider is independent of DonMerge's review quality gate: every response still passes JSON validation, normalization, quality filtering, severity calibration, and issue matching before publication.
 
-**Operational note:** Kimi can exceed the current five-minute LLM workflow step timeout on large diffs (for example, a 34-file PR took about 6.4 minutes in production validation). Keep `MAX_REVIEW_FILES` conservative or increase the step timeout before relying on Kimi for large reviews.
+**Operational note:** Gateway-mode reviews take ~5-7 min (gateway routing overhead); direct Kimi reviews took ~60-90s. The gateway adds latency but centralizes fallback/retries/caching and removes the multi-key dependency. Keep `MAX_REVIEW_FILES` conservative for either mode.
 
 ### `.donmerge` Configuration File
 
