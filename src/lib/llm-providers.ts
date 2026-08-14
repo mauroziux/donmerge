@@ -25,6 +25,91 @@ export const GLM_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
 /** OpenAI public API base URL. */
 export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
+// ── Cloudflare AI Gateway (infra-layer fallback) ────────────────────────────
+//
+// When CF_AI_GATEWAY_URL + CF_AI_GATEWAY_TOKEN + CF_AI_GATEWAY_ROUTE are set,
+// ALL LLM traffic routes through a single AI Gateway route. The gateway's
+// routing config owns the fallback chain (e.g. DeepSeek -> GLM -> Llama) and
+// retries/caching, so DonMerge registers ONE provider and skips its app-layer
+// fallback. This collapses KIMI/GLM/OPENAI keys into one CF token.
+
+/** Provider + model IDs used when the AI Gateway is enabled. */
+export const AI_GATEWAY_PROVIDER_ID = 'aigateway';
+export const AI_GATEWAY_MODEL_ID = 'donmerge-text';
+
+export interface AiGatewayEnv {
+  CF_AI_GATEWAY_URL?: string;
+  CF_AI_GATEWAY_TOKEN?: string;
+  CF_AI_GATEWAY_ROUTE?: string;
+}
+
+/** True iff the AI Gateway env vars are configured (gateway mode active). */
+export function aiGatewayEnabled(env: AiGatewayEnv): boolean {
+  return Boolean(
+    env.CF_AI_GATEWAY_URL && env.CF_AI_GATEWAY_TOKEN && env.CF_AI_GATEWAY_ROUTE
+  );
+}
+
+/** Full OpenAI-compatible endpoint for a gateway route. */
+export function aiGatewayRouteUrl(gatewayUrl: string, routeId: string): string {
+  const base = gatewayUrl.replace(/\/$/, '');
+  return `${base}/route/${routeId}`;
+}
+
+/**
+ * Build an OpenCode provider entry that routes through a CF AI Gateway route.
+ * The gateway authenticates with the CF token (sent as the API key) and applies
+ * its routing config (fallback chain, retries, caching). The model field sent
+ * by OpenCode is nominal — the route decides which upstream provider handles it.
+ */
+export function buildAiGatewayProviderConfig(
+  token: string,
+  routeUrl: string
+): Record<string, unknown> {
+  return {
+    npm: '@ai-sdk/openai-compatible',
+    name: 'CF AI Gateway',
+    options: {
+      baseURL: routeUrl,
+      apiKey: token,
+    },
+    models: {
+      [AI_GATEWAY_MODEL_ID]: {
+        name: 'DonMerge Text (gateway-routed fallback chain)',
+      },
+    },
+  };
+}
+
+/**
+ * Build the opencodeConfig for gateway mode: a single `aigateway` provider.
+ * Replaces the per-provider kimi/glm config when the gateway is enabled.
+ */
+export function buildAiGatewayOpencodeConfig(env: AiGatewayEnv): {
+  provider: Record<string, unknown>;
+} {
+  const routeUrl = aiGatewayRouteUrl(env.CF_AI_GATEWAY_URL!, env.CF_AI_GATEWAY_ROUTE!);
+  return {
+    provider: {
+      [AI_GATEWAY_PROVIDER_ID]: buildAiGatewayProviderConfig(env.CF_AI_GATEWAY_TOKEN!, routeUrl),
+    },
+  };
+}
+
+/**
+ * Resolve the base URL for the direct-fetch LLM client (triage auto-fix).
+ * Returns the gateway route URL when gateway mode is on, else the provider URL.
+ */
+export function resolveDirectFetchBaseURL(
+  providerID: string,
+  env: AiGatewayEnv
+): string {
+  if (aiGatewayEnabled(env)) {
+    return aiGatewayRouteUrl(env.CF_AI_GATEWAY_URL!, env.CF_AI_GATEWAY_ROUTE!);
+  }
+  return resolveOpenAIBaseURL(providerID);
+}
+
 /** Default primary model (provider/model format consumed by parseModelConfig). */
 export const DEFAULT_PRIMARY_MODEL = 'kimi/k3';
 

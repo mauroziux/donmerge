@@ -50,6 +50,10 @@ import { buildReviewPrompt } from './prompts';
 import {
   buildOpencodeConfig,
   resolveFallbackModel,
+  aiGatewayEnabled,
+  buildAiGatewayOpencodeConfig,
+  AI_GATEWAY_PROVIDER_ID,
+  AI_GATEWAY_MODEL_ID,
   type ModelConfig,
 } from '../../lib/llm-providers';
 import {
@@ -473,13 +477,17 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     const sessionId = `review-${prData.owner}-${prData.repo}-${prData.prNumber}-${Date.now()}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
+    const gatewayEnabled = aiGatewayEnabled(this.env);
     const flue = new FlueRuntime({
       sandbox,
       sessionId,
       workdir: '/home/user',
-      // Register Kimi K3 and GLM 5.2 as custom OpenAI-compatible providers so OpenCode
-      // can route "kimi/k3" and "glm/5.2" model IDs. OpenAI stays available as fallback.
-      opencodeConfig: buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
+      // Gateway mode: a single `aigateway` provider routes through the CF AI
+      // Gateway, whose routing config owns the fallback chain (DeepSeek -> GLM
+      // -> Gemini). Otherwise register Kimi/GLM as separate providers.
+      opencodeConfig: gatewayEnabled
+        ? buildAiGatewayOpencodeConfig(this.env)
+        : buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
     });
 
     await sandbox.setEnvVars({
@@ -490,27 +498,30 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     });
     await flue.setup();
 
-    // Resolve primary + fallback models. Primary comes from the per-request
-    // override (push API) or CODEX_MODEL (default kimi/k3).
-    const primaryModel = prData.model
-      ? parseModelConfig(prData.model)
-      : parseModelConfig(this.env.CODEX_MODEL);
-    const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
-
-    // Build the prioritized fallback model list
-    const models: ModelConfig[] = [primaryModel];
-    const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
-    if (hasGlmKey) {
-      const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
-      if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
-        models.push(glmModel);
+    // Resolve the model list. In gateway mode there is a single model (the
+    // gateway applies the fallback chain); otherwise build the prioritized list.
+    let models: ModelConfig[];
+    if (gatewayEnabled) {
+      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: AI_GATEWAY_MODEL_ID }];
+    } else {
+      const primaryModel = prData.model
+        ? parseModelConfig(prData.model)
+        : parseModelConfig(this.env.CODEX_MODEL);
+      const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
+      models = [primaryModel];
+      const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
+      if (hasGlmKey) {
+        const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
+        if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
+          models.push(glmModel);
+        }
       }
-    }
-    const fallbackAlreadyInList = models.some(
-      m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
-    );
-    if (!fallbackAlreadyInList) {
-      models.push(fallbackModel);
+      const fallbackAlreadyInList = models.some(
+        m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
+      );
+      if (!fallbackAlreadyInList) {
+        models.push(fallbackModel);
+      }
     }
 
     const prompt = buildReviewPrompt(

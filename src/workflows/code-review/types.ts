@@ -11,6 +11,11 @@ export interface WorkerEnv {
   GLM_API_KEY?: string;
   /** Optional Anthropic key (used by triage auto-fix). */
   ANTHROPIC_API_KEY?: string;
+  /** Cloudflare AI Gateway — when all three are set, ALL LLM traffic routes through
+   *  this gateway route (infra-layer fallback chain). Collapses KIMI/GLM/OPENAI keys. */
+  CF_AI_GATEWAY_URL?: string;
+  CF_AI_GATEWAY_TOKEN?: string;
+  CF_AI_GATEWAY_ROUTE?: string;
   GITHUB_WEBHOOK_SECRET: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;

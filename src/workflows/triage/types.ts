@@ -158,6 +158,11 @@ export interface TriageEnv {
   /** GLM 5.2 API key (Zhipu Coding Plan, OpenAI-compatible). */
   GLM_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  /** Cloudflare AI Gateway — when all three are set, ALL LLM traffic routes through
+   *  this gateway route (infra-layer fallback chain). */
+  CF_AI_GATEWAY_URL?: string;
+  CF_AI_GATEWAY_TOKEN?: string;
+  CF_AI_GATEWAY_ROUTE?: string;
   /** Primary model in "provider/model" form (e.g. "kimi/k3"). */
   CODEX_MODEL?: string;
   /** Fallback model used when the primary provider fails (e.g. "openai/gpt-4o"). */
