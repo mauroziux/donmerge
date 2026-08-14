@@ -28,6 +28,10 @@ import { parseModelConfig, safeJsonParse, extractRawFlueResponse, extractJsonFro
 import {
   buildOpencodeConfig,
   resolveFallbackModel,
+  aiGatewayEnabled,
+  buildAiGatewayOpencodeConfig,
+  aiGatewayModelId,
+  AI_GATEWAY_PROVIDER_ID,
   type ModelConfig,
 } from '../../lib/llm-providers';
 
@@ -172,13 +176,16 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     // 2. Create shared sandbox+flue for both triage and auto-fix
     const sessionId = `triage-${context.jobId}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
+    const gatewayEnabled = aiGatewayEnabled(this.env);
     const flue = new FlueRuntime({
       sandbox,
       sessionId,
       workdir: '/home/user',
-      // Register Kimi K3 and GLM 5.2 as custom OpenAI-compatible providers so OpenCode
-      // can route "kimi/k3" and "glm/5.2" model IDs. OpenAI stays available as fallback.
-      opencodeConfig: buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
+      // Gateway mode: single `aigateway` provider (CF AI Gateway owns the
+      // fallback chain). Otherwise register Kimi/GLM as separate providers.
+      opencodeConfig: gatewayEnabled
+        ? buildAiGatewayOpencodeConfig(this.env)
+        : buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
     });
     await sandbox.setEnvVars({
       OPENAI_API_KEY: this.env.OPENAI_API_KEY,
@@ -279,23 +286,27 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     sourceCode: Map<string, string>,
     flue: FlueRuntime
   ): Promise<TriageOutput> {
-    const primaryModel = parseModelConfig(this.env.CODEX_MODEL);
-    const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
-
-    // Build the prioritized fallback model list
-    const models: ModelConfig[] = [primaryModel];
-    const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
-    if (hasGlmKey) {
-      const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
-      if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
-        models.push(glmModel);
+    const gatewayEnabled = aiGatewayEnabled(this.env);
+    let models: ModelConfig[];
+    if (gatewayEnabled) {
+      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }];
+    } else {
+      const primaryModel = parseModelConfig(this.env.CODEX_MODEL);
+      const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
+      models = [primaryModel];
+      const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
+      if (hasGlmKey) {
+        const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
+        if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
+          models.push(glmModel);
+        }
       }
-    }
-    const fallbackAlreadyInList = models.some(
-      m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
-    );
-    if (!fallbackAlreadyInList) {
-      models.push(fallbackModel);
+      const fallbackAlreadyInList = models.some(
+        m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
+      );
+      if (!fallbackAlreadyInList) {
+        models.push(fallbackModel);
+      }
     }
 
     const prompt = buildTriagePrompt({

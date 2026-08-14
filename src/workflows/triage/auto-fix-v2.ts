@@ -29,6 +29,10 @@ import {
   resolveOpenAIBaseURL,
   resolveFallbackModel,
   selectApiKey,
+  aiGatewayEnabled,
+  aiGatewayCompatUrl,
+  aiGatewayModelId,
+  AI_GATEWAY_PROVIDER_ID,
 } from '../../lib/llm-providers';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -357,7 +361,7 @@ async function callAnthropic(
   return textBlock.text;
 }
 
-type LlmApiKey = { openai: string; kimi?: string; anthropic?: string };
+type LlmApiKey = { openai: string; kimi?: string; anthropic?: string; gatewayCompatUrl?: string };
 
 /**
  * Route LLM calls to the correct provider based on modelConfig.providerID.
@@ -371,6 +375,12 @@ async function callLLM(
   messages: Array<{ role: string; content: string }>,
   modelConfig: { providerID: string; modelID: string },
 ): Promise<string> {
+  // Gateway mode: route every call through the CF AI Gateway compat endpoint
+  // with the CF token (stored in apiKeys.openai). The model field carries the
+  // `dynamic/{route}` selector; the gateway applies its fallback chain.
+  if (apiKeys.gatewayCompatUrl) {
+    return callOpenAI(apiKeys.openai, messages, modelConfig, apiKeys.gatewayCompatUrl);
+  }
   switch (modelConfig.providerID) {
     case 'anthropic': {
       const key = apiKeys.anthropic ?? apiKeys.openai;
@@ -539,16 +549,25 @@ async function runAgentLoop(
 ): Promise<AgentResult> {
   const primaryModel = parseModelConfig(env.CODEX_MODEL);
   const fallbackModel = resolveFallbackModel(env.FALLBACK_MODEL);
-  const models =
-    primaryModel.providerID === fallbackModel.providerID &&
-    primaryModel.modelID === fallbackModel.modelID
-      ? [primaryModel]
-      : [primaryModel, fallbackModel];
-  const apiKeys: LlmApiKey = {
-    openai: env.OPENAI_API_KEY,
-    kimi: env.KIMI_API_KEY,
-    anthropic: env.ANTHROPIC_API_KEY,
-  };
+  const gatewayEnabled = aiGatewayEnabled(env);
+  const models = gatewayEnabled
+    ? [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(env.CF_AI_GATEWAY_ROUTE!) }]
+    : (
+        primaryModel.providerID === fallbackModel.providerID &&
+        primaryModel.modelID === fallbackModel.modelID
+          ? [primaryModel]
+          : [primaryModel, fallbackModel]
+      );
+  const apiKeys: LlmApiKey = gatewayEnabled
+    ? {
+        openai: env.CF_AI_GATEWAY_TOKEN!,
+        gatewayCompatUrl: aiGatewayCompatUrl(env.CF_AI_GATEWAY_URL!),
+      }
+    : {
+        openai: env.OPENAI_API_KEY,
+        kimi: env.KIMI_API_KEY,
+        anthropic: env.ANTHROPIC_API_KEY,
+      };
   const systemPrompt = buildSystemPrompt(context.errorTitle, context.triageOutput, pathResolveResult);
 
   const messages: Array<{ role: string; content: string }> = [

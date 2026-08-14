@@ -21,6 +21,12 @@ import {
   buildOpencodeConfig,
   resolveFallbackModel,
   selectApiKey,
+  aiGatewayEnabled,
+  aiGatewayCompatUrl,
+  aiGatewayModelId,
+  buildAiGatewayOpencodeConfig,
+  resolveDirectFetchBaseURL,
+  AI_GATEWAY_PROVIDER_ID,
 } from '../llm-providers';
 
 describe('llm-providers', () => {
@@ -177,5 +183,65 @@ describe('llm-providers', () => {
       selectApiKey('anthropic', { openai: 'sk-oai', anthropic: 'sk-ant' })
     ).toBe('sk-ant');
     expect(selectApiKey('anthropic', { openai: 'sk-oai' })).toBe('sk-oai');
+  });
+});
+
+describe('AI Gateway integration', () => {
+  it('aiGatewayEnabled is false when any env var is missing', () => {
+    expect(aiGatewayEnabled({})).toBe(false);
+    expect(aiGatewayEnabled({ CF_AI_GATEWAY_URL: 'x' })).toBe(false);
+    expect(aiGatewayEnabled({ CF_AI_GATEWAY_URL: 'x', CF_AI_GATEWAY_TOKEN: 'y' })).toBe(false);
+  });
+
+  it('aiGatewayEnabled is true when all three env vars are set', () => {
+    expect(
+      aiGatewayEnabled({
+        CF_AI_GATEWAY_URL: 'https://gateway.ai.cloudflare.com/v1/acct/gw',
+        CF_AI_GATEWAY_TOKEN: 'cfut_x',
+        CF_AI_GATEWAY_ROUTE: 'route-id',
+      })
+    ).toBe(true);
+  });
+
+  it('aiGatewayCompatUrl builds the OpenAI-compatible compat base (SDK appends /chat/completions)', () => {
+    expect(aiGatewayCompatUrl('https://gateway.ai.cloudflare.com/v1/acct/gw')).toBe(
+      'https://gateway.ai.cloudflare.com/v1/acct/gw/compat'
+    );
+  });
+
+  it('aiGatewayCompatUrl strips a trailing slash', () => {
+    expect(aiGatewayCompatUrl('https://x/v1/acct/gw/')).toBe('https://x/v1/acct/gw/compat');
+  });
+
+  it('aiGatewayModelId produces the dynamic/{route} selector', () => {
+    expect(aiGatewayModelId('donmerge-text-fallback')).toBe('dynamic/donmerge-text-fallback');
+  });
+
+  it('buildAiGatewayOpencodeConfig registers a single aigateway provider with compat baseURL and dynamic model', () => {
+    const config = buildAiGatewayOpencodeConfig({
+      CF_AI_GATEWAY_URL: 'https://gateway.ai.cloudflare.com/v1/acct/gw',
+      CF_AI_GATEWAY_TOKEN: 'cfut_token',
+      CF_AI_GATEWAY_ROUTE: 'route-123',
+    });
+    expect(config.provider).toHaveProperty(AI_GATEWAY_PROVIDER_ID);
+    const provider = (config.provider as Record<string, any>)[AI_GATEWAY_PROVIDER_ID];
+    expect(provider.options.baseURL).toBe(
+      'https://gateway.ai.cloudflare.com/v1/acct/gw/compat'
+    );
+    expect(provider.options.apiKey).toBe('cfut_token');
+    expect(provider.models).toHaveProperty('dynamic/route-123');
+  });
+
+  it('resolveDirectFetchBaseURL returns the compat URL when gateway is enabled', () => {
+    const env = {
+      CF_AI_GATEWAY_URL: 'https://gateway.ai.cloudflare.com/v1/acct/gw',
+      CF_AI_GATEWAY_TOKEN: 't',
+      CF_AI_GATEWAY_ROUTE: 'r',
+    };
+    expect(resolveDirectFetchBaseURL('kimi', env)).toBe(
+      'https://gateway.ai.cloudflare.com/v1/acct/gw/compat'
+    );
+    // falls back to provider URL when gateway is off
+    expect(resolveDirectFetchBaseURL('kimi', {})).toBe(KIMI_BASE_URL);
   });
 });

@@ -23,6 +23,7 @@ import type {
   DonmergeResolved,
   MemoryContext,
   PatternWeight,
+  FilePatch,
 } from './types';
 import {
   githubFetch,
@@ -43,11 +44,16 @@ import { buildCurrentIssues, type IssueBuilderContext } from './issue-builder';
 import { matchCurrentFindingsToStored, type CurrentIssue } from './issue-matcher';
 import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
 import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
+import { applyApprovalGate } from './approval-gate';
 import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError, withTimeout } from './utils';
 import { buildReviewPrompt } from './prompts';
 import {
   buildOpencodeConfig,
   resolveFallbackModel,
+  aiGatewayEnabled,
+  buildAiGatewayOpencodeConfig,
+  aiGatewayModelId,
+  AI_GATEWAY_PROVIDER_ID,
   type ModelConfig,
 } from '../../lib/llm-providers';
 import {
@@ -109,6 +115,8 @@ interface PreparedFiles {
   repoContext: RepoContextType;
   donmergeResolved?: DonmergeResolved;
   activePreviousComments: PreviousComment[];
+  /** PR file patches captured in step 2, reused by step 4 for anchor validation. */
+  filePatches: FilePatch[];
 }
 
 interface LlmReviewResult {
@@ -435,6 +443,13 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       repoContext,
       donmergeResolved,
       activePreviousComments,
+      // Capture the reviewed file patches so step 4 can validate comment anchors
+      // without re-fetching listFiles. filesToReview is the filtered set the LLM
+      // actually saw, so it is the correct anchor scope.
+      filePatches: filesToReview.map((file) => ({
+        filename: file.filename,
+        patch: file.patch,
+      })),
     };
   }
 
@@ -462,13 +477,17 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     const sessionId = `review-${prData.owner}-${prData.repo}-${prData.prNumber}-${Date.now()}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
+    const gatewayEnabled = aiGatewayEnabled(this.env);
     const flue = new FlueRuntime({
       sandbox,
       sessionId,
       workdir: '/home/user',
-      // Register Kimi K3 and GLM 5.2 as custom OpenAI-compatible providers so OpenCode
-      // can route "kimi/k3" and "glm/5.2" model IDs. OpenAI stays available as fallback.
-      opencodeConfig: buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
+      // Gateway mode: a single `aigateway` provider routes through the CF AI
+      // Gateway, whose routing config owns the fallback chain (DeepSeek -> GLM
+      // -> Gemini). Otherwise register Kimi/GLM as separate providers.
+      opencodeConfig: gatewayEnabled
+        ? buildAiGatewayOpencodeConfig(this.env)
+        : buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
     });
 
     await sandbox.setEnvVars({
@@ -479,27 +498,30 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     });
     await flue.setup();
 
-    // Resolve primary + fallback models. Primary comes from the per-request
-    // override (push API) or CODEX_MODEL (default kimi/k3).
-    const primaryModel = prData.model
-      ? parseModelConfig(prData.model)
-      : parseModelConfig(this.env.CODEX_MODEL);
-    const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
-
-    // Build the prioritized fallback model list
-    const models: ModelConfig[] = [primaryModel];
-    const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
-    if (hasGlmKey) {
-      const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
-      if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
-        models.push(glmModel);
+    // Resolve the model list. In gateway mode there is a single model (the
+    // gateway applies the fallback chain); otherwise build the prioritized list.
+    let models: ModelConfig[];
+    if (gatewayEnabled) {
+      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }];
+    } else {
+      const primaryModel = prData.model
+        ? parseModelConfig(prData.model)
+        : parseModelConfig(this.env.CODEX_MODEL);
+      const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
+      models = [primaryModel];
+      const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
+      if (hasGlmKey) {
+        const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
+        if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
+          models.push(glmModel);
+        }
       }
-    }
-    const fallbackAlreadyInList = models.some(
-      m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
-    );
-    if (!fallbackAlreadyInList) {
-      models.push(fallbackModel);
+      const fallbackAlreadyInList = models.some(
+        m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
+      );
+      if (!fallbackAlreadyInList) {
+        models.push(fallbackModel);
+      }
     }
 
     const prompt = buildReviewPrompt(
@@ -752,8 +774,29 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       ),
     });
 
-    // Publish review
-    await publishReview(owner, repo, prNumber, headSha, filteredResult, githubToken, activePreviousComments);
+    // Approval gate: never approve while prior DonMerge threads are unresolved.
+    // Degrades (approved -> false, blocking REQUEST_CHANGES) rather than throwing,
+    // so valid new findings still post. activePreviousComments is pre-filtered
+    // to unresolved + DonMerge-authored in step 2.
+    const gated = applyApprovalGate(filteredResult, activePreviousComments);
+    if (gated.overridden) {
+      console.log('Approval gated by outstanding threads', {
+        outstandingCount: gated.outstandingCount,
+      });
+    }
+
+    // Publish review (validates anchors against threaded patches; returns dropped comments)
+    const droppedComments = await publishReview(
+      owner,
+      repo,
+      prNumber,
+      headSha,
+      gated.review,
+      githubToken,
+      activePreviousComments,
+      preparedFiles.filePatches,
+      prData.baseBranch
+    );
 
     // Attach comment IDs to new issues
     if (matchResult.newIssues.length > 0) {
@@ -773,24 +816,25 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       await (processorStub as any).saveTrackedIssuesRpc(merged);
     }
 
-    // Complete check run
-    await completeCheckRun(owner, repo, checkRunId, filteredResult, githubToken);
+    // Complete check run (surfaces dropped comments when present)
+    await completeCheckRun(owner, repo, checkRunId, gated.review, githubToken, droppedComments);
 
     // Update PR description
-    await updatePRDescription(owner, repo, prNumber, filteredResult, githubToken);
+    await updatePRDescription(owner, repo, prNumber, gated.review, githubToken);
 
     // Update DO status
     await (processorStub as any).updateFromWorkflow({
       state: 'complete',
       completedAt: new Date().toISOString(),
-      result: filteredResult,
+      result: gated.review,
     });
 
     console.log('Review completed successfully', {
       owner,
       repo,
       prNumber,
-      approved: filteredResult.approved,
+      approved: gated.review.approved,
+      approvalOverridden: gated.overridden,
     });
   }
 }

@@ -11,6 +11,11 @@ export interface WorkerEnv {
   GLM_API_KEY?: string;
   /** Optional Anthropic key (used by triage auto-fix). */
   ANTHROPIC_API_KEY?: string;
+  /** Cloudflare AI Gateway — when all three are set, ALL LLM traffic routes through
+   *  this gateway route (infra-layer fallback chain). Collapses KIMI/GLM/OPENAI keys. */
+  CF_AI_GATEWAY_URL?: string;
+  CF_AI_GATEWAY_TOKEN?: string;
+  CF_AI_GATEWAY_ROUTE?: string;
   GITHUB_WEBHOOK_SECRET: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
@@ -157,6 +162,21 @@ export interface ReviewComment {
   entityType?: 'method' | 'function' | 'class' | 'variable' | 'module';
   symbolName?: string;
   codeSnippet?: string;
+}
+
+/** A PR file with its unified-diff patch, threaded from prepare-files to publish-review. */
+export interface FilePatch {
+  filename: string;
+  patch?: string;
+}
+
+/** A review comment that was dropped because its anchor was invalid. */
+export interface DroppedComment {
+  path: string;
+  line: number;
+  startLine?: number;
+  side: 'LEFT' | 'RIGHT';
+  reason: string;
 }
 
 export interface PreviousComment {

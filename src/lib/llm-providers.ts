@@ -25,6 +25,109 @@ export const GLM_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
 /** OpenAI public API base URL. */
 export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
+// ── Cloudflare AI Gateway (infra-layer fallback) ────────────────────────────
+//
+// When CF_AI_GATEWAY_URL + CF_AI_GATEWAY_TOKEN + CF_AI_GATEWAY_ROUTE are set,
+// ALL LLM traffic routes through a single AI Gateway route. The gateway's
+// routing config owns the fallback chain (e.g. DeepSeek -> GLM -> Llama) and
+// retries/caching, so DonMerge registers ONE provider and skips its app-layer
+// fallback. This collapses KIMI/GLM/OPENAI keys into one CF token.
+
+/** Provider ID used when the AI Gateway is enabled. */
+export const AI_GATEWAY_PROVIDER_ID = 'aigateway';
+
+export interface AiGatewayEnv {
+  CF_AI_GATEWAY_URL?: string;
+  CF_AI_GATEWAY_TOKEN?: string;
+  /** Route NAME (not ID), e.g. "donmerge-text-fallback". Used in the `dynamic/{name}` model field. */
+  CF_AI_GATEWAY_ROUTE?: string;
+}
+
+/** True iff the AI Gateway env vars are configured (gateway mode active). */
+export function aiGatewayEnabled(env: AiGatewayEnv): boolean {
+  return Boolean(
+    env.CF_AI_GATEWAY_URL && env.CF_AI_GATEWAY_TOKEN && env.CF_AI_GATEWAY_ROUTE
+  );
+}
+
+/**
+ * OpenAI-compatible base URL for the gateway. OpenAI-compatible clients append
+ * `/chat/completions` to this, hitting the CF AI Gateway Dynamic Routing
+ * compat endpoint: {gatewayUrl}/compat/chat/completions.
+ */
+export function aiGatewayCompatUrl(gatewayUrl: string): string {
+  return `${gatewayUrl.replace(/\/$/, '')}/compat`;
+}
+
+/**
+ * The model string a client must send to select a gateway route. CF AI Gateway
+ * Dynamic Routing expects `model: "dynamic/{routeName}"`.
+ */
+export function aiGatewayModelId(routeName: string): string {
+  return `dynamic/${routeName}`;
+}
+
+/**
+ * Build an OpenCode provider entry that routes through a CF AI Gateway route.
+ * The CF token is sent as the standard `Authorization: Bearer` API key (the
+ * gateway accepts it on the compat endpoint). The gateway applies its routing
+ * config (fallback chain, retries, caching) based on the `dynamic/{route}` model.
+ */
+export function buildAiGatewayProviderConfig(
+  token: string,
+  compatUrl: string,
+  routeName: string
+): Record<string, unknown> {
+  const modelId = aiGatewayModelId(routeName);
+  return {
+    npm: '@ai-sdk/openai-compatible',
+    name: 'CF AI Gateway',
+    options: {
+      baseURL: compatUrl,
+      apiKey: token,
+    },
+    models: {
+      [modelId]: {
+        name: `DonMerge gateway route: ${routeName}`,
+      },
+    },
+  };
+}
+
+/**
+ * Build the opencodeConfig for gateway mode: a single `aigateway` provider.
+ * Replaces the per-provider kimi/glm config when the gateway is enabled.
+ */
+export function buildAiGatewayOpencodeConfig(env: AiGatewayEnv): {
+  provider: Record<string, unknown>;
+} {
+  const compatUrl = aiGatewayCompatUrl(env.CF_AI_GATEWAY_URL!);
+  return {
+    provider: {
+      [AI_GATEWAY_PROVIDER_ID]: buildAiGatewayProviderConfig(
+        env.CF_AI_GATEWAY_TOKEN!,
+        compatUrl,
+        env.CF_AI_GATEWAY_ROUTE!
+      ),
+    },
+  };
+}
+
+/**
+ * Resolve the base URL for the direct-fetch LLM client (triage auto-fix).
+ * Returns the gateway compat URL when gateway mode is on, else the provider URL.
+ * callOpenAI appends `/chat/completions` to this.
+ */
+export function resolveDirectFetchBaseURL(
+  providerID: string,
+  env: AiGatewayEnv
+): string {
+  if (aiGatewayEnabled(env)) {
+    return aiGatewayCompatUrl(env.CF_AI_GATEWAY_URL!);
+  }
+  return resolveOpenAIBaseURL(providerID);
+}
+
 /** Default primary model (provider/model format consumed by parseModelConfig). */
 export const DEFAULT_PRIMARY_MODEL = 'kimi/k3';
 
