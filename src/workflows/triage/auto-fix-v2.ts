@@ -30,9 +30,9 @@ import {
   resolveFallbackModel,
   selectApiKey,
   aiGatewayEnabled,
-  aiGatewayRouteUrl,
+  aiGatewayCompatUrl,
+  aiGatewayModelId,
   AI_GATEWAY_PROVIDER_ID,
-  AI_GATEWAY_MODEL_ID,
 } from '../../lib/llm-providers';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -361,7 +361,7 @@ async function callAnthropic(
   return textBlock.text;
 }
 
-type LlmApiKey = { openai: string; kimi?: string; anthropic?: string; gatewayRouteUrl?: string };
+type LlmApiKey = { openai: string; kimi?: string; anthropic?: string; gatewayCompatUrl?: string };
 
 /**
  * Route LLM calls to the correct provider based on modelConfig.providerID.
@@ -375,10 +375,11 @@ async function callLLM(
   messages: Array<{ role: string; content: string }>,
   modelConfig: { providerID: string; modelID: string },
 ): Promise<string> {
-  // Gateway mode: route every call through the CF AI Gateway route URL with
-  // the CF token (stored in apiKeys.openai). The gateway applies its fallback chain.
-  if (apiKeys.gatewayRouteUrl) {
-    return callOpenAI(apiKeys.openai, messages, modelConfig, apiKeys.gatewayRouteUrl);
+  // Gateway mode: route every call through the CF AI Gateway compat endpoint
+  // with the CF token (stored in apiKeys.openai). The model field carries the
+  // `dynamic/{route}` selector; the gateway applies its fallback chain.
+  if (apiKeys.gatewayCompatUrl) {
+    return callOpenAI(apiKeys.openai, messages, modelConfig, apiKeys.gatewayCompatUrl);
   }
   switch (modelConfig.providerID) {
     case 'anthropic': {
@@ -550,7 +551,7 @@ async function runAgentLoop(
   const fallbackModel = resolveFallbackModel(env.FALLBACK_MODEL);
   const gatewayEnabled = aiGatewayEnabled(env);
   const models = gatewayEnabled
-    ? [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: AI_GATEWAY_MODEL_ID }]
+    ? [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(env.CF_AI_GATEWAY_ROUTE!) }]
     : (
         primaryModel.providerID === fallbackModel.providerID &&
         primaryModel.modelID === fallbackModel.modelID
@@ -560,7 +561,7 @@ async function runAgentLoop(
   const apiKeys: LlmApiKey = gatewayEnabled
     ? {
         openai: env.CF_AI_GATEWAY_TOKEN!,
-        gatewayRouteUrl: aiGatewayRouteUrl(env.CF_AI_GATEWAY_URL!, env.CF_AI_GATEWAY_ROUTE!),
+        gatewayCompatUrl: aiGatewayCompatUrl(env.CF_AI_GATEWAY_URL!),
       }
     : {
         openai: env.OPENAI_API_KEY,

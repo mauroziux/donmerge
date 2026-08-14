@@ -52,8 +52,8 @@ import {
   resolveFallbackModel,
   aiGatewayEnabled,
   buildAiGatewayOpencodeConfig,
+  aiGatewayModelId,
   AI_GATEWAY_PROVIDER_ID,
-  AI_GATEWAY_MODEL_ID,
   type ModelConfig,
 } from '../../lib/llm-providers';
 import {
@@ -502,7 +502,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     // gateway applies the fallback chain); otherwise build the prioritized list.
     let models: ModelConfig[];
     if (gatewayEnabled) {
-      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: AI_GATEWAY_MODEL_ID }];
+      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }];
     } else {
       const primaryModel = prData.model
         ? parseModelConfig(prData.model)

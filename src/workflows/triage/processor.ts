@@ -30,8 +30,8 @@ import {
   resolveFallbackModel,
   aiGatewayEnabled,
   buildAiGatewayOpencodeConfig,
+  aiGatewayModelId,
   AI_GATEWAY_PROVIDER_ID,
-  AI_GATEWAY_MODEL_ID,
   type ModelConfig,
 } from '../../lib/llm-providers';
 
@@ -289,7 +289,7 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
     const gatewayEnabled = aiGatewayEnabled(this.env);
     let models: ModelConfig[];
     if (gatewayEnabled) {
-      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: AI_GATEWAY_MODEL_ID }];
+      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }];
     } else {
       const primaryModel = parseModelConfig(this.env.CODEX_MODEL);
       const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);

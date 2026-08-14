@@ -22,11 +22,11 @@ import {
   resolveFallbackModel,
   selectApiKey,
   aiGatewayEnabled,
-  aiGatewayRouteUrl,
+  aiGatewayCompatUrl,
+  aiGatewayModelId,
   buildAiGatewayOpencodeConfig,
   resolveDirectFetchBaseURL,
   AI_GATEWAY_PROVIDER_ID,
-  AI_GATEWAY_MODEL_ID,
 } from '../llm-providers';
 
 describe('llm-providers', () => {
@@ -203,17 +203,21 @@ describe('AI Gateway integration', () => {
     ).toBe(true);
   });
 
-  it('aiGatewayRouteUrl builds the OpenAI-compatible route endpoint', () => {
-    expect(aiGatewayRouteUrl('https://gateway.ai.cloudflare.com/v1/acct/gw', 'r1')).toBe(
-      'https://gateway.ai.cloudflare.com/v1/acct/gw/route/r1'
+  it('aiGatewayCompatUrl builds the OpenAI-compatible compat base (SDK appends /chat/completions)', () => {
+    expect(aiGatewayCompatUrl('https://gateway.ai.cloudflare.com/v1/acct/gw')).toBe(
+      'https://gateway.ai.cloudflare.com/v1/acct/gw/compat'
     );
   });
 
-  it('aiGatewayRouteUrl strips a trailing slash', () => {
-    expect(aiGatewayRouteUrl('https://x/v1/acct/gw/', 'r1')).toBe('https://x/v1/acct/gw/route/r1');
+  it('aiGatewayCompatUrl strips a trailing slash', () => {
+    expect(aiGatewayCompatUrl('https://x/v1/acct/gw/')).toBe('https://x/v1/acct/gw/compat');
   });
 
-  it('buildAiGatewayOpencodeConfig registers a single aigateway provider', () => {
+  it('aiGatewayModelId produces the dynamic/{route} selector', () => {
+    expect(aiGatewayModelId('donmerge-text-fallback')).toBe('dynamic/donmerge-text-fallback');
+  });
+
+  it('buildAiGatewayOpencodeConfig registers a single aigateway provider with compat baseURL and dynamic model', () => {
     const config = buildAiGatewayOpencodeConfig({
       CF_AI_GATEWAY_URL: 'https://gateway.ai.cloudflare.com/v1/acct/gw',
       CF_AI_GATEWAY_TOKEN: 'cfut_token',
@@ -222,20 +226,20 @@ describe('AI Gateway integration', () => {
     expect(config.provider).toHaveProperty(AI_GATEWAY_PROVIDER_ID);
     const provider = (config.provider as Record<string, any>)[AI_GATEWAY_PROVIDER_ID];
     expect(provider.options.baseURL).toBe(
-      'https://gateway.ai.cloudflare.com/v1/acct/gw/route/route-123'
+      'https://gateway.ai.cloudflare.com/v1/acct/gw/compat'
     );
     expect(provider.options.apiKey).toBe('cfut_token');
-    expect(provider.models).toHaveProperty(AI_GATEWAY_MODEL_ID);
+    expect(provider.models).toHaveProperty('dynamic/route-123');
   });
 
-  it('resolveDirectFetchBaseURL returns the gateway route URL when gateway is enabled', () => {
+  it('resolveDirectFetchBaseURL returns the compat URL when gateway is enabled', () => {
     const env = {
       CF_AI_GATEWAY_URL: 'https://gateway.ai.cloudflare.com/v1/acct/gw',
       CF_AI_GATEWAY_TOKEN: 't',
       CF_AI_GATEWAY_ROUTE: 'r',
     };
     expect(resolveDirectFetchBaseURL('kimi', env)).toBe(
-      'https://gateway.ai.cloudflare.com/v1/acct/gw/route/r'
+      'https://gateway.ai.cloudflare.com/v1/acct/gw/compat'
     );
     // falls back to provider URL when gateway is off
     expect(resolveDirectFetchBaseURL('kimi', {})).toBe(KIMI_BASE_URL);
