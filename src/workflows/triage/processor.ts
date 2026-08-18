@@ -34,6 +34,7 @@ import {
   AI_GATEWAY_PROVIDER_ID,
   type ModelConfig,
 } from '../../lib/llm-providers';
+import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
 
 // State keys
 const STATE_KEYS = {
@@ -175,7 +176,7 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
 
     // 2. Create shared sandbox+flue for both triage and auto-fix
     const sessionId = `triage-${context.jobId}`;
-    const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
+    const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: SANDBOX_SLEEP_AFTER });
     const gatewayEnabled = aiGatewayEnabled(this.env);
     const flue = new FlueRuntime({
       sandbox,
@@ -187,12 +188,13 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
         ? buildAiGatewayOpencodeConfig(this.env)
         : buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
     });
-    await sandbox.setEnvVars({
-      OPENAI_API_KEY: this.env.OPENAI_API_KEY,
-      KIMI_API_KEY: this.env.KIMI_API_KEY,
-      GLM_API_KEY: this.env.GLM_API_KEY,
-    });
-    await flue.setup();
+    try {
+      await sandbox.setEnvVars({
+        OPENAI_API_KEY: this.env.OPENAI_API_KEY,
+        KIMI_API_KEY: this.env.KIMI_API_KEY,
+        GLM_API_KEY: this.env.GLM_API_KEY,
+      });
+      await flue.setup();
 
     // 3. Run LLM triage
     console.log('Running LLM triage', { sourceFiles: sourceCode.size });
@@ -267,12 +269,15 @@ export class TriageProcessor extends DurableObject<EnvWithBindings> {
 
     // callback invocation — invoke context.callback here if present
 
-    console.log('Triage completed successfully', {
-      jobId: context.jobId,
-      severity: output.severity,
-      confidence: output.confidence,
-      affectedFiles: output.affected_files.length,
-    });
+      console.log('Triage completed successfully', {
+        jobId: context.jobId,
+        severity: output.severity,
+        confidence: output.confidence,
+        affectedFiles: output.affected_files.length,
+      });
+    } finally {
+      await destroySandbox(sandbox, 'triage');
+    }
   }
 
   /**

@@ -70,6 +70,7 @@ import {
 } from './processor-utils';
 import { recordReviewFindings } from './feedback-handler';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
+import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
 
 // ── Workflow params (must be serializable — no functions, no DO stubs) ────────
 
@@ -476,7 +477,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     }
 
     const sessionId = `review-${prData.owner}-${prData.repo}-${prData.prNumber}-${Date.now()}`;
-    const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: '30m' });
+    const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: SANDBOX_SLEEP_AFTER });
     const gatewayEnabled = aiGatewayEnabled(this.env);
     const flue = new FlueRuntime({
       sandbox,
@@ -490,13 +491,14 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         : buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
     });
 
-    await sandbox.setEnvVars({
-      OPENAI_API_KEY: this.env.OPENAI_API_KEY,
-      KIMI_API_KEY: this.env.KIMI_API_KEY,
-      GLM_API_KEY: this.env.GLM_API_KEY,
-      GITHUB_TOKEN: prData.githubToken,
-    });
-    await flue.setup();
+    try {
+      await sandbox.setEnvVars({
+        OPENAI_API_KEY: this.env.OPENAI_API_KEY,
+        KIMI_API_KEY: this.env.KIMI_API_KEY,
+        GLM_API_KEY: this.env.GLM_API_KEY,
+        GITHUB_TOKEN: prData.githubToken,
+      });
+      await flue.setup();
 
     // Resolve the model list. In gateway mode there is a single model (the
     // gateway applies the fallback chain); otherwise build the prioritized list.
@@ -576,9 +578,12 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       }
     }
 
-    throw lastError instanceof Error
-      ? lastError
-      : new Error('All LLM providers failed for code review');
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('All LLM providers failed for code review');
+    } finally {
+      await destroySandbox(sandbox, 'code-review');
+    }
   }
 
   /**
