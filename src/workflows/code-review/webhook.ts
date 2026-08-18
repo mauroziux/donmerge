@@ -207,11 +207,11 @@ export async function processGitHubCodeReviewWebhook(
   const processor = getReviewProcessor(env.ReviewProcessor, owner, repo, prNumber);
 
   // Start the review (stores context, initializes status in DO)
-  await (processor as unknown as { startReview(ctx: {
+  const startResult = await (processor as unknown as { startReview(ctx: {
     owner: string; repo: string; prNumber: number; retrigger: boolean;
     commentId?: number; commentType?: 'issue' | 'review';
     installationId?: number; instruction?: string; focusFiles?: string[];
-  }): Promise<void> }).startReview({
+  }): Promise<{ started: boolean; reason: string }> }).startReview({
     owner,
     repo,
     prNumber,
@@ -222,6 +222,16 @@ export async function processGitHubCodeReviewWebhook(
     instruction,
     focusFiles,
   });
+
+  if (!startResult.started) {
+    console.log('Duplicate review delivery acknowledged without restarting', {
+      owner,
+      repo,
+      prNumber,
+      reason: startResult.reason,
+    });
+    return;
+  }
 
   // Comment-triggered re-reviews use a comment-specific ID so they run with
   // fresh webhook credentials/instructions rather than stale workflow params.

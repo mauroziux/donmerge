@@ -80,8 +80,9 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     } as StoredStatus);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    await processor.startReview(baseContext);
+    const result = await processor.startReview(baseContext);
 
+    expect(result).toEqual({ started: true, reason: 'stale_recovered' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     // Must have been overwritten: startedAt should now be ~now, not 10 min ago
     expect(finalStatus.state).toBe('pending');
@@ -105,8 +106,9 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     } as StoredStatus);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    await processor.startReview(baseContext);
+    const result = await processor.startReview(baseContext);
 
+    expect(result).toEqual({ started: true, reason: 'stale_recovered' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(finalStatus.startedAt).not.toBe(tenMinAgo);
     // attempts reset to 0 on a fresh start
@@ -124,8 +126,9 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     store.set('reviewStatus', original);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    await processor.startReview(baseContext);
+    const result = await processor.startReview(baseContext);
 
+    expect(result).toEqual({ started: false, reason: 'already_running' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     // Untouched: same startedAt, same attempts
     expect(finalStatus.startedAt).toBe(oneMinAgo);
@@ -146,8 +149,9 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     } as StoredStatus);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    await processor.startReview(baseContext);
+    const result = await processor.startReview(baseContext);
 
+    expect(result).toEqual({ started: false, reason: 'already_running' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(finalStatus.startedAt).toBe(twoMinAgo);
     expect(finalStatus.attempts).toBe(1);
@@ -160,8 +164,9 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     store.set('reviewStatus', { state: 'pending', attempts: 0 } as StoredStatus);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    await processor.startReview(baseContext);
+    const result = await processor.startReview(baseContext);
 
+    expect(result).toEqual({ started: true, reason: 'stale_recovered' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(finalStatus.startedAt).toBeDefined();
   });
@@ -170,8 +175,9 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     const { storage } = createMockStorage();
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    await processor.startReview(baseContext);
+    const result = await processor.startReview(baseContext);
 
+    expect(result).toEqual({ started: true, reason: 'started' });
     const status = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(status.state).toBe('pending');
     expect(status.attempts).toBe(0);
@@ -190,8 +196,9 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     } as StoredStatus);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    await processor.startReview(baseContext);
+    const result = await processor.startReview(baseContext);
 
+    expect(result).toEqual({ started: true, reason: 'started' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(finalStatus.state).toBe('pending');
     expect(finalStatus.attempts).toBe(0);

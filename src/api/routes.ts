@@ -177,7 +177,7 @@ export const handlePushReview = withAuth(async (c, auth) => {
 
   // Start review with caller-provided token
   // DurableObjectStub proxies methods as unknown — cast for type safety
-  await (processorStub.startReview as (ctx: {
+  const startResult = await (processorStub.startReview as (ctx: {
     githubToken: string;
     owner: string;
     repo: string;
@@ -186,7 +186,7 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles?: number;
     retrigger: boolean;
     initiatorKeyHash?: string;
-  }) => Promise<void>)({
+  }) => Promise<{ started: boolean; reason: string }>)({
     githubToken: body.github_token,
     owner: body.owner,
     repo: body.repo,
@@ -196,6 +196,15 @@ export const handlePushReview = withAuth(async (c, auth) => {
     retrigger: false,
     initiatorKeyHash: callerKeyHash,
   });
+
+  if (!startResult.started) {
+    const jobId = buildReviewJobId(body.owner, body.repo, body.pr_number);
+    return c.json({
+      job_id: jobId,
+      status: 'pending',
+      message: `Review already in progress for ${body.owner}/${body.repo}#${body.pr_number}`,
+    }, 202);
+  }
 
   // Create the workflow to handle execution
   if (c.env.CODE_REVIEW_WORKFLOW) {

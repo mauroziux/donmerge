@@ -59,6 +59,11 @@ interface ReviewStatus {
   result?: ReviewResult; // Stored on completion for status queries
 }
 
+export interface StartReviewResult {
+  started: boolean;
+  reason: 'started' | 'already_running' | 'stale_recovered';
+}
+
 interface EnvWithBindings extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
 }
@@ -76,8 +81,11 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   /**
    * Start a new review. Called from the webhook handler.
    * Stores context and initializes status. Execution is handled by CodeReviewWorkflow.
+   *
+   * Returning an explicit result lets callers acknowledge duplicate deliveries
+   * without creating or restarting another Workflow.
    */
-  async startReview(context: ReviewContext): Promise<void> {
+  async startReview(context: ReviewContext): Promise<StartReviewResult> {
     // Check if there's already a review in progress. Allow overriding stale
     // 'pending'/'running' states so a crashed consumer doesn't permanently
     // block future reviews for this PR.
@@ -90,7 +98,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         (existingStatus.state === 'running' && ageMs > STALE_PENDING_THRESHOLD_MS);
       if (!isStale) {
         console.log('Review already in progress, skipping', { state: existingStatus.state, ageMs });
-        return;
+        return { started: false, reason: 'already_running' };
       }
       console.log('Stale in-progress review detected, overriding', {
         state: existingStatus.state,
@@ -110,6 +118,12 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       startedAt: new Date().toISOString(),
     };
     await this.state.storage.put(STATE_KEYS.status, status);
+    return {
+      started: true,
+      reason: existingStatus && (existingStatus.state === 'running' || existingStatus.state === 'pending')
+        ? 'stale_recovered'
+        : 'started',
+    };
   }
 
   /**

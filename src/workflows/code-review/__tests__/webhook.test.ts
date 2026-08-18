@@ -41,6 +41,7 @@ import {
   resolveGitHubToken,
 } from '../github-auth';
 import { parseTrigger } from '../triggers';
+import { getReviewProcessor } from '../processor';
 import { fetchCommentById } from '../github-api';
 import { parseFingerprint } from '../fingerprint';
 import {
@@ -57,6 +58,7 @@ type EnvWithReviewProcessor = WorkerEnv & {
 const mockedVerify = vi.mocked(verifyWebhookSignature);
 const mockedIsAllowed = vi.mocked(isRepoAllowed);
 const mockedParseTrigger = vi.mocked(parseTrigger);
+const mockedGetReviewProcessor = vi.mocked(getReviewProcessor);
 const mockedResolveToken = vi.mocked(resolveGitHubToken);
 const mockedFetchComment = vi.mocked(fetchCommentById);
 const mockedParseFingerprint = vi.mocked(parseFingerprint);
@@ -362,6 +364,32 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('should acknowledge an active duplicate without creating a Workflow', async () => {
+    const create = vi.fn();
+    const startReview = vi.fn().mockResolvedValue({ started: false, reason: 'already_running' });
+    mockedGetReviewProcessor.mockReturnValue({ startReview } as never);
+    const env = { ...mockEnv, CODE_REVIEW_WORKFLOW: { create } as never };
+
+    await processGitHubCodeReviewWebhook(env, baseContext);
+
+    expect(startReview).toHaveBeenCalledOnce();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('creates a Workflow when the processor accepts a fresh review', async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const startReview = vi.fn().mockResolvedValue({ started: true, reason: 'started' });
+    mockedGetReviewProcessor.mockReturnValue({ startReview } as never);
+    const env = { ...mockEnv, CODE_REVIEW_WORKFLOW: { create } as never };
+
+    await processGitHubCodeReviewWebhook(env, baseContext);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'review-tableoltd-test-repo-42',
+      params: expect.objectContaining({ owner: 'tableoltd', repo: 'test-repo', prNumber: 42 }),
+    }));
   });
 
   it('should call handleCommentFeedback for dismiss with fingerprint', async () => {
