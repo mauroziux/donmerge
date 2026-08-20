@@ -76,8 +76,9 @@ graph TD
 | Component | Role |
 |-----------|------|
 | **ReviewProcessor DO** | Stores review context and status, provides RPC methods for workflow. Does NOT execute the review — that's the workflow's job. |
-| **CodeReviewWorkflow** | 4-step durable pipeline: fetch PR data → prepare files → run LLM review → publish review. Retries with exponential backoff. |
-| **Sandbox + Flue** | Cloudflare container running OpenCode. It registers Kimi Code as an OpenAI-compatible `kimi` provider for primary reviews and retains built-in OpenAI for automatic fallback. |
+| **CodeReviewWorkflow** | 4-step durable pipeline: fetch PR data → prepare files → run LLM review → publish review. Owns phase orchestration and sandbox/config/prompt setup, while model ordering and output repair live in `review-model-runner.ts`. |
+| **review-model-runner** | Runs the quality-preserving model chain. Each model gets one format-repair prompt; provider/output failures fall through to the next model. Exhausted model failures become non-retryable at the Workflow seam. |
+| **Sandbox + Flue** | Cloudflare container running OpenCode. It registers Kimi Code as an OpenAI-compatible `kimi` provider for primary reviews and retains direct providers for fallback. |
 | **RateLimiter DO** | Enforces API rate limits for Push API keys (per-key: 30 req/min for live, 10 req/min for test). |
 | **TriageProcessor DO** | Handles Sentry error triage — root cause analysis and auto-fix PR creation. |
 
@@ -129,15 +130,20 @@ sequenceDiagram
         Note over WF,OAI: Step 3: run-llm-review
         WF->>SB: Provision sandbox + Flue runtime
         WF->>SB: Inject KIMI_API_KEY + OPENAI_API_KEY
-        WF->>SB: Prompt primary model (default: kimi/k3)
-        SB->>KIMI: OpenAI-compatible completion request
+        WF->>SB: Resolve ordered models
+        SB->>KIMI: Prompt primary model (default: kimi/k3)
         KIMI-->>SB: JSON review result
-        alt Provider or output failure
-            SB->>OAI: Retry fallback model (default: openai/gpt-4o)
+        alt Invalid output
+            SB->>KIMI: One format-repair prompt
+            KIMI-->>SB: JSON review result
+        else Provider or timeout failure
+            SB->>SB: Classify model failure
+        end
+        alt Model still fails
+            SB->>OAI: Try next configured model (GLM → fallback)
             OAI-->>SB: JSON review result
         end
-        SB-->>WF: Raw review JSON
-        WF->>WF: Validate + normalize result
+        SB-->>WF: Valid normalized review result
         WF->>WF: Apply quality gate (filterLineCommentsByQuality)
         WF->>WF: Apply severity overrides
         WF->>WF: Recompute approval (withBlockingApproval)
@@ -171,6 +177,8 @@ sequenceDiagram
 | `run-llm-review` | 2 | 20 minutes | Exponential |
 | `publish-review` | 2 | 3 minutes | Exponential |
 
+`run-llm-review` handles model quality retries locally: one format-repair attempt per model, then fallback to the next model. If every model fails due to provider or output errors, it throws `NonRetryableError` so Cloudflare does not replay the exhausted model chain. Unclassified sandbox/infrastructure failures remain eligible for the durable step retry.
+
 ### Deterministic Workflow IDs
 
 Regular PR events use a stable Workflow ID: `review-{owner}-{repo}-{prNumber}`. A comment-triggered `@donmerge` re-review adds the GitHub comment ID: `review-{owner}-{repo}-{prNumber}-comment-{commentId}`.
@@ -182,6 +190,18 @@ This ensures that:
 - Status queries retain the stable PR-level job ID
 
 ---
+
+## Model Quality and Retry Policy
+
+The model execution seam is intentionally separate from the durable Workflow seam:
+
+1. Resolve the ordered list: AI Gateway route when enabled, then direct GLM when configured, then `FALLBACK_MODEL`.
+2. Give each model one initial prompt and one format-repair prompt when the structured result is invalid.
+3. Treat provider errors, timeouts, invalid JSON, and schema failures as model failures and move to the next model.
+4. After all models fail, fail the Workflow without replaying the already-exhausted model chain.
+5. Retry the durable step only for errors outside model execution, such as sandbox setup or other unclassified infrastructure failures.
+
+This concentrates model ordering, parsing, and quality-repair policy in `review-model-runner.ts`; `CodeReviewWorkflow` retains durable orchestration and sandbox lifecycle.
 
 ## Quality Calibration System
 

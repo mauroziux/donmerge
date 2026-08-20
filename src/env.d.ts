@@ -242,6 +242,12 @@ interface WorkflowInstance {
 
 // ── DurableObject base class ─────────────────────────────────────────────────
 // Matches the pattern: import { DurableObject } from 'cloudflare:workers'
+declare module 'cloudflare:workflows' {
+  export class NonRetryableError extends Error {
+    constructor(message?: string);
+  }
+}
+
 declare module 'cloudflare:workers' {
   export class DurableObject<Env = unknown, State = unknown> {
     constructor(ctx: DurableObjectState, env: Env);

@@ -10,9 +10,9 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
 import { getSandbox } from '@cloudflare/sandbox';
 import { FlueRuntime } from '@flue/cloudflare';
-import * as v from 'valibot';
 
 import type {
   WorkerEnv,
@@ -44,7 +44,7 @@ import { buildCurrentIssues, type IssueBuilderContext } from './issue-builder';
 import { matchCurrentFindingsToStored } from './issue-matcher';
 import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
 import { applyApprovalGate } from './approval-gate';
-import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError, withTimeout } from './utils';
+import { parseModelConfig, getRepoConfig, classifyError } from './utils';
 import { buildReviewPrompt } from './prompts';
 import {
   buildOpencodeConfig,
@@ -62,8 +62,6 @@ import {
   resolveDonmergeSkills,
 } from './donmerge';
 import {
-  validateReviewResult,
-  normalizeReviewResult,
   filterCommentsByMatch,
   syncTrackedIssuesFromComments,
   withBlockingApproval,
@@ -71,6 +69,7 @@ import {
 import { recordReviewFindings } from './feedback-handler';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
+import { AllModelsFailedError, runReviewModels } from './review-model-runner';
 
 // ── Workflow params (must be serializable — no functions, no DO stubs) ────────
 
@@ -457,9 +456,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
   /**
    * Step 3: Run LLM review via Sandbox + Flue.
    *
-   * Uses the primary model (default Kimi K3) and automatically falls back to the
-   * configured fallback model (default OpenAI gpt-4o) if the primary provider
-   * fails or returns unparseable output after a format-correcting retry.
+   * The review-model-runner owns model ordering and format retries. This module
+   * owns only memory/config loading, sandbox lifecycle, and prompt construction.
    */
   private async runLlmReview(preparedFiles: PreparedFiles): Promise<LlmReviewResult> {
     const { prData, diffText, repoContext, donmergeResolved, activePreviousComments } = preparedFiles;
@@ -506,166 +504,62 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       });
       await flue.setup();
 
-    // Resolve the prioritized model list. Gateway mode keeps the gateway first,
-    // but direct providers remain available as a last-resort fallback.
-    const primaryModel = prData.model
-      ? parseModelConfig(prData.model)
-      : parseModelConfig(this.env.CODEX_MODEL);
-    const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
-    const models: ModelConfig[] = resolveReviewModels({
-      primaryModel,
-      gatewayModel: gatewayEnabled
-        ? { providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }
-        : undefined,
-      glmApiKey: this.env.GLM_API_KEY,
-      fallbackModel,
-    });
+      const primaryModel = prData.model
+        ? parseModelConfig(prData.model)
+        : parseModelConfig(this.env.CODEX_MODEL);
+      const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
+      const models: ModelConfig[] = resolveReviewModels({
+        primaryModel,
+        gatewayModel: gatewayEnabled
+          ? { providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }
+          : undefined,
+        glmApiKey: this.env.GLM_API_KEY,
+        fallbackModel,
+      });
 
-    const prompt = buildReviewPrompt(
-      {
-        owner: prData.owner,
-        repo: prData.repo,
-        prNumber: prData.prNumber,
-        prTitle: prData.prTitle,
-        prBody: prData.prBody,
-        retrigger: prData.retrigger,
-        instruction: prData.instruction,
-        previousComments: activePreviousComments,
-        diffText,
-        repoContext,
-      },
-      { donmergeResolved, memoryContext }
-    );
+      const prompt = buildReviewPrompt(
+        {
+          owner: prData.owner,
+          repo: prData.repo,
+          prNumber: prData.prNumber,
+          prTitle: prData.prTitle,
+          prBody: prData.prBody,
+          retrigger: prData.retrigger,
+          instruction: prData.instruction,
+          previousComments: activePreviousComments,
+          diffText,
+          repoContext,
+        },
+        { donmergeResolved, memoryContext }
+      );
 
-    const promptErrorHint =
-      'Your previous response was invalid. Produce valid JSON matching the schema. ' +
-      'Ensure `summary` is present and 1-2 sentences. Ensure `prSummary` includes overview, keyChanges (non-empty), codeQuality, testingNotes, riskAssessment. ' +
-      'Only use `lineComments` for concrete findings anchored to lines in the diff.';
+      const promptErrorHint =
+        'Your previous response was invalid. Produce valid JSON matching the schema. ' +
+        'Ensure `summary` is present and 1-2 sentences. Ensure `prSummary` includes overview, keyChanges (non-empty), codeQuality, testingNotes, riskAssessment. ' +
+        'Only use `lineComments` for concrete findings anchored to lines in the diff.';
 
-    const severityOverrides = donmergeResolved?.config.severity;
-
-    // Try each model in order (primary → fallback). Within a model we retry
-    // once with a format-correcting hint. Stop at the first valid result.
-    let lastError: unknown;
-    for (let i = 0; i < models.length; i++) {
-      const model = models[i];
-      const isLast = i === models.length - 1;
-      try {
-        const result = await this.promptForModel(
-          flue,
-          prompt,
-          promptErrorHint,
-          model,
-          activePreviousComments,
-          severityOverrides,
-          patternWeights
-        );
-        return { preparedFiles, result };
-      } catch (error) {
-        lastError = error;
-        const msg = error instanceof Error ? error.message : String(error);
-        console.warn('[code-review] model failed, will fallback', {
-          model: `${model.providerID}/${model.modelID}`,
-          error: msg,
-          willFallback: !isLast,
-        });
-        if (isLast) break;
+      const result = await runReviewModels({
+        flue,
+        prompt,
+        promptErrorHint,
+        models,
+        activePreviousComments,
+        severityOverrides: donmergeResolved?.config.severity,
+        patternWeights,
+      });
+      return { preparedFiles, result };
+    } catch (error) {
+      if (error instanceof AllModelsFailedError) {
+        // Model/provider failures are already exhausted locally. Do not let
+        // the durable step replay the same quality-repair/fallback chain.
+        throw new NonRetryableError(error.message);
       }
-    }
-
-      throw lastError instanceof Error
-        ? lastError
-        : new Error('All LLM providers failed for code review');
+      // Sandbox setup and other unclassified infrastructure failures remain
+      // retryable through the Workflow step policy.
+      throw error;
     } finally {
       await destroySandbox(sandbox, 'code-review');
     }
-  }
-
-  /**
-   * Run the review prompt against a single model, with one format-correcting
-   * retry. Extracted from runLlmReview so the primary/fallback loop can call
-   * it per-provider without duplicating the parse/validate/retry logic.
-   */
-  private async promptForModel(
-    flue: FlueRuntime,
-    prompt: string,
-    promptErrorHint: string,
-    model: ModelConfig,
-    activePreviousComments: PreviousComment[],
-    severityOverrides: Record<string, 'critical' | 'suggestion' | 'low'> | undefined,
-    patternWeights: Map<string, PatternWeight> | undefined
-  ): Promise<ReviewResult> {
-    const modelLabel = `${model.providerID}/${model.modelID}`;
-    let response = '';
-    let parsed: ReviewResult;
-
-    try {
-      response = await withTimeout(
-        flue.client.prompt(prompt, { model, result: v.string() }),
-        1200000,
-        `LLM prompt timed out after 1200s (${modelLabel})`
-      );
-    } catch (error) {
-      const rawResponse = extractRawFlueResponse(error);
-      if (rawResponse) {
-        try {
-          const jsonText = extractJsonFromResponse(rawResponse);
-          parsed = safeJsonParse<ReviewResult>(jsonText);
-          const validation = validateReviewResult(parsed);
-          if (validation.valid) {
-            return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
-          }
-          response = rawResponse;
-        } catch {
-          // Raw response couldn't be parsed, fall through to throw
-        }
-      }
-      if (!response) {
-        throw new Error(formatPromptError(error, modelLabel));
-      }
-    }
-
-    parsed = safeJsonParse<ReviewResult>(response);
-    const validation = validateReviewResult(parsed);
-    if (validation.valid) {
-      return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
-    }
-
-    // Retry once
-    const retryPrompt = `${prompt}\n\n${promptErrorHint}\nReason: ${validation.reason}`;
-    try {
-      response = await withTimeout(
-        flue.client.prompt(retryPrompt, { model, result: v.string() }),
-        1200000,
-        `LLM prompt timed out after 1200s (${modelLabel})`
-      );
-    } catch (error) {
-      const rawResponse = extractRawFlueResponse(error);
-      if (rawResponse) {
-        try {
-          const jsonText = extractJsonFromResponse(rawResponse);
-          parsed = safeJsonParse<ReviewResult>(jsonText);
-          const retryValidation = validateReviewResult(parsed);
-          if (retryValidation.valid) {
-            return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
-          }
-          response = rawResponse;
-        } catch {
-          // Fall through
-        }
-      }
-      if (!response) {
-        throw new Error(formatPromptError(error, modelLabel));
-      }
-    }
-
-    parsed = safeJsonParse<ReviewResult>(response);
-    const retryValidation = validateReviewResult(parsed);
-    if (retryValidation.valid) {
-      return normalizeReviewResult(parsed, activePreviousComments, severityOverrides, patternWeights);
-    }
-
-    throw new Error(`Invalid review output after retry (${modelLabel}): ${retryValidation.reason}`);
   }
 
   /**
