@@ -168,7 +168,7 @@ sequenceDiagram
 |------|---------|---------|---------|
 | `fetch-pr-data` | 3 | 2 minutes | Exponential |
 | `prepare-files` | 2 | 2 minutes | Exponential |
-| `run-llm-review` | 2 | 5 minutes | Exponential |
+| `run-llm-review` | 2 | 20 minutes | Exponential |
 | `publish-review` | 2 | 3 minutes | Exponential |
 
 ### Deterministic Workflow IDs

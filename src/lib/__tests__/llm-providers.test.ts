@@ -20,6 +20,7 @@ import {
   buildGlmProviderConfig,
   buildOpencodeConfig,
   resolveFallbackModel,
+  resolveReviewModels,
   selectApiKey,
   aiGatewayEnabled,
   aiGatewayCompatUrl,
@@ -183,6 +184,29 @@ describe('llm-providers', () => {
       selectApiKey('anthropic', { openai: 'sk-oai', anthropic: 'sk-ant' })
     ).toBe('sk-ant');
     expect(selectApiKey('anthropic', { openai: 'sk-oai' })).toBe('sk-oai');
+  });
+});
+
+describe('review model fallback order', () => {
+  it('keeps direct providers after the gateway model', () => {
+    expect(resolveReviewModels({
+      primaryModel: { providerID: 'kimi', modelID: 'k3' },
+      gatewayModel: { providerID: 'aigateway', modelID: 'dynamic/review' },
+      glmApiKey: 'glm-key',
+      fallbackModel: { providerID: 'openai', modelID: 'gpt-4o' },
+    })).toEqual([
+      { providerID: 'aigateway', modelID: 'dynamic/review' },
+      { providerID: 'glm', modelID: '5.2' },
+      { providerID: 'openai', modelID: 'gpt-4o' },
+    ]);
+  });
+
+  it('does not duplicate the primary or fallback model', () => {
+    expect(resolveReviewModels({
+      primaryModel: { providerID: 'glm', modelID: '5.2' },
+      glmApiKey: 'glm-key',
+      fallbackModel: { providerID: 'glm', modelID: '5.2' },
+    })).toEqual([{ providerID: 'glm', modelID: '5.2' }]);
   });
 });
 

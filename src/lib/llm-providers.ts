@@ -139,6 +139,31 @@ export interface ModelConfig {
   modelID: string;
 }
 
+/**
+ * Build the review model order, keeping a direct-provider escape hatch when
+ * the gateway is enabled but unavailable.
+ */
+export function resolveReviewModels(options: {
+  primaryModel: ModelConfig;
+  gatewayModel?: ModelConfig;
+  glmApiKey?: string;
+  fallbackModel: ModelConfig;
+}): ModelConfig[] {
+  const models = [options.gatewayModel ?? options.primaryModel];
+
+  if (options.glmApiKey?.trim() && !models.some((m) => m.providerID === 'glm' && m.modelID === '5.2')) {
+    models.push({ providerID: 'glm', modelID: '5.2' });
+  }
+
+  if (!models.some(
+    (m) => m.providerID === options.fallbackModel.providerID && m.modelID === options.fallbackModel.modelID
+  )) {
+    models.push(options.fallbackModel);
+  }
+
+  return models;
+}
+
 /** Provider identifiers with special handling. */
 export type KnownProvider = 'kimi' | 'moonshot' | 'glm' | 'zhipu' | 'openai' | 'anthropic';
 

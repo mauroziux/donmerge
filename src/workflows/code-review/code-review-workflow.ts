@@ -41,8 +41,7 @@ import {
 } from './github-api';
 import { resolveGitHubToken } from './github-auth';
 import { buildCurrentIssues, type IssueBuilderContext } from './issue-builder';
-import { matchCurrentFindingsToStored, type CurrentIssue } from './issue-matcher';
-import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
+import { matchCurrentFindingsToStored } from './issue-matcher';
 import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
 import { applyApprovalGate } from './approval-gate';
 import { safeJsonParse, parseModelConfig, formatPromptError, getRepoConfig, extractRawFlueResponse, extractJsonFromResponse, classifyError, withTimeout } from './utils';
@@ -53,6 +52,7 @@ import {
   aiGatewayEnabled,
   buildAiGatewayOpencodeConfig,
   aiGatewayModelId,
+  resolveReviewModels,
   AI_GATEWAY_PROVIDER_ID,
   type ModelConfig,
 } from '../../lib/llm-providers';
@@ -169,7 +169,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       // Step 3: Run LLM review
       const llmResult = await step.do('run-llm-review', {
         retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
-        timeout: '5 minutes',
+        timeout: '20 minutes',
       }, async () => {
         return this.runLlmReview(preparedFiles);
       });
@@ -479,16 +479,22 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const sessionId = `review-${prData.owner}-${prData.repo}-${prData.prNumber}-${Date.now()}`;
     const sandbox = getSandbox(this.env.Sandbox, sessionId, { sleepAfter: SANDBOX_SLEEP_AFTER });
     const gatewayEnabled = aiGatewayEnabled(this.env);
+    const directProviderConfig = buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY);
+    const opencodeConfig = gatewayEnabled
+      ? {
+          provider: {
+            ...buildAiGatewayOpencodeConfig(this.env).provider,
+            ...directProviderConfig.provider,
+          },
+        }
+      : directProviderConfig;
     const flue = new FlueRuntime({
       sandbox,
       sessionId,
       workdir: '/home/user',
-      // Gateway mode: a single `aigateway` provider routes through the CF AI
-      // Gateway, whose routing config owns the fallback chain (DeepSeek -> GLM
-      // -> Gemini). Otherwise register Kimi/GLM as separate providers.
-      opencodeConfig: gatewayEnabled
-        ? buildAiGatewayOpencodeConfig(this.env)
-        : buildOpencodeConfig(this.env.KIMI_API_KEY, this.env.GLM_API_KEY),
+      // Try the gateway first, then keep direct providers available when the
+      // gateway hangs or its entire upstream chain is unavailable.
+      opencodeConfig,
     });
 
     try {
@@ -500,31 +506,20 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       });
       await flue.setup();
 
-    // Resolve the model list. In gateway mode there is a single model (the
-    // gateway applies the fallback chain); otherwise build the prioritized list.
-    let models: ModelConfig[];
-    if (gatewayEnabled) {
-      models = [{ providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }];
-    } else {
-      const primaryModel = prData.model
-        ? parseModelConfig(prData.model)
-        : parseModelConfig(this.env.CODEX_MODEL);
-      const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
-      models = [primaryModel];
-      const hasGlmKey = !!this.env.GLM_API_KEY && !!this.env.GLM_API_KEY.trim();
-      if (hasGlmKey) {
-        const glmModel: ModelConfig = { providerID: 'glm', modelID: '5.2' };
-        if (primaryModel.providerID !== 'glm' || primaryModel.modelID !== '5.2') {
-          models.push(glmModel);
-        }
-      }
-      const fallbackAlreadyInList = models.some(
-        m => m.providerID === fallbackModel.providerID && m.modelID === fallbackModel.modelID
-      );
-      if (!fallbackAlreadyInList) {
-        models.push(fallbackModel);
-      }
-    }
+    // Resolve the prioritized model list. Gateway mode keeps the gateway first,
+    // but direct providers remain available as a last-resort fallback.
+    const primaryModel = prData.model
+      ? parseModelConfig(prData.model)
+      : parseModelConfig(this.env.CODEX_MODEL);
+    const fallbackModel = resolveFallbackModel(this.env.FALLBACK_MODEL);
+    const models: ModelConfig[] = resolveReviewModels({
+      primaryModel,
+      gatewayModel: gatewayEnabled
+        ? { providerID: AI_GATEWAY_PROVIDER_ID, modelID: aiGatewayModelId(this.env.CF_AI_GATEWAY_ROUTE!) }
+        : undefined,
+      glmApiKey: this.env.GLM_API_KEY,
+      fallbackModel,
+    });
 
     const prompt = buildReviewPrompt(
       {
@@ -607,8 +602,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     try {
       response = await withTimeout(
         flue.client.prompt(prompt, { model, result: v.string() }),
-        120000,
-        `LLM prompt timed out after 120s (${modelLabel})`
+        1200000,
+        `LLM prompt timed out after 1200s (${modelLabel})`
       );
     } catch (error) {
       const rawResponse = extractRawFlueResponse(error);
@@ -641,8 +636,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     try {
       response = await withTimeout(
         flue.client.prompt(retryPrompt, { model, result: v.string() }),
-        120000,
-        `LLM prompt timed out after 120s (${modelLabel})`
+        1200000,
+        `LLM prompt timed out after 1200s (${modelLabel})`
       );
     } catch (error) {
       const rawResponse = extractRawFlueResponse(error);
