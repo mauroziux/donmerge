@@ -521,6 +521,8 @@ Error code: DM-E001 — The AI model failed to process the review.
 
 Full error details (model name, error message, stack traces) are written to `console.error` and are available in Cloudflare worker logs.
 
+For the latest production timeout/fallback validation, rerun results, and remaining follow-up work, see [`docs/PRODUCTION-VALIDATION-2026-08-21.md`](docs/PRODUCTION-VALIDATION-2026-08-21.md).
+
 ## 🔒 Security Considerations
 
 ### Data Privacy
