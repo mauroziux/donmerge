@@ -118,7 +118,8 @@ export interface MemoryContext {
 export interface RepoConfig {
   owner: string;
   repo: string;
-  baseBranch?: string;  // If not set, review all PRs regardless of target branch
+  /** Allowed PR base branches. Unset = review PRs against any base. */
+  baseBranches?: string[];
 }
 
 export interface GitHubRepository {
@@ -138,6 +139,8 @@ export interface CheckRunPayload {
 
 export interface WebhookPayload {
   action?: string;
+  /** Present on pull_request.edited: base/title/body before the edit. */
+  changes?: { base?: { ref?: { from?: string } } };
   installation?: { id: number };
   repository?: GitHubRepository;
   pull_request?: PullRequestPayload;

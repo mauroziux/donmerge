@@ -37,6 +37,9 @@ import {
   resolveFixedComments,
   publishReview,
   completeCheckRun,
+  completeCheckRunNeutral,
+  fetchInheritedCommitRefs,
+  supersedeBaseChangedReviews,
   updatePRDescription,
 } from './github-api';
 import { resolveGitHubToken } from './github-auth';
@@ -100,6 +103,8 @@ interface PrData {
   prTitle?: string;
   prBody?: string | null;
   baseBranch?: string;
+  /** When false, no review runs (skipped/guarded) — steps 2-4 short-circuit. */
+  willReview: boolean;
   retrigger: boolean;
   commentId?: number;
   commentType?: 'issue' | 'review';
@@ -156,6 +161,27 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         throw new Error('Failed to fetch PR data');
       }
       const activePrData = prData;
+
+      // Skipped (wrong base) or guarded (contaminated diff): no LLM review.
+      // Previously the wrong-base skip still burned a full LLM pass before the
+      // publish step dropped it — short-circuit here instead.
+      if (!activePrData.willReview) {
+        // A base change still invalidates previous reviews even when we will
+        // not re-review (e.g. base not allowed for this repo): mark them
+        // superseded so the stale verdict cannot mislead readers.
+        await supersedeBaseChangedReviews(
+          activePrData.owner,
+          activePrData.repo,
+          activePrData.prNumber,
+          activePrData.baseBranch,
+          activePrData.githubToken
+        );
+        await (processorStub as any).updateFromWorkflow({
+          state: 'complete',
+          completedAt: new Date().toISOString(),
+        });
+        return;
+      }
 
       // Step 2: Prepare files
       const preparedFiles = await step.do('prepare-files', {
@@ -249,9 +275,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     // Check base branch
     const repoConfig = getRepoConfig(owner, repo, this.env.REPO_CONFIGS);
-    if (repoConfig?.baseBranch && pr.base.ref !== repoConfig.baseBranch) {
+    if (repoConfig?.baseBranches && !repoConfig.baseBranches.includes(pr.base.ref)) {
       console.log('PR skipped - wrong base branch', {
-        expected: repoConfig.baseBranch,
+        allowed: repoConfig.baseBranches,
         actual: pr.base.ref,
         repo: `${owner}/${repo}`,
       });
@@ -266,6 +292,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         prTitle: pr.title,
         prBody: pr.body,
         baseBranch: pr.base.ref,
+        willReview: false,
         retrigger: params.retrigger,
         commentId: params.commentId,
         commentType: params.commentType,
@@ -277,6 +304,58 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     }
 
     const headSha = pr.head.sha;
+
+    // Divergence guard: when the head branch carries commits already merged via
+    // other PRs (e.g. a fix branch based on master targeting develop), the
+    // three-dot diff includes those unrelated changes and the review would
+    // describe work this PR does not change. Surface a neutral check instead.
+    const inheritedRefs = await fetchInheritedCommitRefs(
+      owner,
+      repo,
+      pr.base.ref,
+      headSha,
+      prNumber,
+      githubToken
+    );
+    if (inheritedRefs.length > 0) {
+      console.log('PR diff contains commits inherited from base/head divergence', {
+        base: pr.base.ref,
+        inheritedRefs,
+      });
+      const guardCheckRun = await createCheckRun(owner, repo, headSha, githubToken);
+      await completeCheckRunNeutral(
+        owner,
+        repo,
+        guardCheckRun.id,
+        '🔀 Diff contaminated by base/head divergence',
+        `The diff includes changes already merged in ${inheritedRefs.join(', ')} — not authored in this PR.`,
+        `The PR head branch contains commits from other merged PRs (${inheritedRefs.join(', ')}) ` +
+          `because it diverged from base \`${pr.base.ref}\`.\n\n` +
+          `Reviewing this diff would report findings on code this PR does not change.\n\n` +
+          `**Fix:** rebase the branch onto \`${pr.base.ref}\` (or retarget the PR to the branch it ` +
+          `was based on), then push or re-trigger with \`@donmerge\`.`,
+        githubToken
+      );
+      return {
+        owner,
+        repo,
+        prNumber,
+        headSha,
+        checkRunId: guardCheckRun.id,
+        githubToken,
+        prTitle: pr.title,
+        prBody: pr.body,
+        baseBranch: pr.base.ref,
+        willReview: false,
+        retrigger: params.retrigger,
+        commentId: params.commentId,
+        commentType: params.commentType,
+        instruction: params.instruction,
+        focusFiles: params.focusFiles,
+        model: params.model,
+        maxFiles: params.maxFiles,
+      };
+    }
 
     // Fetch .donmerge config (best-effort)
     let donmergeResolved: DonmergeResolved | undefined;
@@ -328,6 +407,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       prTitle: pr.title,
       prBody: pr.body,
       baseBranch: pr.base.ref,
+      willReview: true,
       retrigger: params.retrigger,
       commentId: params.commentId,
       commentType: params.commentType,

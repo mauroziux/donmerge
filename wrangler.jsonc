@@ -16,11 +16,11 @@
 	],
 	"vars": {
 		"DONMERGE_API_KEYS": "dm_test_2cd266c2995a8db0a2270eddded52fec28d7f2ed99e7157d,dm_live_f5b0a81a5aff7ec415158a1092658f2eeb9a0ad1ce6064b4",
-		// Format: "owner/repo:baseBranch" - branch is optional (no branch = review all PRs)
+		// Format: "owner/repo:baseBranch" or "owner/repo:base1+base2" - branch is optional (no branch = review all PRs)
 		// Examples:
 		//   "org/repo1:main,org/repo2:develop" - repo1 only reviews PRs to main, repo2 only to develop
 		//   "org/repo1,org/repo2:main" - repo1 reviews all PRs, repo2 only reviews PRs to main
-		"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
+		"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop+master",
 		"CODEX_MODEL": "kimi/k3",
 		"FALLBACK_MODEL": "openai/gpt-4o",
 		"MAX_REVIEW_FILES": "50",
@@ -152,7 +152,7 @@
 			"name": "tableo-assitant-worker-staging",
 			"vars": {
 				"DONMERGE_API_KEYS": "dm_test_2cd266c2995a8db0a2270eddded52fec28d7f2ed99e7157d,dm_live_f5b0a81a5aff7ec415158a1092658f2eeb9a0ad1ce6064b4",
-				"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop",
+				"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop+master",
 				"CODEX_MODEL": "kimi/k3",
 				"FALLBACK_MODEL": "openai/gpt-4o",
 				"MAX_REVIEW_FILES": "50",

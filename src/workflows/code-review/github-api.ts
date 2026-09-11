@@ -30,13 +30,136 @@ function buildReviewMeta(input: { headSha: string; baseRef?: string }): string {
   return `${REVIEW_META_PREFIX} ${JSON.stringify(payload)} -->\n\n`;
 }
 
+/** Parsed DONMERGE_REVIEW marker from a review body. */
+export interface ReviewMarker {
+  headSha: string;
+  baseRef?: string;
+  reviewedAt?: string;
+}
+
+/** Extract the DONMERGE_REVIEW marker from a review body, or null. */
+export function parseReviewMarker(body: string): ReviewMarker | null {
+  const start = body.indexOf(REVIEW_META_PREFIX);
+  if (start === -1) return null;
+  const jsonStart = start + REVIEW_META_PREFIX.length;
+  const end = body.indexOf('-->', jsonStart);
+  if (end === -1) return null;
+  try {
+    const parsed = JSON.parse(body.slice(jsonStart, end).trim());
+    if (typeof parsed?.headSha === 'string') return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export const SUPERSEDED_NOTE_PREFIX = '⚠️ **OUTDATED — superseded:**';
+
+/**
+ * Insert a superseded note after the marker comment. Idempotent: a body that
+ * already carries the note is returned untouched.
+ */
+export function buildSupersededBody(body: string, oldBaseRef: string, newBaseRef: string): string {
+  if (body.includes(SUPERSEDED_NOTE_PREFIX)) return body;
+  const note =
+    `> ${SUPERSEDED_NOTE_PREFIX} this review ran against the old base \`${oldBaseRef}\`. ` +
+    `A newer review below covers the current base \`${newBaseRef}\`.`;
+  const markerEnd = body.indexOf('-->');
+  if (markerEnd === -1) return `${note}\n\n${body}`;
+  return `${body.slice(0, markerEnd + 3)}\n\n${note}${body.slice(markerEnd + 3)}`;
+}
+
+/**
+ * Edit previous bot reviews whose marker baseRef differs from the current base,
+ * marking them as superseded. Best-effort: failures never block the new review.
+ */
+export async function supersedeBaseChangedReviews(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  currentBaseRef: string | undefined,
+  token: string
+): Promise<number> {
+  if (!currentBaseRef) return 0;
+  try {
+    const reviews = await githubFetch<
+      Array<{ id: number; body?: string; user?: { type?: string } }>
+    >(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100`, token);
+
+    let superseded = 0;
+    for (const review of reviews) {
+      if (review.user?.type !== 'Bot' || !review.body) continue;
+      const marker = parseReviewMarker(review.body);
+      if (!marker?.baseRef || marker.baseRef === currentBaseRef) continue;
+      await githubFetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews/${review.id}`,
+        token,
+        'PUT',
+        { body: buildSupersededBody(review.body, marker.baseRef, currentBaseRef) }
+      );
+      superseded += 1;
+    }
+    return superseded;
+  } catch (error) {
+    console.warn('Failed to supersede outdated reviews', { owner, repo, prNumber, error });
+    return 0;
+  }
+}
+
+/**
+ * Find PR refs (#N) of commits in a divergent ahead-range that were already
+ * merged elsewhere — squash-merge subjects (`(#N)`) or merge commits
+ * (`Merge pull request #N from ...`). The PR's own number is excluded.
+ */
+export function findInheritedCommitRefs(commitSubjects: string[], prNumber: number): string[] {
+  const refs = new Set<string>();
+  for (const subject of commitSubjects) {
+    const squash = subject.match(/\s\(#(\d+)\)\s*$/);
+    const merge = subject.match(/^Merge pull request #(\d+) from /);
+    const match = squash ?? merge;
+    if (match && Number(match[1]) !== prNumber) {
+      refs.add(`#${match[1]}`);
+    }
+  }
+  return Array.from(refs);
+}
+
+/**
+ * Detect a contaminated three-dot diff: head contains commits that were already
+ * merged via other PRs (typical when a fix branch based on master targets develop).
+ * Fail-open: on API errors returns [] so the review proceeds as before.
+ */
+export async function fetchInheritedCommitRefs(
+  owner: string,
+  repo: string,
+  baseRef: string,
+  headSha: string,
+  prNumber: number,
+  token: string
+): Promise<string[]> {
+  try {
+    const compare = await githubFetch<{
+      status?: string;
+      commits?: Array<{ commit?: { message?: string } }>;
+    }>(`https://api.github.com/repos/${owner}/${repo}/compare/${baseRef}...${headSha}`, token);
+    if (compare.status !== 'diverged') return [];
+    const subjects = (compare.commits ?? []).map((entry) =>
+      (entry.commit?.message ?? '').split('\n')[0]
+    );
+    return findInheritedCommitRefs(subjects, prNumber);
+  } catch (error) {
+    console.warn('Divergence check failed, proceeding with review', { owner, repo, prNumber, error });
+    return [];
+  }
+}
+
 /**
  * Generic GitHub API fetch helper.
  */
 export async function githubFetch<T>(
   url: string,
   token: string,
-  method: 'GET' | 'POST' | 'PATCH' = 'GET',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' = 'GET',
   body?: unknown
 ): Promise<T> {
   const response = await fetch(url, {
@@ -156,6 +279,32 @@ export async function failCheckRun(
         summary: 'Something went wrong during the review.',
         text: `Error code: ${code} — ${description}`,
       },
+    }
+  );
+}
+
+/**
+ * Complete a check run with a neutral conclusion and custom output.
+ * Used when the review is intentionally not run (e.g. contaminated diff).
+ */
+export async function completeCheckRunNeutral(
+  owner: string,
+  repo: string,
+  checkRunId: number,
+  title: string,
+  summary: string,
+  text: string,
+  token: string
+): Promise<void> {
+  await githubFetch(
+    `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}`,
+    token,
+    'PATCH',
+    {
+      status: 'completed',
+      conclusion: 'neutral',
+      completed_at: new Date().toISOString(),
+      output: { title, summary, text },
     }
   );
 }
@@ -345,6 +494,13 @@ export async function publishReview(
     event: review.approved ? 'COMMENT' : 'REQUEST_CHANGES',
     comments,
   };
+
+  // Base changed since a previous review (retarget): mark the old review(s)
+  // as superseded so readers do not mistake them for the current verdict.
+  const supersededCount = await supersedeBaseChangedReviews(owner, repo, prNumber, baseRef, token);
+  if (supersededCount > 0) {
+    console.log('Superseded outdated review(s) with a different base', { supersededCount });
+  }
 
   // Wrap the POST in a bounded retry for GitHub's transient "internal error" 422.
   // bail predicate scopes retries to the transient body only — real validation 422s

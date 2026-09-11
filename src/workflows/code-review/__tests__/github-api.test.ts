@@ -17,6 +17,10 @@ import {
   completeCheckRun,
   failCheckRun,
   publishReview,
+  findInheritedCommitRefs,
+  parseReviewMarker,
+  buildSupersededBody,
+  supersedeBaseChangedReviews,
 } from '../github-api';
 
 beforeEach(() => {
@@ -297,7 +301,10 @@ describe('publishReview (integration of guards)', () => {
   const FILES = [{ filename: 'src/a.ts', patch: PATCH }];
 
   it('drops bad-anchor comments, keeps valid ones, and prepends SHA metadata', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ id: 99 }) });
+    // first call: supersede GET reviews (empty list) · second: the review POST
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) })
+      .mockResolvedValue({ ok: true, json: () => Promise.resolve({ id: 99 }) });
 
     const dropped = await publishReview(
       'owner', 'repo', 1, 'abc123HEAD',
@@ -317,9 +324,10 @@ describe('publishReview (integration of guards)', () => {
       'main'
     );
 
-    // exactly one POST happened
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [, opts] = mockFetch.mock.calls[0] as [string, any];
+    // exactly one POST happened (plus the supersede GET before it)
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][1]?.method).toBe('GET');
+    const [, opts] = mockFetch.mock.calls[1] as [string, any];
     const body = JSON.parse(opts.body);
 
     // only the valid comment survived
@@ -398,5 +406,102 @@ describe('publishReview (integration of guards)', () => {
     const body = JSON.parse(opts.body);
     expect(body.event).toBe('COMMENT'); // approved -> COMMENT
     expect(body.body).toContain('DonMerge completed the review but produced limited output');
+  });
+});
+
+describe('findInheritedCommitRefs', () => {
+  it('detects squash-merge and merge-commit subjects from other PRs', () => {
+    const subjects = [
+      'fix(gbp): list every Business Profile location in the RWG picker (#3976)',
+      'Merge pull request #3979 from tableoltd/hotfix/manual-verify',
+      'fix: use tableo as sender alias for sms',
+    ];
+    expect(findInheritedCommitRefs(subjects, 3992)).toEqual(['#3976', '#3979']);
+  });
+
+  it('excludes the current PR number', () => {
+    const subjects = ['fix: real change (#3992)', 'fix: other (#3991)'];
+    expect(findInheritedCommitRefs(subjects, 3992)).toEqual(['#3991']);
+  });
+
+  it('does not match issue references that are not merge suffixes', () => {
+    const subjects = [
+      'fix: handle #3162 sender alias',
+      'chore: sync with develop (#3162 later)',
+    ];
+    expect(findInheritedCommitRefs(subjects, 3992)).toEqual([]);
+  });
+});
+
+describe('parseReviewMarker', () => {
+  it('parses the DONMERGE_REVIEW marker', () => {
+    const body = '<!-- DONMERGE_REVIEW: {"headSha":"abc","baseRef":"develop","reviewedAt":"2026-09-10T19:49:55.401Z"} -->\n\nLooks fine.';
+    expect(parseReviewMarker(body)).toEqual({
+      headSha: 'abc',
+      baseRef: 'develop',
+      reviewedAt: '2026-09-10T19:49:55.401Z',
+    });
+  });
+
+  it('returns null for bodies without a marker or with broken JSON', () => {
+    expect(parseReviewMarker('plain body')).toBeNull();
+    expect(parseReviewMarker('<!-- DONMERGE_REVIEW: {broken -->')).toBeNull();
+  });
+});
+
+describe('buildSupersededBody', () => {
+  const body = '<!-- DONMERGE_REVIEW: {"headSha":"abc","baseRef":"develop"} -->\n\nOriginal verdict.';
+
+  it('inserts the note after the marker', () => {
+    const out = buildSupersededBody(body, 'develop', 'master');
+    expect(out).toContain('OUTDATED — superseded');
+    expect(out.indexOf('-->')).toBeLessThan(out.indexOf('OUTDATED'));
+    expect(out).toContain('`develop`');
+    expect(out).toContain('`master`');
+    expect(out.endsWith('Original verdict.')).toBe(true);
+  });
+
+  it('is idempotent', () => {
+    const once = buildSupersededBody(body, 'develop', 'master');
+    expect(buildSupersededBody(once, 'develop', 'master')).toBe(once);
+  });
+});
+
+describe('supersedeBaseChangedReviews', () => {
+  const botOld = {
+    id: 1,
+    user: { type: 'Bot' },
+    body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","baseRef":"develop"} -->\n\nOld verdict.',
+  };
+  const botSameBase = {
+    id: 2,
+    user: { type: 'Bot' },
+    body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","baseRef":"master"} -->\n\nSame-base verdict.',
+  };
+  const human = { id: 3, user: { type: 'User' }, body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","baseRef":"develop"} -->\n\nHuman.' };
+
+  it('edits only bot reviews whose baseRef differs from the current base', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve([botOld, botSameBase, human]) });
+
+    const count = await supersedeBaseChangedReviews('owner', 'repo', 5, 'master', 'token');
+
+    expect(count).toBe(1);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [url, opts] = mockFetch.mock.calls[1] as [string, any];
+    expect(url).toContain('/pulls/5/reviews/1');
+    expect(opts.method).toBe('PUT');
+    expect(JSON.parse(opts.body).body).toContain('OUTDATED — superseded');
+  });
+
+  it('is a no-op without a current baseRef', async () => {
+    const count = await supersedeBaseChangedReviews('owner', 'repo', 5, undefined, 'token');
+    expect(count).toBe(0);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('fails open when listing reviews errors', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('boom') });
+    const count = await supersedeBaseChangedReviews('owner', 'repo', 5, 'master', 'token');
+    expect(count).toBe(0);
   });
 });

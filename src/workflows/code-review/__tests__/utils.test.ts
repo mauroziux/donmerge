@@ -43,7 +43,7 @@ describe('parseRepoConfigs', () => {
     expect(result.get('tableoltd/my-repo')).toEqual({
       owner: 'tableoltd',
       repo: 'my-repo',
-      baseBranch: 'main',
+      baseBranches: ['main'],
     });
   });
 
@@ -53,21 +53,35 @@ describe('parseRepoConfigs', () => {
     expect(result.get('tableoltd/repo1')).toEqual({
       owner: 'tableoltd',
       repo: 'repo1',
-      baseBranch: 'main',
+      baseBranches: ['main'],
     });
     expect(result.get('tableoltd/repo2')).toEqual({
       owner: 'tableoltd',
       repo: 'repo2',
-      baseBranch: 'develop',
+      baseBranches: ['develop'],
     });
   });
 
   it('should handle mixed repos with and without branch', () => {
     const result = parseRepoConfigs('org/repo1:main,org/repo2,org/repo3:staging');
     expect(result.size).toBe(3);
-    expect(result.get('org/repo1')?.baseBranch).toBe('main');
-    expect(result.get('org/repo2')?.baseBranch).toBeUndefined();
-    expect(result.get('org/repo3')?.baseBranch).toBe('staging');
+    expect(result.get('org/repo1')?.baseBranches).toEqual(['main']);
+    expect(result.get('org/repo2')?.baseBranches).toBeUndefined();
+    expect(result.get('org/repo3')?.baseBranches).toEqual(['staging']);
+  });
+
+  it('should parse multiple allowed bases with + separator', () => {
+    const result = parseRepoConfigs('tableoltd/rms:develop+master');
+    expect(result.get('tableoltd/rms')).toEqual({
+      owner: 'tableoltd',
+      repo: 'rms',
+      baseBranches: ['develop', 'master'],
+    });
+  });
+
+  it('should ignore an empty base list', () => {
+    const result = parseRepoConfigs('tableoltd/repo1:');
+    expect(result.size).toBe(0);
   });
 
   it('should normalize repo names to lowercase', () => {
@@ -98,7 +112,7 @@ describe('getRepoConfig', () => {
     expect(result).toEqual({
       owner: 'tableoltd',
       repo: 'repo1',
-      baseBranch: 'main',
+      baseBranches: ['main'],
     });
   });
 

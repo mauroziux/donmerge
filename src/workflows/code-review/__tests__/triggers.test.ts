@@ -57,6 +57,26 @@ describe('parseTrigger', () => {
       expect(result.reason).toBe('ignored pull_request action');
     });
 
+    it('should trigger with retrigger=true on base retarget (edited + changes.base)', () => {
+      const payload = createPullRequestPayload({
+        action: 'edited',
+        changes: { base: { ref: { from: 'develop' } } },
+      });
+      const result = parseTrigger('pull_request', payload);
+      expect(result).toEqual({
+        shouldRun: true,
+        prNumber: 42,
+        retrigger: true,
+      });
+    });
+
+    it('should NOT trigger on title/body edits (no base change)', () => {
+      const payload = createPullRequestPayload({ action: 'edited' });
+      const result = parseTrigger('pull_request', payload);
+      expect(result.shouldRun).toBe(false);
+      expect(result.reason).toBe('ignored pull_request action');
+    });
+
     it('should NOT trigger on "labeled" action', () => {
       const payload = createPullRequestPayload({ action: 'labeled' });
       const result = parseTrigger('pull_request', payload);

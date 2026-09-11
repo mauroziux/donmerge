@@ -15,6 +15,7 @@ import { ErrorCode, type ErrorCode as ErrorCodeType } from './error-codes';
  * Examples:
  * - "tableoltd/repo1:main,tableoltd/repo2:develop"
  * - "org/repo1:main,org/repo2,org/repo3:staging"
+ * - "org/repo1:develop+master" (multiple allowed bases, '+'-separated)
  */
 export function parseRepoConfigs(configVar?: string): Map<string, RepoConfig> {
   const configs = new Map<string, RepoConfig>();
@@ -27,18 +28,22 @@ export function parseRepoConfigs(configVar?: string): Map<string, RepoConfig> {
   const entries = raw.split(',').map(e => e.trim()).filter(e => e.length > 0);
   
   for (const entry of entries) {
-    // Check if entry has branch specified: "owner/repo:branch"
+    // Check if entry has branch specified: "owner/repo:branch" (or "owner/repo:b1+b2")
     const colonIndex = entry.lastIndexOf(':');
     
     if (colonIndex > 0) {
       // Has branch specified
       const repoPart = entry.slice(0, colonIndex);
-      const branch = entry.slice(colonIndex + 1);
+      const baseBranches = entry
+        .slice(colonIndex + 1)
+        .split('+')
+        .map(b => b.trim())
+        .filter(b => b.length > 0);
       const [owner, repo] = repoPart.split('/');
       
-      if (owner && repo) {
+      if (owner && repo && baseBranches.length > 0) {
         const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
-        configs.set(key, { owner, repo, baseBranch: branch });
+        configs.set(key, { owner, repo, baseBranches });
       }
     } else {
       // No branch specified - review all PRs

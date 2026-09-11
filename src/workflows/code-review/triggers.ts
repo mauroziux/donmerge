@@ -17,14 +17,19 @@ export function parseTrigger(
   const triggerTagNormalized = (triggerTag ?? '@donmerge').trim();
 
   if (event === 'pull_request') {
+    // Base retargets (develop→master and similar) change what the PR diff means:
+    // the previous review no longer describes what will be merged. Re-review.
+    const isBaseRetarget =
+      payload.action === 'edited' && Boolean(payload.changes?.base?.ref?.from);
     const valid =
       payload.action === 'opened' ||
       payload.action === 'synchronize' ||
-      payload.action === 'reopened';
+      payload.action === 'reopened' ||
+      isBaseRetarget;
     if (!valid || !payload.pull_request) {
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'ignored pull_request action' };
     }
-    const retrigger = payload.action === 'synchronize';
+    const retrigger = payload.action === 'synchronize' || isBaseRetarget;
     return { shouldRun: true, prNumber: payload.pull_request.number, retrigger };
   }
 
