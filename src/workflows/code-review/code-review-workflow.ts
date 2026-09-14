@@ -194,7 +194,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       // Step 3: Run LLM review
       const llmResult = await step.do('run-llm-review', {
         retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
-        timeout: '20 minutes',
+        timeout: '25 minutes',
       }, async () => {
         return this.runLlmReview(preparedFiles);
       });

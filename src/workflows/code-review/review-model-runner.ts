@@ -15,7 +15,12 @@ import {
 } from './processor-utils';
 import type { ModelConfig } from '../../lib/llm-providers';
 
-export const REVIEW_MODEL_PROMPT_TIMEOUT_MS = 1_200_000;
+// Must stay well below the run-llm-review step timeout: when this equals/exceeds
+// it, the step dies before a timed-out model can fall back to the next one and
+// the durable retry just replays the same hang (observed 3x20min on PR 4002).
+// 6min/prompt x 3 models fits the 25min step; format-retry worst case can
+// still exceed — accepted, timeouts are the observed failure mode.
+export const REVIEW_MODEL_PROMPT_TIMEOUT_MS = 360_000;
 
 /** A provider or output failure that is safe to handle by trying another model. */
 export class ModelReviewError extends Error {
