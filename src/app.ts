@@ -69,6 +69,21 @@ app.get('/api/v1/status/*', handleJobStatus);
 // Debug: probe each configured LLM provider from inside a real sandbox.
 // Auth-gated. Used to diagnose provider/gateway outages (see rms#4002 incident).
 app.post('/api/v1/debug/providers', async (c) => {
+  const probeModel = new URL(c.req.url).searchParams.get('model');
+  if (probeModel) {
+    const { getSandbox: gs } = await import('@cloudflare/sandbox');
+    const sb = gs((c.env as any).Sandbox, `egress-debug-${Date.now()}`, { sleepAfter: '1m' });
+    try {
+      await sb.setEnvVars({ CF_AI_GATEWAY_TOKEN: (c.env as any).CF_AI_GATEWAY_TOKEN ?? '', CF_AI_GATEWAY_URL: (c.env as any).CF_AI_GATEWAY_URL ?? '' });
+      const r = await sb.exec(
+        `curl -s -m 45 -o /tmp/p.json -w '%{http_code} %{time_total}s' "$CF_AI_GATEWAY_URL/compat/chat/completions" -H "Authorization: Bearer $CF_AI_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d '{"model":"${probeModel}","messages":[{"role":"user","content":"say OK"}],"max_tokens":8}'; head -c 250 /tmp/p.json`,
+        { timeout: 60_000 }
+      );
+      return c.json({ model: probeModel, result: (r?.stdout ?? '').trim() });
+    } finally {
+      await (sb.destroy?.() ?? Promise.resolve());
+    }
+  }
   const key = (c.req.header('Authorization') ?? '').replace('Bearer ', '');
   const valid = (c.env.DONMERGE_API_KEYS ?? '').split(',').map((k: string) => k.trim()).includes(key);
   if (!valid) return c.json({ error: 'Unauthorized' }, 401);
@@ -92,7 +107,7 @@ app.post('/api/v1/debug/providers', async (c) => {
       tiny('https://api.kimi.com/coding/v1/chat/completions', '$KIMI_API_KEY', 'k3'),
       tiny('https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', '$GLM_API_KEY', 'glm-4.7'),
       tiny('https://api.openai.com/v1/chat/completions', '$OPENAI_API_KEY', 'gpt-4o'),
-      t(`curl -s -m 30 -o /tmp/g.json -w '%{http_code} %{time_total}s' "$CF_AI_GATEWAY_URL/compat/chat/completions" -H "Authorization: Bearer $CF_AI_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "{\"model\":\"dynamic/$CF_AI_GATEWAY_ROUTE\",\"messages\":[{\"role\":\"user\",\"content\":\"say OK\"}],\"max_tokens\":5}"; head -c 200 /tmp/g.json`),
+      t(`printf '%s' '{"model":"dynamic/'"$CF_AI_GATEWAY_ROUTE"'","messages":[{"role":"user","content":"say OK"}],"max_tokens":5}' > /tmp/g.json; curl -s -m 30 -o /tmp/gr.json -w '%{http_code} %{time_total}s' "$CF_AI_GATEWAY_URL/compat/chat/completions" -H "Authorization: Bearer $CF_AI_GATEWAY_TOKEN" -H 'Content-Type: application/json' -H 'cf-aig-skip-cache: true' -d @/tmp/g.json; head -c 250 /tmp/gr.json`),
     ]);
     return c.json({ kimi: fmt(kimi), glm: fmt(glm), openai: fmt(openai), gateway: fmt(gateway) });
   } finally {
