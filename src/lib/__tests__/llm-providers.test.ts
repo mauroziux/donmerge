@@ -188,25 +188,26 @@ describe('llm-providers', () => {
 });
 
 describe('review model fallback order', () => {
-  it('keeps direct providers after the gateway model', () => {
+  it('primary first, then gateway and direct providers as fallbacks', () => {
     expect(resolveReviewModels({
       primaryModel: { providerID: 'kimi', modelID: 'k3' },
       gatewayModel: { providerID: 'aigateway', modelID: 'dynamic/review' },
       glmApiKey: 'glm-key',
       fallbackModel: { providerID: 'openai', modelID: 'gpt-4o' },
     })).toEqual([
+      { providerID: 'kimi', modelID: 'k3' },
       { providerID: 'aigateway', modelID: 'dynamic/review' },
-      { providerID: 'glm', modelID: '5.2' },
+      { providerID: 'glm', modelID: 'glm-4.7' },
       { providerID: 'openai', modelID: 'gpt-4o' },
     ]);
   });
 
   it('does not duplicate the primary or fallback model', () => {
     expect(resolveReviewModels({
-      primaryModel: { providerID: 'glm', modelID: '5.2' },
+      primaryModel: { providerID: 'glm', modelID: 'glm-4.7' },
       glmApiKey: 'glm-key',
-      fallbackModel: { providerID: 'glm', modelID: '5.2' },
-    })).toEqual([{ providerID: 'glm', modelID: '5.2' }]);
+      fallbackModel: { providerID: 'glm', modelID: 'glm-4.7' },
+    })).toEqual([{ providerID: 'glm', modelID: 'glm-4.7' }]);
   });
 });
 

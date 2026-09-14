@@ -139,9 +139,15 @@ export interface ModelConfig {
   modelID: string;
 }
 
+/** GLM coding-plan model that answers on GLM_BASE_URL (verified 200).
+ * NOTE: '5.2' returns 400 "model does not exist" on the coding endpoint. */
+export const GLM_FALLBACK_MODEL = 'glm-4.7';
+
 /**
- * Build the review model order, keeping a direct-provider escape hatch when
- * the gateway is enabled but unavailable.
+ * Build the review model order. Primary (proven direct provider) goes first —
+ * the gateway hangs for minutes when its route is unhealthy, and a gateway-first
+ * chain burns the per-model timeout on every review before reaching working
+ * providers (observed tableoltd/rms#4002, 2026-09-14).
  */
 export function resolveReviewModels(options: {
   primaryModel: ModelConfig;
@@ -149,10 +155,16 @@ export function resolveReviewModels(options: {
   glmApiKey?: string;
   fallbackModel: ModelConfig;
 }): ModelConfig[] {
-  const models = [options.gatewayModel ?? options.primaryModel];
+  const models = [options.primaryModel];
 
-  if (options.glmApiKey?.trim() && !models.some((m) => m.providerID === 'glm' && m.modelID === '5.2')) {
-    models.push({ providerID: 'glm', modelID: '5.2' });
+  if (options.gatewayModel && !models.some(
+    (m) => m.providerID === options.gatewayModel!.providerID && m.modelID === options.gatewayModel!.modelID
+  )) {
+    models.push(options.gatewayModel);
+  }
+
+  if (options.glmApiKey?.trim() && !models.some((m) => m.providerID === 'glm')) {
+    models.push({ providerID: 'glm', modelID: GLM_FALLBACK_MODEL });
   }
 
   if (!models.some(
