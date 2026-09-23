@@ -73,4 +73,45 @@ describe('review-model-runner', () => {
     // First model: initial + one repair. Second model: one provider failure.
     expect(prompt).toHaveBeenCalledTimes(3);
   });
+
+  it('marks sandbox-infrastructure failures as transient (retryable)', async () => {
+    // Real messages from workflow instance review-tableoltd-rms-4008 / -4039.
+    const prompt = vi.fn()
+      .mockRejectedValueOnce(
+        new Error(
+          'Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.',
+        ),
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          'produced no output after 306s and 20 empty polls. The agent may have failed to start — check model ID and API key.',
+        ),
+      );
+
+    const error = await runReviewModels(runnerInput(prompt)).then(
+      () => {
+        throw new Error('expected runReviewModels to fail');
+      },
+      (e) => e as AllModelsFailedError,
+    );
+
+    expect(error).toBeInstanceOf(AllModelsFailedError);
+    expect(error.hasTransientSandboxFailures()).toBe(true);
+  });
+
+  it('leaves pure model failures non-transient', async () => {
+    const prompt = vi.fn()
+      .mockRejectedValueOnce(new Error('No ---RESULT_START--- / ---RESULT_END--- block found in the assistant response.'))
+      .mockRejectedValueOnce(new Error('LLM prompt timed out after 360s (openai/gpt-4o)'));
+
+    const error = await runReviewModels(runnerInput(prompt)).then(
+      () => {
+        throw new Error('expected runReviewModels to fail');
+      },
+      (e) => e as AllModelsFailedError,
+    );
+
+    expect(error).toBeInstanceOf(AllModelsFailedError);
+    expect(error.hasTransientSandboxFailures()).toBe(false);
+  });
 });

@@ -43,6 +43,25 @@ export class AllModelsFailedError extends Error {
     );
     this.name = 'AllModelsFailedError';
   }
+
+  /** True when at least one failure was sandbox/DO infrastructure trouble, not a model problem. */
+  hasTransientSandboxFailures(): boolean {
+    return this.failures.some((failure) => isTransientSandboxFailure(failure.message));
+  }
+}
+
+const TRANSIENT_SANDBOX_FAILURE_PATTERNS = [
+  // Sandbox DO was reset/evicted mid-review (e.g. PR rms#4008: every model
+  // failed instantly with this, then the review died as non-retryable).
+  'no longer active',
+  // Container/agent never booted (observed as all-provider 360s timeouts).
+  'failed to start',
+  'empty polls',
+];
+
+/** Whether an error message looks like transient sandbox infrastructure trouble. */
+export function isTransientSandboxFailure(message: string): boolean {
+  return TRANSIENT_SANDBOX_FAILURE_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
 interface ReviewModelRunnerInput {

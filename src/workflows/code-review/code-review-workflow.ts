@@ -630,6 +630,12 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       return { preparedFiles, result };
     } catch (error) {
       if (error instanceof AllModelsFailedError) {
+        // A dead sandbox DO reads as a failure on every model (e.g. "this
+        // Durable Object instance is no longer active"). A fresh sandbox on
+        // step replay usually recovers it, so keep those retryable.
+        if (error.hasTransientSandboxFailures()) {
+          throw error;
+        }
         // Model/provider failures are already exhausted locally. Do not let
         // the durable step replay the same quality-repair/fallback chain.
         throw new NonRetryableError(error.message);
