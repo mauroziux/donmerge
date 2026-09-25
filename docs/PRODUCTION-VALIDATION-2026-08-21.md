@@ -90,3 +90,33 @@ This is configuration behavior, not a DonMerge failure. It is a coverage gap onl
 - DonMerge check on #3707 completed successfully as an execution, with a real review finding.
 - All six follow-up `DM-E005` reruns completed successfully.
 - Earlier source verification: `npm run typecheck`, `npm test -- --run` (1096 tests), `git diff --check`, and `npx wrangler deploy --dry-run` passed before production deployment.
+
+## Follow-up production validation: AI Gateway / DeepSeek (2026-09-24)
+
+### Incident and diagnosis
+
+Reviews on `tableoltd/rms` were being accepted by the GitHub webhook and queued, but the Workflow failed during `run-llm-review`:
+
+- Kimi K3, the configured primary, had exhausted its weekly quota.
+- OpenAI reported that the account had no credits remaining.
+- GLM did not produce a usable result in the failed attempts.
+- The AI Gateway could answer a small probe, but a real review prompt ran longer than the previous 6-minute per-model timeout.
+- When a timed-out prompt left OpenCode unable to create another session, that sandbox failure was treated as non-retryable.
+
+The gateway probe identified its serving model as Workers AI `@cf/deepseek-ai/deepseek-v4-flash-0731`. The dynamic route `donmerge-text-fallback` is configured in Cloudflare AI Gateway; route ordering is external to this repository and should keep DeepSeek first.
+
+### Changes deployed
+
+- Set `CODEX_MODEL` in production and staging to `aigateway/dynamic/donmerge-text-fallback`; aligned `DEFAULT_PRIMARY_MODEL` with it. Kimi is no longer part of the default code-review chain.
+- Increased the per-model review timeout from 6 to 10 minutes and the `run-llm-review` Workflow step timeout from 25 to 40 minutes.
+- Classify OpenCode session-creation failures after a timeout as transient sandbox failures, allowing the Workflow to retry with a fresh sandbox.
+- Kept the existing GLM and OpenAI fallbacks; OpenAI still requires credits to be a useful fallback. Kimi-specific support remains available for explicitly configured/debug paths, but is not the default review model.
+
+Production Worker version: `25d6ce14-4ce4-4436-bc3d-fc881efbf664`.
+
+### Verification
+
+- `npm run typecheck` passed; `npm run test` passed (45 files, 1112 tests); workspace LSP diagnostics were clean.
+- End-to-end reviews were published by DonMerge on `tableoltd/rms` PRs #4050 (`COMMENTED`), #4051 (`CHANGES_REQUESTED`), and #4052 (`CHANGES_REQUESTED`).
+- The completed real review generations took approximately 289–468 seconds, confirming why the former 360-second timeout was too short for some prompts.
+- The production probe and successful PR reviews confirm gateway/DeepSeek is reachable and can complete real reviews. Provider billing/quota remains an operational dependency for the direct fallback providers.
