@@ -18,9 +18,10 @@ import type { ModelConfig } from '../../lib/llm-providers';
 // Must stay well below the run-llm-review step timeout: when this equals/exceeds
 // it, the step dies before a timed-out model can fall back to the next one and
 // the durable retry just replays the same hang (observed 3x20min on PR 4002).
-// 6min/prompt x 3 models fits the 25min step; format-retry worst case can
-// still exceed — accepted, timeouts are the observed failure mode.
-export const REVIEW_MODEL_PROMPT_TIMEOUT_MS = 360_000;
+// 10min/prompt x 3 models fits the 40min step; format-retry worst case can
+// still exceed — accepted, timeouts are the observed failure mode. DeepSeek via
+// the AI Gateway needs >6min on real review prompts (observed rms#4050, 2026-09-24).
+export const REVIEW_MODEL_PROMPT_TIMEOUT_MS = 600_000;
 
 /** A provider or output failure that is safe to handle by trying another model. */
 export class ModelReviewError extends Error {
@@ -57,6 +58,10 @@ const TRANSIENT_SANDBOX_FAILURE_PATTERNS = [
   // Container/agent never booted (observed as all-provider 360s timeouts).
   'failed to start',
   'empty polls',
+  // OpenCode server wedged after a timed-out prompt kills subsequent session
+  // creations (observed rms#4050: gateway timeout, then glm+openai both died
+  // with this). A retry replays on a fresh sandbox and recovers.
+  'Failed to create OpenCode session',
 ];
 
 /** Whether an error message looks like transient sandbox infrastructure trouble. */

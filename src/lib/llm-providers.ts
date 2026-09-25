@@ -1,7 +1,7 @@
 /**
  * LLM provider configuration shared across DonMerge workflows.
  *
- * Primary model: Kimi K3 (via Kimi Code, an OpenAI-compatible endpoint).
+ * Primary model: CF AI Gateway dynamic route (Workers AI chain, DeepSeek first).
  * Fallback:      OpenAI gpt-4o.
  *
  * Kimi Code is fully OpenAI-compatible (same /chat/completions request/response
@@ -128,8 +128,11 @@ export function resolveDirectFetchBaseURL(
   return resolveOpenAIBaseURL(providerID);
 }
 
-/** Default primary model (provider/model format consumed by parseModelConfig). */
-export const DEFAULT_PRIMARY_MODEL = 'kimi/k3';
+/** Default primary model (provider/model format consumed by parseModelConfig).
+ * Routes through the CF AI Gateway dynamic route, whose config owns the
+ * Workers AI fallback chain (DeepSeek first). Kimi removed: weekly quota
+ * exhausted 2026-09-24; OpenAI fallback has no credits. */
+export const DEFAULT_PRIMARY_MODEL = 'aigateway/dynamic/donmerge-text-fallback';
 
 /** Default fallback model, used when the primary provider fails. */
 export const DEFAULT_FALLBACK_MODEL = 'openai/gpt-4o';

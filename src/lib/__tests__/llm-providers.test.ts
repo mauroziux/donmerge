@@ -37,7 +37,7 @@ describe('llm-providers', () => {
     expect(KIMI_BASE_URL).toBe('https://api.kimi.com/coding/v1');
     expect(GLM_BASE_URL).toBe('https://open.bigmodel.cn/api/coding/paas/v4');
     expect(OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
-    expect(DEFAULT_PRIMARY_MODEL).toBe('kimi/k3');
+    expect(DEFAULT_PRIMARY_MODEL).toBe('aigateway/dynamic/donmerge-text-fallback');
     expect(DEFAULT_FALLBACK_MODEL).toBe('openai/gpt-4o');
   });
 
