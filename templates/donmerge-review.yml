@@ -29,6 +29,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  checks: write          # DonMerge creates and updates a check run
   pull-requests: write   # needed to post review comments
   contents: read          # needed to read PR diff
 
