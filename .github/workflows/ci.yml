@@ -34,31 +34,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify wrangler CODEX_MODEL matches parseModelConfig fallback
+      - name: Verify wrangler model defaults match code
         run: |
-          # Extract CODEX_MODEL from wrangler.jsonc (strip comments, pull value)
-          WRANGLER_MODEL=$(grep -oP '"CODEX_MODEL"\s*:\s*"\K[^"]+' wrangler.jsonc)
+          WRANGLER_PRIMARY=$(sed -nE 's/.*"CODEX_MODEL"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' wrangler.jsonc | head -1)
+          WRANGLER_FALLBACK=$(sed -nE 's/.*"FALLBACK_MODEL"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' wrangler.jsonc | head -1)
+          DEFAULT_PRIMARY=$(sed -nE "s/.*DEFAULT_PRIMARY_MODEL = '([^']+)'.*/\1/p" src/lib/llm-providers.ts | head -1)
+          DEFAULT_FALLBACK=$(sed -nE "s/.*DEFAULT_FALLBACK_MODEL = '([^']+)'.*/\1/p" src/lib/llm-providers.ts | head -1)
 
-          # Extract the fallback model from parseModelConfig in utils.ts
-          # Matches the first string after raw ?? which is the default fallback
-          FALLBACK_MODEL=$(grep -oP "raw \?\? '[^']+'\)" src/workflows/code-review/utils.ts | head -1 | grep -oP "'\K[^']+")
-
-          if [ -z "$WRANGLER_MODEL" ]; then
-            echo "FAIL: Could not extract CODEX_MODEL from wrangler.jsonc" >&2
+          if [ -z "$WRANGLER_PRIMARY" ] || [ -z "$WRANGLER_FALLBACK" ] || [ -z "$DEFAULT_PRIMARY" ] || [ -z "$DEFAULT_FALLBACK" ]; then
+            echo "FAIL: Could not extract model defaults from wrangler.jsonc or src/lib/llm-providers.ts" >&2
             exit 1
           fi
 
-          if [ -z "$FALLBACK_MODEL" ]; then
-            echo "FAIL: Could not extract fallback model from src/workflows/code-review/utils.ts" >&2
+          echo "wrangler primary : $WRANGLER_PRIMARY"
+          echo "code default     : $DEFAULT_PRIMARY"
+          echo "wrangler fallback: $WRANGLER_FALLBACK"
+          echo "code fallback    : $DEFAULT_FALLBACK"
+
+          if [ "$WRANGLER_PRIMARY" != "$DEFAULT_PRIMARY" ] || [ "$WRANGLER_FALLBACK" != "$DEFAULT_FALLBACK" ]; then
+            echo "FAIL: wrangler model configuration does not match code defaults" >&2
             exit 1
           fi
 
-          echo "wrangler.jsonc CODEX_MODEL : $WRANGLER_MODEL"
-          echo "parseModelConfig fallback  : $FALLBACK_MODEL"
-
-          if [ "$WRANGLER_MODEL" != "$FALLBACK_MODEL" ]; then
-            echo "FAIL: CODEX_MODEL ($WRANGLER_MODEL) does not match parseModelConfig fallback ($FALLBACK_MODEL)" >&2
-            exit 1
-          fi
-
-          echo "PASS: Models are in sync."
+          echo "PASS: Model defaults are in sync."
