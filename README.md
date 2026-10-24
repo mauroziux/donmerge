@@ -129,6 +129,7 @@ For direct Sentry integration, configure the `POST /webhook/sentry` endpoint (se
 |----------|-------------|
 | [Push API Reference](./docs/push-api.md) | Full endpoint documentation, request/response schemas, error codes |
 | [Setup Guide](./docs/setup-guide.md) | Step-by-step onboarding for new teams |
+| [External Repository Onboarding](./docs/external-repository-onboarding.md) | Connect repositories outside Tableo through the Push API |
 | [Webhook Setup](./WEBHOOK_SETUP.md) | GitHub App / webhook mode configuration |
 | [Code Review Process](./README-CODE-REVIEW.md) | Detailed code review workflow and configuration |
 
