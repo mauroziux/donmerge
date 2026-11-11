@@ -646,6 +646,31 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
 });
 
 
+describe('ReviewProcessor coordination — initial create recovery', () => {
+  it('retries the exact pending workflow after the caller dies before create', async () => {
+    const { storage } = createMockStorage();
+    const create = vi.fn(async (_options: unknown) => {});
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create } } as never);
+    const started = await processor.startReview({ ...baseContext, headSha: 'a' });
+    await processor.startReview({ ...baseContext, headSha: 'b' });
+    await processor.alarm();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({ params: { runId: started.runId } });
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'b' });
+  });
+
+  it('does not restart a queued workflow when create reports already_exists', async () => {
+    const { storage } = createMockStorage();
+    const create = vi.fn(async () => { throw new Error('already_exists'); });
+    const get = vi.fn();
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create, get } } as never);
+    await processor.startReview(baseContext);
+    await processor.alarm();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+  });
+});
+
 describe('ReviewProcessor coordination — aged fenced pending', () => {
   it('does not replace an old pending owner or discard its newer deferred push', async () => {
     const { store, storage } = createMockStorage();

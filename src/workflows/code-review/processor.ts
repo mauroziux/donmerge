@@ -13,7 +13,7 @@ import type {
   TrackedIssue,
 } from './types';
 import { loadTrackedIssues, saveTrackedIssues } from './issue-store';
-import { buildReviewWorkflowInstanceId } from './workflow-id';
+import { buildReviewWorkflowInstanceId, buildRunScopedInstanceId } from './workflow-id';
 
 // State keys
 const STATE_KEYS = {
@@ -188,6 +188,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
 
     const runId = crypto.randomUUID();
 
+    // Arm recovery before publishing a pending owner. If the caller dies
+    // before Workflow.create, the alarm can create the same run-scoped ID.
+    await this.state.storage.setAlarm(Date.now() + 60_000);
     // Store the context
     await this.state.storage.put(STATE_KEYS.context, context);
     // A fresh start invalidates any deferred request from a previous cycle
@@ -326,6 +329,35 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
    * pendingLatest survives failed handoffs — a deferred push is never lost.
    */
   async alarm(): Promise<void> {
+    const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    const handoff = await this.state.storage.get(STATE_KEYS.handoff);
+    if (status?.state === 'pending' && status.runId && !handoff) {
+      const context = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
+      if (!context || !this.env.CODE_REVIEW_WORKFLOW) {
+        await this.state.storage.setAlarm(Date.now() + 60_000);
+        return;
+      }
+      const instanceId = buildRunScopedInstanceId(context.owner, context.repo, context.prNumber, context.commentId, status.runId);
+      // Retry this exact identity and immutable parameters, never a new run.
+      await this.state.storage.setAlarm(Date.now() + 60_000);
+      try {
+        await this.env.CODE_REVIEW_WORKFLOW.create({
+          id: instanceId,
+          params: {
+            owner: context.owner, repo: context.repo, prNumber: context.prNumber,
+            retrigger: context.retrigger, commentId: context.commentId,
+            commentType: context.commentType, installationId: context.installationId,
+            instruction: context.instruction, focusFiles: context.focusFiles,
+            githubToken: context.githubToken, model: context.model,
+            maxFiles: context.maxFiles, runId: status.runId,
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof Error && error.message.includes('already_exists'))) throw error;
+        // Existing may be queued or running: do not restart it.
+      }
+      return;
+    }
     await this.startPendingLatestIfAny();
   }
 
