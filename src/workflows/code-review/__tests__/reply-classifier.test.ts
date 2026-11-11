@@ -360,6 +360,24 @@ describe('classifyCommandIntent', () => {
     mockFetch.mockReset();
   });
 
+  it('fails closed on an oversized command before calling either provider', async () => {
+    const body = '@donmerge dismiss ' + 'x'.repeat(1200) + ' but is that correct?';
+    expect(await classifyCommandIntent(
+      { OPENAI_API_KEY: 'sk-x', CF_ACCOUNT_ID: 'acc', CF_AI_API_TOKEN: 'tok' }, body,
+    )).toBe('question');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('sends the complete original command including surrounding whitespace to the LLM', async () => {
+    const body = '  @donmerge dismiss  ';
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({
+      choices: [{ message: { content: '{"intent":"directive"}' } }],
+    }) });
+    expect(await classifyCommandIntent({ OPENAI_API_KEY: 'sk-x' }, body)).toBe('directive');
+    const request = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(request.messages[1].content).toBe(body);
+  });
+
   it('uses the chat LLM verdict when configured', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
@@ -564,6 +582,15 @@ describe('classifyReply provider chain', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     mockFetch.mockReset();
+  });
+
+  it('does not classify an oversized human reply from a truncated prefix', async () => {
+    const replyText = 'No aplica '.repeat(150) + '¿pero es correcto?';
+    expect(await classifyReply(
+      { OPENAI_API_KEY: 'sk-x', CF_ACCOUNT_ID: 'acc', CF_AI_API_TOKEN: 'tok' },
+      { findingBody: 'finding', replyText },
+    )).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('falls through to a CLEF verdict when the configured chat LLM fails', async () => {
