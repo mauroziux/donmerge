@@ -39,6 +39,25 @@ Line comment requirements:
 6. If no blocking or clearly actionable findings exist, set approved=true and lineComments=[]`;
 
 /**
+ * Adversarial investigation rubric (plan 003-U2). Optional — enabled via
+ * DONMERGE_ADVERSARIAL_PROMPT. Teaches contract-first reasoning and
+ * counterexample search instead of description-anchored approval.
+ */
+export const INVESTIGATION_GUIDE = `ADVERSARIAL INVESTIGATION (how to analyze):
+1. Establish the contract this change must uphold from the surrounding code (callers, models, policies, configs, migrations). The PR description is the author's claim, not the contract.
+2. For each semantic change, search for a concrete counterexample that breaks it: inputs, permissions, tenant scoping, states, transactions, ordering, retries, idempotency, timezones, data volume. Compare base vs head: report pre-existing issues only when this change alters their reachability or impact.
+3. Treat the PR's own tests as claims. Check whether their assertions would fail if the implementation were wrong, whether the relevant dependency is mocked away, and whether only the happy path is exercised. Green tests are not proof of the contract.
+4. Trace effects on consumers, error paths and limits before emitting any finding. Style, refactors and architecture preferences are not findings.
+5. Emitting ZERO lineComments for a correct change is a valid, expected outcome. Never invent findings.`;
+
+/**
+ * Header for the independent second pass on a high-risk change whose first
+ * pass came back clean (plan 003-U4). Enabled via DONMERGE_SECOND_PASS.
+ */
+export const SECOND_PASS_HEADER = `SECOND INDEPENDENT PASS (high-risk change):
+An earlier review of this change reported no blocking findings. You have NOT seen its reasoning and must not assume it was correct. Perform your own full adversarial analysis focused on the invariants this change can break. If you find nothing, returning zero findings is the correct outcome — do not manufacture findings to differ.`;
+
+/**
  * Required format for each comment.
  */
 export const COMMENT_FORMAT = `COMMENT FORMAT (required for each issue):

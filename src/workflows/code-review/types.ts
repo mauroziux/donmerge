@@ -27,6 +27,12 @@ export interface WorkerEnv {
   MAX_REVIEW_FILES?: string;
   /** End-to-end model-chain budget in ms (default 35 min, plan 004-U2). */
   REVIEW_TOTAL_BUDGET_MS?: string;
+  /** 'true' → add the adversarial investigation rubric to the prompt (003-U2). */
+  DONMERGE_ADVERSARIAL_PROMPT?: string;
+  /** 'true' → verify critical findings with an independent refutation pass (003-U3). */
+  DONMERGE_VERIFY_FINDINGS?: string;
+  /** 'true' → second independent search when a high-risk change reviews clean (003-U4). */
+  DONMERGE_SECOND_PASS?: string;
   REPO_CONFIGS?: string;     // "owner/repo:branch,owner/repo2:branch2" - branch is optional
   REVIEW_TRIGGER?: string;
   DONMERGE_POST_FIXED_REPLIES?: string;

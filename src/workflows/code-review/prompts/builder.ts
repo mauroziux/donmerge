@@ -13,6 +13,8 @@ import {
   SYSTEM_PROMPT,
   PERSONALITY_SECTION,
   CRITICAL_RULES,
+  INVESTIGATION_GUIDE,
+  SECOND_PASS_HEADER,
   COMMENT_FORMAT,
   EXAMPLE_COMMENT,
   LANGUAGE_GUIDELINES,
@@ -48,6 +50,10 @@ export interface PromptBuilderOptions {
   includeExample?: boolean;
   /** Require fileSummaries in output (default: false) */
   requireFileSummaries?: boolean;
+  /** Add the adversarial investigation rubric (default: false, plan 003-U2) */
+  adversarial?: boolean;
+  /** Frame the prompt as an independent second pass (default: false, plan 003-U4) */
+  secondPass?: boolean;
 }
 
 /**
@@ -76,6 +82,8 @@ export class ReviewPromptBuilder {
     this.options = {
       includeExample: true,
       requireFileSummaries: false,
+      adversarial: false,
+      secondPass: false,
       ...options,
     };
   }
@@ -146,12 +154,23 @@ export class ReviewPromptBuilder {
 
     this.sections = [];
 
+    // 0. Second-pass framing (optional) — before everything else so the whole
+    // prompt is read as an independent counter-search.
+    if (this.options.secondPass) {
+      this.addSection(SECOND_PASS_HEADER);
+    }
+
     // 1. System prompt and personality
     this.addSection(SYSTEM_PROMPT);
     this.addSection(PERSONALITY_SECTION);
 
     // 2. Critical rules
     this.addSection(CRITICAL_RULES);
+
+    // 2.5 Adversarial investigation rubric (optional, plan 003-U2)
+    if (this.options.adversarial) {
+      this.addSection(INVESTIGATION_GUIDE);
+    }
 
     // 3. Comment format
     this.addSection(COMMENT_FORMAT);

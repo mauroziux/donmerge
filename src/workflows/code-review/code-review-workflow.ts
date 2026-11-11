@@ -71,6 +71,7 @@ import {
   filterCommentsByMatch,
   syncTrackedIssuesFromComments,
   withBlockingApproval,
+  hasBlockingFindings,
 } from './processor-utils';
 import { recordReviewFindings } from './feedback-handler';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
@@ -78,6 +79,8 @@ import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle
 import { AllModelsFailedError, runReviewModels, DEFAULT_REVIEW_TOTAL_BUDGET_MS } from './review-model-runner';
 import { PrHeadChangedError } from './review-snapshot';
 import { ErrorCode } from './error-codes';
+import { assessPrRisk, shouldRunSecondPass } from './review-risk';
+import { mergeSecondPass, verifyReviewResult } from './finding-verifier';
 import {
   DEFAULT_DIFF_CHAR_BUDGET,
   buildCoverageManifest,
@@ -672,7 +675,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           diffText,
           repoContext,
         },
-        { donmergeResolved, memoryContext }
+        {
+          donmergeResolved,
+          memoryContext,
+          adversarial: this.env.DONMERGE_ADVERSARIAL_PROMPT === 'true',
+        }
       );
 
       const promptErrorHint =
@@ -691,7 +698,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         : DEFAULT_REVIEW_TOTAL_BUDGET_MS;
       const deadlineMs = Date.now() + totalBudgetMs;
 
-      const result = await runReviewModels({
+      let result = await runReviewModels({
         flue,
         prompt,
         promptErrorHint,
@@ -701,6 +708,73 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         patternWeights,
         deadlineMs,
       });
+
+      // ── Adaptive depth (plan 003), feature-flagged OFF by default ──
+      const risk = assessPrRisk(preparedFiles.filePatches);
+      console.log('[risk] assessed', { level: risk.level, reasons: risk.reasons });
+
+      // High-risk + clean first pass → independent second search that has not
+      // seen the first pass's reasoning. Unknown risk never downgrades.
+      if (
+        this.env.DONMERGE_SECOND_PASS === 'true' &&
+        shouldRunSecondPass(risk, hasBlockingFindings(result))
+      ) {
+        console.log('[second-pass] high-risk change reviewed clean; running independent pass', {
+          reasons: risk.reasons,
+        });
+        const secondPrompt = buildReviewPrompt(
+          {
+            owner: prData.owner,
+            repo: prData.repo,
+            prNumber: prData.prNumber,
+            prTitle: prData.prTitle,
+            prBody: prData.prBody,
+            retrigger: prData.retrigger,
+            instruction: prData.instruction,
+            previousComments: activePreviousComments,
+            diffText,
+            repoContext,
+          },
+          {
+            donmergeResolved,
+            memoryContext,
+            secondPass: true,
+            adversarial: this.env.DONMERGE_ADVERSARIAL_PROMPT === 'true',
+          }
+        );
+        const second = await runReviewModels({
+          flue,
+          prompt: secondPrompt,
+          promptErrorHint,
+          models,
+          activePreviousComments,
+          severityOverrides: donmergeResolved?.config.severity,
+          patternWeights,
+          deadlineMs,
+        });
+        result = mergeSecondPass(result, second);
+      }
+
+      // Independent verification: attempt to REFUTE every critical finding.
+      // Only `supported` findings survive to publish; withheld ones are
+      // reported as unverified limitations, never silently dropped.
+      if (this.env.DONMERGE_VERIFY_FINDINGS === 'true') {
+        const verified = await verifyReviewResult({
+          promptFn: (p: string, opts: unknown) =>
+            flue.client.prompt(p, opts as never) as Promise<string>,
+          model: models[0],
+          repo: prData.repo,
+          diffText,
+          result,
+        });
+        if (verified.notes.length > 0) {
+          console.log('[verifier] withheld unconfirmed findings', {
+            count: verified.notes.length,
+          });
+        }
+        result = verified.result;
+      }
+
       return { preparedFiles, result };
     } catch (error) {
       if (error instanceof AllModelsFailedError) {

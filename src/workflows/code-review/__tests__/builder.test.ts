@@ -509,3 +509,34 @@ describe('ReviewPromptBuilder — .donmerge integration', () => {
     expect(prompt).not.toContain('PROJECT INSTRUCTIONS (from .donmerge configuration)');
   });
 });
+
+// ─── Adversarial/second-pass prompt options (plan 003) ───────────────────────
+
+describe('ReviewPromptBuilder — adversarial + second-pass options', () => {
+  it('omits the investigation rubric by default', () => {
+    const prompt = new ReviewPromptBuilder().withContext(createReviewPromptContext()).build();
+    expect(prompt).not.toContain('ADVERSARIAL INVESTIGATION');
+  });
+
+  it('includes the investigation rubric when adversarial is set', () => {
+    const prompt = new ReviewPromptBuilder({ adversarial: true })
+      .withContext(createReviewPromptContext())
+      .build();
+    expect(prompt).toContain('ADVERSARIAL INVESTIGATION');
+    expect(prompt).toContain('counterexample');
+    expect(prompt.indexOf('ADVERSARIAL INVESTIGATION')).toBeGreaterThan(
+      prompt.indexOf('CRITICAL REVIEW RUBRIC')
+    );
+  });
+
+  it('frames the whole prompt as a second pass when secondPass is set', () => {
+    const prompt = new ReviewPromptBuilder({ secondPass: true })
+      .withContext(createReviewPromptContext())
+      .build();
+    expect(prompt).toContain('SECOND INDEPENDENT PASS');
+    // Framing must precede the persona so the prompt reads as a counter-search.
+    expect(prompt.indexOf('SECOND INDEPENDENT PASS')).toBeLessThan(
+      prompt.indexOf('DonMerge 🤠')
+    );
+  });
+});
