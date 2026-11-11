@@ -18,6 +18,7 @@ import type {
 } from './types';
 import { getReviewProcessor } from '../workflows/code-review/processor';
 import { fetchPrHeadSha } from '../workflows/code-review/github-api';
+import { buildRunScopedInstanceId } from '../workflows/code-review/workflow-id';
 import { getTriageProcessor } from '../workflows/triage/processor';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -218,11 +219,19 @@ export const handlePushReview = withAuth(async (c, auth) => {
     }, 202);
   }
 
-  // Create the workflow to handle execution
+  // Create the workflow to handle execution. Run-scoped instance id: THIS
+  // run gets its own instance; restart (same delivery retry) replays THESE
+  // params, never a previous run's stale ones (plan 004-U1).
   if (c.env.CODE_REVIEW_WORKFLOW) {
-    const instanceId = `review-${body.owner}-${body.repo}-${body.pr_number}`;
+    // Workflow instance IDs reject slashes (CF throws instance.invalid_id) — use dashes, NOT buildReviewJobId (slash-form is for the DO name above).
+    const instanceId = buildRunScopedInstanceId(
+      body.owner,
+      body.repo,
+      body.pr_number,
+      undefined,
+      startResult.runId
+    );
     try {
-      // Workflow instance IDs reject slashes (CF throws instance.invalid_id) — use dashes, NOT buildReviewJobId (slash-form is for the DO name at L212).
       await c.env.CODE_REVIEW_WORKFLOW.create({
         id: instanceId,
         params: {
@@ -233,7 +242,6 @@ export const handlePushReview = withAuth(async (c, auth) => {
           model: body.model,
           maxFiles: body.max_files,
           retrigger: false,
-          // Run identity assigned by the DO, carried in params (plan 004-U1).
           runId: startResult.runId,
         },
       });

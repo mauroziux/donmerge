@@ -307,13 +307,24 @@ describe('findPublishedReviewForRun', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  it('returns unknown (not not-found) when the scan hits its page cap', async () => {
+  it('scans the WHOLE list and only returns unknown past the safety ceiling', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse(Array.from({ length: 100 }, () => ({ body: 'no marker here' })))
     );
 
     expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe('unknown');
-    expect(mockFetch).toHaveBeenCalledTimes(5);
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(200);
+  });
+
+  it('finds a marker deep in the history (beyond the old 500-review hole)', async () => {
+    const deepPage = Array.from({ length: 100 }, () => ({ body: 'no marker' }));
+    deepPage[42] = { body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"run-1"} -->' };
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(Array.from({ length: 100 }, () => ({ body: 'x' }))))
+      .mockResolvedValueOnce(jsonResponse(Array.from({ length: 100 }, () => ({ body: 'x' }))))
+      .mockResolvedValueOnce(jsonResponse(deepPage));
+
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe('found');
   });
 });
 
@@ -360,23 +371,16 @@ describe('publishReview idempotency', () => {
     expect(body.body).toContain('"runId":"run-1"');
   });
 
-  it('refuses a blind retry when the marker scan is page-capped (unknown) after an ambiguous failure', async () => {
+  it('refuses the POST at pre-check when the scan cannot prove absence (safety ceiling)', async () => {
     let postAttempts = 0;
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       if (url.endsWith('/pulls/1/reviews') && method === 'POST') {
         postAttempts += 1;
-        return {
-          ok: false,
-          status: 422,
-          text: async () => JSON.stringify({ message: 'An internal error occurred, please try again.' }),
-        };
+        return jsonResponse({ id: 1 });
       }
-      if (url.includes('/pulls/1/reviews?') && method === 'GET') {
-        // >500 reviews without our marker: the scan cannot prove absence.
-        return jsonResponse(Array.from({ length: 100 }, () => ({ body: 'x' })));
-      }
-      return jsonResponse({});
+      // >20k reviews without our marker: past the safety ceiling.
+      return jsonResponse(Array.from({ length: 100 }, () => ({ body: 'x' })));
     });
 
     await expect(
@@ -384,8 +388,8 @@ describe('publishReview idempotency', () => {
         'o', 'r', 1, 'abc', { ...cleanReviewResult(), approved: false, criticalIssues: ['x causes y'] },
         't', undefined, undefined, 'main', 'run-1'
       )
-    ).rejects.toThrow(/refusing blind retry/);
-    expect(postAttempts).toBe(1);
+    ).rejects.toThrow(/refusing POST/);
+    expect(postAttempts).toBe(0); // never a blind POST when absence is unproven
   });
 
   it('reconciles an accepted-but-lost POST instead of duplicating it', async () => {

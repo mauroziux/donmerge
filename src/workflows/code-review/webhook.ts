@@ -11,7 +11,7 @@ import { parseTrigger } from './triggers';
 import { getReviewProcessor } from './processor';
 import { fetchCommentById } from './github-api';
 import { parseFingerprint } from './fingerprint';
-import { buildReviewWorkflowInstanceId } from './workflow-id';
+import { buildRunScopedInstanceId } from './workflow-id';
 
 interface EnvWithReviewProcessor extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
@@ -250,23 +250,38 @@ export async function processGitHubCodeReviewWebhook(
   // Comment-triggered re-reviews use a comment-specific ID so they run with
   // fresh webhook credentials/instructions rather than stale workflow params.
   if (env.CODE_REVIEW_WORKFLOW) {
-    await env.CODE_REVIEW_WORKFLOW.create({
-      id: buildReviewWorkflowInstanceId(owner, repo, prNumber, commentId),
-      params: {
-        owner,
-        repo,
-        prNumber,
-        retrigger,
-        commentId,
-        commentType,
-        installationId,
-        instruction,
-        focusFiles,
-        // Run identity assigned by the DO: carried in params so a restarted
-        // instance keeps its own fencing token (plan 004-U1).
-        runId: startResult.runId,
-      },
-    });
+    // Run-scoped instance id: THIS run gets its own instance; a restart (only
+    // possible for this very delivery) replays THESE params, never a previous
+    // run's stale ones (plan 004-U1).
+    const instanceId = buildRunScopedInstanceId(owner, repo, prNumber, commentId, startResult.runId);
+    try {
+      await env.CODE_REVIEW_WORKFLOW.create({
+        id: instanceId,
+        params: {
+          owner,
+          repo,
+          prNumber,
+          retrigger,
+          commentId,
+          commentType,
+          installationId,
+          instruction,
+          focusFiles,
+          runId: startResult.runId,
+        },
+      });
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (errMsg.includes('already_exists')) {
+        // Same delivery retried after an errored create: restart OUR instance
+        // (same runId/params by construction).
+        const instance = await env.CODE_REVIEW_WORKFLOW.get(instanceId);
+        await instance.restart();
+        console.log('Restarted existing run-scoped workflow instance', { instanceId });
+      } else {
+        throw error;
+      }
+    }
   } else {
     console.warn('CODE_REVIEW_WORKFLOW not bound — review queued in DO but will not execute');
   }

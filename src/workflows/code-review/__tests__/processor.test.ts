@@ -321,12 +321,22 @@ describe('ReviewProcessor coordination', () => {
     store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
     store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb', instruction: 'check concurrency' });
 
+    // The create call must observe the NEW owner already committed (fencing
+    // can never reject the handed-off run's first write).
+    let ownerAtCreate: unknown;
+    binding.create.mockImplementation(async (opts: { id: string; params: Record<string, unknown> }) => {
+      ownerAtCreate = await storage.get<StoredStatus>('reviewStatus');
+      created.push({ id: opts.id, params: opts.params });
+    });
+
     const processor = new ReviewProcessor(state, { CODE_REVIEW_WORKFLOW: binding } as never);
     await processor.updateFromWorkflow({ state: 'complete', completedAt: new Date().toISOString(), runId: 'run-a' });
 
     // The safety alarm was armed BEFORE the create call and cleared on commit
     expect(alarms.length).toBeGreaterThanOrEqual(1);
     expect(alarmCleared()).toBe(true);
+    expect(ownerAtCreate).toMatchObject({ state: 'pending' });
+    expect((ownerAtCreate as StoredStatus).runId).toMatch(/^auto-/);
 
     expect(created).toHaveLength(1);
     expect(created[0].id).toContain('review-tableoltd-test-repo-42');
@@ -428,7 +438,8 @@ describe('ReviewProcessor coordination', () => {
     await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
 
     // The deferred push survived the failed handoff and retries are scheduled
-    // (one armed before create + one on the failure path)
+    // (one armed before commit + one on the failure path). Ownership was
+    // committed before the create attempt, so the retry's writes are fenced-in.
     expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' });
     expect(alarms.length).toBeGreaterThanOrEqual(2);
 

@@ -328,10 +328,23 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     );
     const instanceId = `${baseId}-auto-${token}`;
 
-    // Schedule the safety alarm BEFORE creating the workflow: if the DO dies
-    // anywhere between here and the commit below, the alarm retries the same
+    // Safety alarm FIRST: any crash from here on retries the same
     // deterministic instance id instead of losing the deferred push.
     await this.state.storage.setAlarm(Date.now() + 60_000);
+
+    // Commit ownership BEFORE creating the workflow: the new run's token is
+    // registered before the instance can exist, so its first write is never
+    // rejected by fencing (judge-hardened plan 004-U1). pendingLatest stays
+    // stored until the create succeeds — the alarm re-runs this handoff on
+    // any interruption, converging on the same instance id.
+    await this.state.storage.put(STATE_KEYS.context, pending);
+    await this.state.storage.put(STATE_KEYS.status, {
+      state: 'pending',
+      attempts: 0,
+      startedAt: new Date().toISOString(),
+      runId,
+    });
+
     try {
       await this.env.CODE_REVIEW_WORKFLOW.create({
         id: instanceId,
@@ -373,20 +386,12 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           error: message,
         });
         await this.state.storage.setAlarm(Date.now() + 30_000);
-        return; // pendingLatest stays stored — the deferred push is not lost
+        return; // ownership committed + pendingLatest stored — the alarm retries
       }
     }
 
-    // Commit only after the workflow exists, then clear the safety alarm: a
-    // crash before this point leaves pendingLatest + alarm armed, and the
-    // retry reuses the same deterministic instance id.
-    await this.state.storage.put(STATE_KEYS.context, pending);
-    await this.state.storage.put(STATE_KEYS.status, {
-      state: 'pending',
-      attempts: 0,
-      startedAt: new Date().toISOString(),
-      runId,
-    });
+    // Instance exists (created or restarted): consume the deferred request
+    // and clear the safety alarm.
     await this.state.storage.delete(STATE_KEYS.pendingLatest);
     await this.state.storage.deleteAlarm();
   }

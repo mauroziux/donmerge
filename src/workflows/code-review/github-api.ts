@@ -519,10 +519,10 @@ export async function publishReview(
   // Idempotent publication (plan 004-U4): a durable step replay (or a retry
   // after an ambiguous transport failure) must not post the same run's review
   // twice. If a review carrying THIS run's marker already exists, reconcile
-  // by skipping the POST. `unknown` (page-capped scan) proceeds with the POST
-  // on this fresh path — a replay after a successful post is expected to see
-  // the marker; refusing on `unknown` would drop a genuinely unpublished
-  // review on very large PRs.
+  // by skipping the POST. `unknown` (past the scan safety ceiling) REFUSES
+  // the POST: on a replay that may be our own earlier publication, and a
+  // blind POST could duplicate it. The step retry re-searches later; a
+  // genuinely unpublished review is delayed, never lost.
   if (runId) {
     const lookup = await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token);
     if (lookup === 'found') {
@@ -533,6 +533,11 @@ export async function publishReview(
         runId,
       });
       return droppedComments;
+    }
+    if (lookup === 'unknown') {
+      throw new Error(
+        `publication state unknown for run ${runId} (marker scan ceiling) — refusing POST to avoid duplication`
+      );
     }
   }
 
@@ -679,16 +684,16 @@ export async function fetchAllPrFiles(
 
 export type PublicationLookup = 'found' | 'not-found' | 'unknown';
 
+/** Safety ceiling for the marker scan. Beyond it the PR has an absurd
+ * number of reviews and `unknown` semantics apply (never a blind POST). */
+const MARKER_SCAN_MAX_PAGES = 200; // 20,000 reviews
+
 /**
  * Find a review already published by THIS run (same runId + headSha) by
- * scanning the PR's reviews for our machine marker. Used to make the
- * publish step idempotent across durable replays and ambiguous transport
- * failures (plan 004-U4). Reviews published before run fencing carry no
- * runId and never match.
- *
- * Tri-state: `unknown` when the scan hit its page cap without seeing the end
- * of the list — absence of proof is NOT proof of absence there, so callers
- * must not blind-POST after an ambiguous failure on `unknown`.
+ * scanning the PR's reviews for our machine marker — to the END of the list,
+ * so a replay of an already-published run cannot POST again just because the
+ * marker sits deep in the history. `unknown` is only possible past the
+ * safety ceiling; callers must refuse a blind POST on it.
  */
 export async function findPublishedReviewForRun(
   owner: string,
@@ -698,7 +703,7 @@ export async function findPublishedReviewForRun(
   headSha: string,
   token: string
 ): Promise<PublicationLookup> {
-  for (let page = 1; page <= 5; page += 1) {
+  for (let page = 1; page <= MARKER_SCAN_MAX_PAGES; page += 1) {
     const reviews = await githubFetch<Array<{ body?: string }>>(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
       token
