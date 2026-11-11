@@ -70,6 +70,11 @@ type WorkflowPreparedFiles = {
   prData: WorkflowPrData;
   diffText: string;
   repoContext: Record<string, never>;
+  donmergeResolved?: {
+    config: Record<string, unknown>;
+    skillsContent: Map<string, string>;
+    skillsErrors: Map<string, string>;
+  };
   activePreviousComments: never[];
   filePatches: Array<{ filename: string; patch?: string }>;
   coverage: CoverageManifest;
@@ -295,5 +300,117 @@ describe('publishReview verdict matrix', () => {
     expect(body).toContain('Coverage: partial');
     // The author's own description is preserved ahead of the DonMerge block.
     expect(body.startsWith('PR description')).toBe(true);
+  });
+});
+
+// ─── prepareFiles: snapshot discovery + no double config load (002-U1/005-U1) ─
+
+describe('prepareFiles', () => {
+  function makeEnv() {
+    return { MAX_REVIEW_FILES: '50' } as never;
+  }
+
+  function filesResponse(files: Array<{ filename: string; patch?: string }>) {
+    return { ok: true, json: async () => files };
+  }
+
+  it('discovers all pages, plans the prompt set and loads .donmerge exactly once', async () => {
+    const prFilePages = [
+      filesResponse(
+        Array.from({ length: 2 }, (_, i) => ({
+          filename: `src/f${i}.ts`,
+          patch: `@@ -1 +1 @@\n+change ${i}`,
+        }))
+      ),
+    ];
+    const calls: string[] = [];
+    mockFetch.mockImplementation(async (url: string) => {
+      calls.push(url as string);
+      if (url.includes('/pulls/42/files')) return prFilePages[0];
+      if (url.includes('/repos/owner/repo/pulls/42') && !url.includes('/reviews')) {
+        return { ok: true, json: async () => ({ head: { sha: 'headsha' } }) };
+      }
+      if (url.includes('contents/')) {
+        return { ok: false, status: 404, text: async () => 'nf' };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const dto = {
+      config: {
+        version: '1',
+        exclude: ['dist/**'],
+        skills: [{ path: 'REVIEW.md', description: 'notes' }],
+        instructions: 'be strict about concurrency',
+      },
+      skills: [['REVIEW.md', '# project review notes']],
+      skillErrors: [],
+    };
+    const pr = { ...prData(), donmerge: dto };
+
+    const prepared = await (makeWorkflow() as unknown as {
+      prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles>;
+    }).prepareFiles(pr);
+
+    // Full scope: both files reviewed, coverage complete
+    expect(prepared.coverage.scopeComplete).toBe(true);
+    expect(prepared.coverage.reviewedCount).toBe(2);
+    expect(prepared.diffText).toContain('src/f0.ts');
+    // Skills rehydrated from the DTO — no second .donmerge fetch
+    expect(prepared.donmergeResolved?.skillsContent.get('REVIEW.md')).toBe('# project review notes');
+    const donmergeFetches = calls.filter((u) => u.includes('contents/.donmerge'));
+    expect(donmergeFetches).toHaveLength(0);
+    // Policy exclude honored through the plan
+    expect(typeof prepared.donmergeResolved?.config.instructions).toBe('string');
+  });
+
+  it('throws non-retryable when the PR head moves during discovery', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/pulls/42/files')) {
+        return filesResponse([{ filename: 'a.ts', patch: '@@ -1 +1 @@\n+x' }]);
+      }
+      if (url.includes('/repos/owner/repo/pulls/42') && !url.includes('/reviews')) {
+        // The PR moved after step 1 cached headSha
+        return { ok: true, json: async () => ({ head: { sha: 'NEWHEAD' } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    await expect(
+      (makeWorkflow() as unknown as {
+        prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles>;
+      }).prepareFiles({ ...prData() })
+    ).rejects.toThrow(/PR head changed/);
+  });
+
+  it('partial planning marks coverage partial when the budget drops files', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/pulls/42/files')) {
+        return filesResponse(
+          Array.from({ length: 3 }, (_, i) => ({
+            filename: `f${i}.ts`,
+            patch: '@@ -1 +1 @@\n+' + 'x'.repeat(200),
+          }))
+        );
+      }
+      if (url.includes('/repos/owner/repo/pulls/42') && !url.includes('/reviews')) {
+        return { ok: true, json: async () => ({ head: { sha: 'headsha' } }) };
+      }
+      if (url.includes('contents/')) {
+        return { ok: false, status: 404, text: async () => 'nf' };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    // maxFiles=2 forces one file out
+    const pr = { ...prData(), maxFiles: 2, changedFilesCount: 3 };
+    const prepared = await (makeWorkflow() as unknown as {
+      prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles>;
+    }).prepareFiles(pr);
+
+    expect(prepared.coverage.scopeComplete).toBe(false);
+    expect(prepared.coverage.reviewedCount).toBe(2);
+    expect(prepared.coverage.pendingCount).toBe(1);
+    expect(prepared.filePatches).toHaveLength(2);
   });
 });
