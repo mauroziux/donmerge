@@ -75,7 +75,7 @@ import {
 import { recordReviewFindings } from './feedback-handler';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
-import { AllModelsFailedError, runReviewModels } from './review-model-runner';
+import { AllModelsFailedError, runReviewModels, DEFAULT_REVIEW_TOTAL_BUDGET_MS } from './review-model-runner';
 import { PrHeadChangedError } from './review-snapshot';
 import { ErrorCode } from './error-codes';
 import {
@@ -185,8 +185,13 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const doName = `${params.owner}/${params.repo}/${params.prNumber}`;
     const processorStub = this.getProcessorStub(doName);
 
+    // Fencing token: every state write below echoes this run's identity so a
+    // superseded run (stale override, deferred handoff) cannot clobber the
+    // state of the run that currently owns the DO (plan 004-U1).
+    const runId: string | undefined = await (processorStub as any).getRunId();
+
     // Mark review as running
-    await (processorStub as any).updateFromWorkflow({ state: 'running' });
+    await (processorStub as any).updateFromWorkflow({ state: 'running', runId });
 
     let prData: PrData | undefined;
 
@@ -221,6 +226,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         await (processorStub as any).updateFromWorkflow({
           state: 'complete',
           completedAt: new Date().toISOString(),
+          runId,
         });
         return;
       }
@@ -246,7 +252,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
         timeout: '3 minutes',
       }, async () => {
-        return this.publishReview(llmResult, processorStub);
+        return this.publishReview(llmResult, processorStub, runId);
       });
     } catch (error) {
       const { code, detail } = classifyError(error);
@@ -293,6 +299,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           state: 'failed',
           error: `[${code}] ${detail}`,
           completedAt: new Date().toISOString(),
+          runId,
         });
       } catch (updateError) {
         console.error('Failed to update DO status on workflow error', { error: updateError });
@@ -675,6 +682,15 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         'Each lineComment needs a positive integer `line`, side LEFT or RIGHT, severity critical/suggestion/low, and a non-empty path and body. ' +
         'Only use `lineComments` for concrete findings anchored to lines in the diff.';
 
+      // End-to-end model budget (plan 004-U2): once the run is out of budget,
+      // no new prompts start — the step fails honestly instead of running past
+      // its own timeout and getting killed mid-flight.
+      const budgetFromEnv = Number.parseInt(this.env.REVIEW_TOTAL_BUDGET_MS ?? '', 10);
+      const totalBudgetMs = Number.isFinite(budgetFromEnv) && budgetFromEnv > 0
+        ? budgetFromEnv
+        : DEFAULT_REVIEW_TOTAL_BUDGET_MS;
+      const deadlineMs = Date.now() + totalBudgetMs;
+
       const result = await runReviewModels({
         flue,
         prompt,
@@ -683,6 +699,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         activePreviousComments,
         severityOverrides: donmergeResolved?.config.severity,
         patternWeights,
+        deadlineMs,
       });
       return { preparedFiles, result };
     } catch (error) {
@@ -710,7 +727,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
    */
   private async publishReview(
     llmResult: LlmReviewResult,
-    processorStub: DurableObjectStub
+    processorStub: DurableObjectStub,
+    runId?: string
   ): Promise<void> {
     const { preparedFiles, result } = llmResult;
     const { prData, activePreviousComments } = preparedFiles;
@@ -721,6 +739,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       await (processorStub as any).updateFromWorkflow({
         state: 'complete',
         completedAt: new Date().toISOString(),
+        runId,
       });
       return;
     }
@@ -729,7 +748,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     let storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
     if (activePreviousComments.length > 0 && storedIssues.length > 0) {
       storedIssues = syncTrackedIssuesFromComments(storedIssues, activePreviousComments);
-      await (processorStub as any).saveTrackedIssuesRpc(storedIssues);
+      await (processorStub as any).saveTrackedIssuesRpc(storedIssues, runId);
     }
 
     // Build current issues + match. A partial/focused run must not interpret
@@ -758,7 +777,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     for (const issue of matchResult.newIssues) {
       updatedIssues.set(issue.id, transitionToNew(issue, headSha));
     }
-    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()));
+    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()), runId);
 
     // Record review outcomes in D1 memory (best-effort)
     if (this.env.DB) {
@@ -854,7 +873,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       const storedAfterSave = await (processorStub as any).loadTrackedIssuesRpc();
       const updatedById = new Map(updatedNewIssues.map((issue) => [issue.id, issue]));
       const merged = storedAfterSave.map((issue: TrackedIssue) => updatedById.get(issue.id) ?? issue);
-      await (processorStub as any).saveTrackedIssuesRpc(merged);
+      await (processorStub as any).saveTrackedIssuesRpc(merged, runId);
     }
 
     // Complete check run (surfaces dropped comments when present; honest
@@ -877,6 +896,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       state: 'complete',
       completedAt: new Date().toISOString(),
       result: gated.review,
+      runId,
     });
 
     console.log('Review completed successfully', {

@@ -31,6 +31,7 @@ import { ReviewProcessor } from '../processor';
 interface StoredStatus {
   state: 'pending' | 'running' | 'complete' | 'failed';
   attempts: number;
+  runId?: string;
   error?: string;
   startedAt?: string;
   completedAt?: string;
@@ -47,6 +48,9 @@ function createMockStorage() {
       },
       async put<T>(key: string, value: T): Promise<void> {
         store.set(key, value);
+      },
+      async delete(key: string): Promise<boolean> {
+        return store.delete(key);
       },
     },
   };
@@ -82,7 +86,8 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toEqual({ started: true, reason: 'stale_recovered' });
+    expect(result).toMatchObject({ started: true, reason: 'stale_recovered' });
+    expect(result.runId).toBeTruthy();
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     // Must have been overwritten: startedAt should now be ~now, not 10 min ago
     expect(finalStatus.state).toBe('pending');
@@ -96,26 +101,29 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     expect(ctx).toEqual(baseContext);
   });
 
-  it('overwrites a running status older than the 5-min threshold', async () => {
+  it('overwrites a running status older than the 50-min running threshold', async () => {
     const { store, storage } = createMockStorage();
-    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    // Running reviews may legitimately take tens of minutes (10-min prompts,
+    // multi-model chain). Only a truly hung run (50 min) is stale.
+    const fiftyOneMinAgo = new Date(Date.now() - 51 * 60 * 1000).toISOString();
     store.set('reviewStatus', {
       state: 'running',
       attempts: 1,
-      startedAt: tenMinAgo,
+      startedAt: fiftyOneMinAgo,
     } as StoredStatus);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toEqual({ started: true, reason: 'stale_recovered' });
+    expect(result).toMatchObject({ started: true, reason: 'stale_recovered' });
+    expect(result.runId).toBeTruthy();
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
-    expect(finalStatus.startedAt).not.toBe(tenMinAgo);
+    expect(finalStatus.startedAt).not.toBe(fiftyOneMinAgo);
     // attempts reset to 0 on a fresh start
     expect(finalStatus.attempts).toBe(0);
   });
 
-  it('early-returns for a pending status younger than the threshold', async () => {
+  it('early-returns for a pending status younger than the threshold (same request = duplicate)', async () => {
     const { store, storage } = createMockStorage();
     const oneMinAgo = new Date(Date.now() - 60 * 1000).toISOString();
     const original: StoredStatus = {
@@ -124,19 +132,21 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
       startedAt: oneMinAgo,
     };
     store.set('reviewStatus', original);
+    // Same request identity as baseContext → duplicate delivery
+    store.set('reviewContext', baseContext);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toEqual({ started: false, reason: 'already_running' });
+    expect(result).toMatchObject({ started: false, reason: 'already_running' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     // Untouched: same startedAt, same attempts
     expect(finalStatus.startedAt).toBe(oneMinAgo);
     expect(finalStatus.attempts).toBe(2);
 
-    // Context must NOT have been overwritten
+    // Context must NOT have been overwritten (still the original request)
     const ctx = await storage.get('reviewContext');
-    expect(ctx).toBeUndefined();
+    expect(ctx).toEqual(baseContext);
   });
 
   it('early-returns for a running status younger than the threshold', async () => {
@@ -147,11 +157,12 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
       attempts: 1,
       startedAt: twoMinAgo,
     } as StoredStatus);
+    store.set('reviewContext', baseContext);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toEqual({ started: false, reason: 'already_running' });
+    expect(result).toMatchObject({ started: false, reason: 'already_running' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(finalStatus.startedAt).toBe(twoMinAgo);
     expect(finalStatus.attempts).toBe(1);
@@ -166,7 +177,8 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toEqual({ started: true, reason: 'stale_recovered' });
+    expect(result).toMatchObject({ started: true, reason: 'stale_recovered' });
+    expect(result.runId).toBeTruthy();
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(finalStatus.startedAt).toBeDefined();
   });
@@ -177,7 +189,7 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toEqual({ started: true, reason: 'started' });
+    expect(result).toMatchObject({ started: true, reason: 'started' });
     const status = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(status.state).toBe('pending');
     expect(status.attempts).toBe(0);
@@ -198,7 +210,7 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toEqual({ started: true, reason: 'started' });
+    expect(result).toMatchObject({ started: true, reason: 'started' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(finalStatus.state).toBe('pending');
     expect(finalStatus.attempts).toBe(0);
@@ -219,5 +231,144 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     expect(finalStatus.state).toBe('pending');
     expect(finalStatus.attempts).toBe(0);
     expect(finalStatus.error).toBeUndefined();
+  });
+});
+
+// ─── Coordination: deferral, fencing, durable handoff (plan 004-U1) ─────────
+
+describe('ReviewProcessor coordination', () => {
+  function createWorkflowBinding() {
+    const created: Array<{ id: string; params: Record<string, unknown> }> = [];
+    const restarted: string[] = [];
+    const binding = {
+      create: vi.fn(async (opts: { id: string; params: Record<string, unknown> }) => {
+        created.push({ id: opts.id, params: opts.params });
+      }),
+      get: vi.fn(async (id: string) => ({
+        restart: vi.fn(async () => {
+          restarted.push(id);
+        }),
+      })),
+    };
+    return { binding, created, restarted };
+  }
+
+  it('defers a DIFFERENT request while a run is active (pendingLatest stored, nothing dropped)', async () => {
+    const { store, storage } = createMockStorage();
+    const oneMinAgo = new Date(Date.now() - 60 * 1000).toISOString();
+    store.set('reviewStatus', { state: 'running', attempts: 1, startedAt: oneMinAgo, runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    const result = await processor.startReview({ ...baseContext, headSha: 'bbb' });
+
+    expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
+    const pending = await storage.get('reviewPendingLatest');
+    expect(pending).toMatchObject({ headSha: 'bbb' });
+    // Active run untouched
+    const status = (await storage.get<StoredStatus>('reviewStatus'))!;
+    expect(status.runId).toBe('run-a');
+    expect(status.state).toBe('running');
+  });
+
+  it('a duplicate of the SAME request (same head/instruction/comment) is acked, not deferred', async () => {
+    const { store, storage } = createMockStorage();
+    const oneMinAgo = new Date(Date.now() - 60 * 1000).toISOString();
+    store.set('reviewStatus', { state: 'running', attempts: 1, startedAt: oneMinAgo, runId: 'run-a' } as StoredStatus);
+    const ctx = { ...baseContext, headSha: 'aaa', instruction: 'focus on auth', focusFiles: ['src/a.ts', 'src/b.ts'] };
+    store.set('reviewContext', ctx);
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    // focus order must not matter — sorted in the fingerprint
+    const result = await processor.startReview({ ...ctx, focusFiles: ['src/b.ts', 'src/a.ts'] });
+
+    expect(result).toMatchObject({ started: false, reason: 'already_running', runId: 'run-a' });
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
+  });
+
+  it('a 10-minute-old running review is NOT stale (healthy long reviews survive)', async () => {
+    const { store, storage } = createMockStorage();
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: tenMinAgo, runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', baseContext);
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    const result = await processor.startReview({ ...baseContext, headSha: 'newsha' });
+
+    expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
+  });
+
+  it('terminal update hands the deferred request to a fresh workflow run', async () => {
+    const { store, storage } = createMockStorage();
+    const { binding, created } = createWorkflowBinding();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb', instruction: 'check concurrency' });
+
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', completedAt: new Date().toISOString(), runId: 'run-a' });
+
+    expect(created).toHaveLength(1);
+    expect(created[0].id).toContain('review-tableoltd-test-repo-42');
+    expect(created[0].id).toContain('-auto-');
+    expect(created[0].params).toMatchObject({ instruction: 'check concurrency' });
+    expect(created[0].params).not.toHaveProperty('headSha');
+    // New run owns the DO with a fresh runId; pendingLatest consumed
+    const status = (await storage.get<StoredStatus>('reviewStatus'))!;
+    expect(status.state).toBe('pending');
+    expect(status.runId).toBeTruthy();
+    expect(status.runId).not.toBe('run-a');
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
+  });
+
+  it('updateFromWorkflow ignores terminal writes from a superseded run (fencing)', async () => {
+    const { store, storage } = createMockStorage();
+    const { binding, created } = createWorkflowBinding();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-new' } as StoredStatus);
+    store.set('reviewContext', baseContext);
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'later' });
+
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    // The OLD run (run-old) finishes late — must not flip state nor hand off
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-old' });
+
+    const status = (await storage.get<StoredStatus>('reviewStatus'))!;
+    expect(status.state).toBe('running');
+    expect(created).toHaveLength(0);
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'later' });
+  });
+
+  it('updateFromWorkflow accepts legacy updates without runId (back-compat)', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', baseContext);
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    await processor.updateFromWorkflow({ state: 'failed', error: 'legacy crash' });
+
+    const status = (await storage.get<StoredStatus>('reviewStatus'))!;
+    expect(status.state).toBe('failed');
+    expect(status.error).toBe('legacy crash');
+  });
+
+  it('saveTrackedIssuesRpc is fenced: a superseded run cannot rewrite the issue store', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-new' } as StoredStatus);
+    store.set('reviewContext', baseContext);
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    await processor.saveTrackedIssuesRpc([{ id: 'x' } as never], 'run-old');
+    expect(await storage.get('trackedIssues')).toBeUndefined();
+
+    await processor.saveTrackedIssuesRpc([{ id: 'y' } as never], 'run-new');
+    expect(await storage.get('trackedIssues')).toEqual([{ id: 'y' }]);
+  });
+
+  it('getRunId returns the current fencing token', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'pending', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    expect(await processor.getRunId()).toBe('run-a');
   });
 });

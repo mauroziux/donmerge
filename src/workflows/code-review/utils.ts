@@ -293,6 +293,9 @@ export function classifyError(error: unknown): { code: ErrorCodeType; detail: st
   if (message.includes('PR head changed')) {
     return { code: ErrorCode.PR_CHANGED, detail: message };
   }
+  if (message.includes('review budget exhausted')) {
+    return { code: ErrorCode.BUDGET_EXCEEDED, detail: message };
+  }
   if (message.includes('Flue prompt failed') || message.includes('SkillOutputError')) {
     return { code: ErrorCode.LLM_FAILURE, detail: message };
   }

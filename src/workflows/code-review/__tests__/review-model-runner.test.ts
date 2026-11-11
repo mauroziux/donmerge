@@ -21,7 +21,14 @@ const validReview = JSON.stringify({
   suggestions: [],
 });
 
-function runnerInput(prompt: FlueRuntime['client']['prompt']) {
+function runnerInput(prompt: FlueRuntime['client']['prompt']): {
+  flue: FlueRuntime;
+  prompt: string;
+  promptErrorHint: string;
+  models: Array<{ providerID: string; modelID: string }>;
+  activePreviousComments: never[];
+  deadlineMs?: number;
+} {
   return {
     flue: { client: { prompt } } as unknown as FlueRuntime,
     prompt: 'Review this diff.',
@@ -114,5 +121,54 @@ describe('review-model-runner', () => {
 
     expect(error).toBeInstanceOf(AllModelsFailedError);
     expect(error.hasTransientSandboxFailures()).toBe(false);
+  });
+});
+
+// ─── End-to-end run budget (plan 004-U2) ────────────────────────────────────
+
+describe('review-model-runner — run budget', () => {
+  it('skips models once the deadline leaves less than the minimum prompt budget', async () => {
+    // Deadline 30s in the future: below MIN_PROMPT_BUDGET_MS + cleanup reserve
+    // → every model is skipped with a budget error, no prompt is issued.
+    const prompt = vi.fn();
+    const input = runnerInput(prompt);
+    input.deadlineMs = Date.now() + 30_000;
+
+    await expect(runReviewModels(input)).rejects.toBeInstanceOf(AllModelsFailedError);
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('clamps the per-call timeout to the remaining budget', async () => {
+    // Remaining budget 5 min (minus 30s reserve) < the 10-min per-prompt cap.
+    // withTimeout races with a shorter fuse: a mock that never resolves must
+    // reject before the default 10 minutes.
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn((_p: string) => new Promise<string>(() => {}));
+      const input = runnerInput(prompt);
+      input.deadlineMs = Date.now() + 5 * 60_000;
+
+      const expectation = expect(runReviewModels(input)).rejects.toThrow(/timed out/i);
+
+      // 4.5 min < clamped timeout (4.5 min = 5 min − 30s reserve): fire the fuse
+      await vi.advanceTimersByTimeAsync(4.5 * 60_000 + 1_000);
+      await expectation;
+      expect(prompt).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a budget skip falls through to the next provider without prompting it', async () => {
+    const prompt = vi.fn()
+      .mockRejectedValueOnce(new Error('provider A down'))
+      .mockResolvedValueOnce(validReview);
+    const input = runnerInput(prompt);
+    // Tight but viable budget: first call fails fast, second still fits.
+    input.deadlineMs = Date.now() + 2 * 60_000;
+
+    const result = await runReviewModels(input);
+    expect(result.summary).toBe('Review completed.');
+    expect(prompt).toHaveBeenCalledTimes(2);
   });
 });

@@ -100,6 +100,7 @@ export async function validateWebhookFast(
       installationId: payload.installation?.id,
       instruction: trigger.instruction,
       focusFiles: trigger.focusFiles,
+      headSha: trigger.headSha,
     },
   };
 }
@@ -211,6 +212,7 @@ export async function processGitHubCodeReviewWebhook(
     owner: string; repo: string; prNumber: number; retrigger: boolean;
     commentId?: number; commentType?: 'issue' | 'review';
     installationId?: number; instruction?: string; focusFiles?: string[];
+    headSha?: string;
   }): Promise<{ started: boolean; reason: string }> }).startReview({
     owner,
     repo,
@@ -221,9 +223,21 @@ export async function processGitHubCodeReviewWebhook(
     installationId,
     instruction,
     focusFiles,
+    headSha: context.headSha,
   });
 
   if (!startResult.started) {
+    if (startResult.reason === 'deferred_new_push') {
+      // A newer push/intent arrived while a run is active. The DO stored it
+      // as the latest deferred request and will hand it off when the active
+      // run terminates — nothing else to do here (plan 004-U1).
+      console.log('Review deferred: active run owns the DO; latest request queued for handoff', {
+        owner,
+        repo,
+        prNumber,
+      });
+      return;
+    }
     console.log('Duplicate review delivery acknowledged without restarting', {
       owner,
       repo,

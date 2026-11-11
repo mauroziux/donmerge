@@ -25,6 +25,8 @@ export interface WorkerEnv {
   /** Fallback model used when the primary provider fails (e.g. "openai/gpt-4o"). */
   FALLBACK_MODEL?: string;
   MAX_REVIEW_FILES?: string;
+  /** End-to-end model-chain budget in ms (default 35 min, plan 004-U2). */
+  REVIEW_TOTAL_BUDGET_MS?: string;
   REPO_CONFIGS?: string;     // "owner/repo:branch,owner/repo2:branch2" - branch is optional
   REVIEW_TRIGGER?: string;
   DONMERGE_POST_FIXED_REPLIES?: string;
@@ -129,6 +131,8 @@ export interface GitHubRepository {
 
 export interface PullRequestPayload {
   number: number;
+  /** Present on pull_request events: the head commit the review targets. */
+  head?: { sha?: string };
 }
 
 export interface CheckRunPayload {
@@ -278,6 +282,8 @@ export interface WebhookContext {
   feedback?: FeedbackCommand;
   githubUser?: string;
   inReplyToId?: number;
+  /** Head SHA when the triggering event carries it (pull_request events). */
+  headSha?: string;
 }
 
 export interface FastValidationResult {
@@ -299,6 +305,8 @@ export interface TriggerResult {
   feedback?: FeedbackCommand;
   githubUser?: string;
   inReplyToId?: number;
+  /** Head SHA when the triggering event carries it (pull_request events). */
+  headSha?: string;
 }
 
 export interface ModelConfig {
