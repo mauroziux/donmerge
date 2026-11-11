@@ -9,7 +9,7 @@ import type { WorkerEnv, WebhookPayload, FastValidationResult, WebhookContext } 
 import { verifyWebhookSignature, isRepoAllowed, resolveGitHubToken } from './github-auth';
 import { parseTrigger } from './triggers';
 import { getReviewProcessor } from './processor';
-import { fetchCommentById } from './github-api';
+import { fetchCommentById, addCommentReaction, postReplyComment } from './github-api';
 import { parseFingerprint } from './fingerprint';
 import { buildReviewWorkflowInstanceId } from './workflow-id';
 
@@ -86,6 +86,30 @@ export async function validateWebhookFast(
     return { shouldProcess: false, status: 200, body: { ok: true, skipped: true, reason: trigger.reason } };
   }
 
+  // Natural-language replies to review comments — reply-learning candidates.
+  // They must NOT start a review; the consumer correlates the parent comment
+  // and only then decides whether the reply teaches anything.
+  if (trigger.naturalReply) {
+    return {
+      shouldProcess: true,
+      status: 202,
+      body: { ok: true, accepted: true, replyLearning: true },
+      context: {
+        owner,
+        repo,
+        prNumber: trigger.prNumber,
+        retrigger: false,
+        commentId: trigger.commentId,
+        commentType: trigger.commentType,
+        installationId: payload.installation?.id,
+        naturalReply: true,
+        commentBody: trigger.commentBody,
+        githubUser: trigger.githubUser,
+        inReplyToId: trigger.inReplyToId,
+      },
+    };
+  }
+
   return {
     shouldProcess: true,
     status: 202,
@@ -105,6 +129,86 @@ export async function validateWebhookFast(
 }
 
 /**
+ * Process a natural-language reply to a review comment (reply learning).
+ *
+ * 1. Fetch the parent comment and parse its DonMerge fingerprint — replies on
+ *    non-DonMerge threads are dropped silently.
+ * 2. Classify the reply (heuristics + LLM). No teaching → no ack, no storage.
+ * 3. Register feedback + learning, then acknowledge visibly (👍 + short reply
+ *    in the same thread) so the human sees the loop closed.
+ */
+async function processNaturalReply(
+  env: EnvWithReviewProcessor,
+  context: WebhookContext
+): Promise<void> {
+  if (!env.DB) {
+    console.warn('DB not bound — natural reply learning skipped');
+    return;
+  }
+  if (!context.inReplyToId || !context.commentBody || !context.commentId) {
+    return;
+  }
+
+  try {
+    const token = await resolveGitHubToken(env, context.installationId);
+    const parent = await fetchCommentById(
+      context.owner,
+      context.repo,
+      context.inReplyToId,
+      token,
+      'review'
+    );
+    const meta = parent ? parseFingerprint(parent.body) : null;
+    if (!parent || !meta) {
+      // Not a DonMerge thread — nothing to learn.
+      return;
+    }
+
+    const { handleNaturalReply } = await import('./feedback-handler');
+    const ack = await handleNaturalReply(env.DB, env, {
+      owner: context.owner,
+      repo: context.repo,
+      prNumber: context.prNumber,
+      githubUser: context.githubUser ?? 'unknown',
+      replyText: context.commentBody,
+      parentFingerprint: meta.fingerprint,
+      parentBody: parent.body,
+      filePath: parent.path,
+    });
+
+    if (!ack) {
+      // No actionable teaching in the reply — stay silent to avoid noise.
+      return;
+    }
+
+    await addCommentReaction(
+      context.owner,
+      context.repo,
+      context.commentId,
+      'review',
+      token,
+      'thumbsup'
+    );
+    await postReplyComment(
+      context.owner,
+      context.repo,
+      context.prNumber,
+      context.commentId,
+      'review',
+      ack.ackBody,
+      token
+    );
+  } catch (error) {
+    console.error('Failed to process natural reply', {
+      owner: context.owner,
+      repo: context.repo,
+      prNumber: context.prNumber,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+}
+
+/**
  * Start background processing of the code review.
  * Delegates to ReviewProcessor DO for status tracking and CodeReviewWorkflow for execution.
  */
@@ -112,6 +216,12 @@ export async function processGitHubCodeReviewWebhook(
   env: EnvWithReviewProcessor,
   context: WebhookContext
 ): Promise<void> {
+  // ── Reply learning (natural-language replies to DonMerge comments) ──
+  if (context.naturalReply) {
+    await processNaturalReply(env, context);
+    return;
+  }
+
   // ── Feedback handling (dismiss/accept/override/preference/ignore reactions) ──
   if (context.feedback) {
     if (!env.DB) {
@@ -132,6 +242,53 @@ export async function processGitHubCodeReviewWebhook(
           commentId: context.commentId ?? 0,
           inReplyToId: context.inReplyToId,
         });
+        // Close the loop visibly (best-effort).
+        if (context.commentId) {
+          try {
+            const token = await resolveGitHubToken(env, context.installationId);
+            await addCommentReaction(
+              context.owner,
+              context.repo,
+              context.commentId,
+              context.commentType ?? 'review',
+              token,
+              'thumbsup'
+            );
+          } catch (error) {
+            console.warn('Failed to acknowledge feedback command:', error);
+          }
+        }
+      } else if (context.inReplyToId) {
+        // Reply command without fingerprint ("@donmerge dismiss" as a thread reply):
+        // correlate the parent DonMerge comment to recover the fingerprint.
+        try {
+          const token = await resolveGitHubToken(env, context.installationId);
+          const parent = await fetchCommentById(context.owner, context.repo, context.inReplyToId, token, 'review');
+          const meta = parent ? parseFingerprint(parent.body) : null;
+          if (meta) {
+            await handleCommentFeedback(env.DB, {
+              owner: context.owner,
+              repo: context.repo,
+              prNumber: context.prNumber,
+              githubUser: context.githubUser ?? 'unknown',
+              commentBody: `@donmerge ${context.feedback.type} ${meta.fingerprint}`,
+              commentId: context.commentId ?? 0,
+              inReplyToId: context.inReplyToId,
+            });
+            // Close the loop visibly: the teaching was registered.
+            await addCommentReaction(context.owner, context.repo, context.commentId ?? 0, 'review', token, 'thumbsup');
+          } else {
+            console.log('Feedback reply parent has no DonMerge marker — ignoring', {
+              owner: context.owner,
+              repo: context.repo,
+              inReplyToId: context.inReplyToId,
+            });
+          }
+        } catch (error) {
+          console.error('Failed to correlate feedback reply with parent comment', {
+            error: error instanceof Error ? error.message : error,
+          });
+        }
       } else if (context.commentId) {
         // Reaction event — need to fetch comment body to get the fingerprint
         try {

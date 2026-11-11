@@ -120,6 +120,30 @@ export function parseTrigger(
     const body = payload.comment?.body ?? '';
     const shouldRun = payload.action === 'created' && triggerRegex.test(body);
     if (!shouldRun || !payload.pull_request) {
+      // Natural-language replies to review comments are teaching candidates:
+      // "no aplica porque X" on a DonMerge thread should become a learning.
+      // Only human replies in threads (in_reply_to_id) qualify — bots are skipped
+      // so DonMerge's own acknowledgments never re-enter the loop.
+      if (
+        payload.action === 'created' &&
+        payload.pull_request &&
+        payload.comment?.in_reply_to_id &&
+        !isBotUser(payload.comment?.user) &&
+        body.trim().length > 0
+      ) {
+        return {
+          shouldRun: true,
+          prNumber: payload.pull_request.number,
+          retrigger: false,
+          naturalReply: true,
+          commentId: payload.comment?.id,
+          commentType: 'review',
+          commentBody: body,
+          githubUser: payload.comment?.user?.login,
+          inReplyToId: payload.comment.in_reply_to_id,
+          reason: 'natural reply to review comment',
+        };
+      }
       return {
         shouldRun: false,
         prNumber: 0,
@@ -210,6 +234,12 @@ export function parseTrigger(
   }
 
   return { shouldRun: false, prNumber: 0, retrigger: false, reason: `unsupported event: ${event}` };
+}
+
+/** True when the comment author is a bot (GitHub Apps post as type "Bot"). */
+function isBotUser(user?: { login: string; type?: string }): boolean {
+  if (!user) return false;
+  return user.type === 'Bot' || /\[bot\]$/i.test(user.login);
 }
 
 /**

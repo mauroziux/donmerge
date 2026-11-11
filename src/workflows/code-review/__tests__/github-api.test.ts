@@ -505,3 +505,71 @@ describe('supersedeBaseChangedReviews', () => {
     expect(count).toBe(0);
   });
 });
+
+// ─── postReplyComment / addCommentReaction (ack surface) ────────────
+
+import { postReplyComment, addCommentReaction } from '../github-api';
+
+describe('postReplyComment', () => {
+  it('posts a review-thread reply to the replies endpoint', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ id: 999 }),
+    });
+
+    const id = await postReplyComment('owner', 'repo', 42, 200, 'review', '🤖 Learned.', 'tok');
+
+    expect(id).toBe(999);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://api.github.com/repos/owner/repo/pulls/42/comments/200/replies',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ body: '🤖 Learned.' }),
+      })
+    );
+  });
+
+  it('posts a plain issue comment for issue commentType', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ id: 1000 }),
+    });
+
+    await postReplyComment('owner', 'repo', 42, 300, 'issue', 'ack', 'tok');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://api.github.com/repos/owner/repo/issues/42/comments',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('returns null instead of throwing when GitHub rejects the reply', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      text: () => Promise.resolve('validation failed'),
+    });
+
+    const id = await postReplyComment('owner', 'repo', 42, 200, 'review', 'x', 'tok');
+    expect(id).toBeNull();
+  });
+});
+
+describe('addCommentReaction', () => {
+  it('supports configurable reaction content', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ id: 1 }),
+    });
+
+    await addCommentReaction('owner', 'repo', 200, 'review', 'tok', 'thumbsup');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://api.github.com/repos/owner/repo/pulls/comments/200/reactions',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ content: 'thumbsup' }),
+      })
+    );
+  });
+});

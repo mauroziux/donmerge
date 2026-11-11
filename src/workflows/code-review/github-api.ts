@@ -317,7 +317,8 @@ export async function addCommentReaction(
   repo: string,
   commentId: number,
   commentType: 'issue' | 'review',
-  token: string
+  token: string,
+  content: 'eyes' | 'thumbsup' | 'thumbsdown' | 'heart' | 'tada' = 'eyes'
 ): Promise<void> {
   const url =
     commentType === 'issue'
@@ -325,7 +326,7 @@ export async function addCommentReaction(
       : `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}/reactions`;
 
   try {
-    await githubFetch(url, token, 'POST', { content: 'eyes' });
+    await githubFetch(url, token, 'POST', { content });
   } catch (error) {
     console.error('Failed to add reaction', {
       owner,
@@ -333,6 +334,45 @@ export async function addCommentReaction(
       commentId,
       error: error instanceof Error ? error.message : error,
     });
+  }
+}
+
+/**
+ * Reply to an existing comment so the acknowledgment lands in the same thread.
+ *
+ * - Review comments (inline threads): POST /pulls/{pr}/comments/{commentId}/replies
+ * - Issue comments (PR conversation): posts a regular issue comment (flat —
+ *   GitHub has no reply endpoint there), so callers should use it sparingly.
+ *
+ * Returns the created comment id, or null when the reply could not be posted
+ * (the error is logged, never thrown — acknowledgments are best-effort).
+ */
+export async function postReplyComment(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commentId: number,
+  commentType: 'issue' | 'review',
+  body: string,
+  token: string
+): Promise<number | null> {
+  const url =
+    commentType === 'review'
+      ? `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments/${commentId}/replies`
+      : `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`;
+
+  try {
+    const created = await githubFetch<{ id: number }>(url, token, 'POST', { body });
+    return created.id;
+  } catch (error) {
+    console.error('Failed to post reply comment', {
+      owner,
+      repo,
+      prNumber,
+      commentId,
+      error: error instanceof Error ? error.message : error,
+    });
+    return null;
   }
 }
 
@@ -347,13 +387,13 @@ export async function fetchCommentById(
   commentId: number,
   token: string,
   commentType?: 'review' | 'issue'
-): Promise<{ body: string; id: number; in_reply_to_id: number | null } | null> {
+): Promise<{ body: string; id: number; in_reply_to_id: number | null; path?: string } | null> {
   try {
     const endpoint = commentType === 'issue'
       ? `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`
       : `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}`;
 
-    const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null }>(
+    const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null; path?: string }>(
       endpoint,
       token
     );
@@ -365,7 +405,7 @@ export async function fetchCommentById(
         ? `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}`
         : `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`;
 
-      const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null }>(
+      const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null; path?: string }>(
         fallbackEndpoint,
         token
       );
