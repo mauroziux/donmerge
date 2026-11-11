@@ -492,7 +492,29 @@ describe('fetchFileContentsAtRef', () => {
 });
 
 describe('publishReview — unresolved ambiguous failure never POSTs twice', () => {
-  it('a not-found poll after an ambiguous failure defers to the step retry (single POST total)', async () => {
+  it('does not POST on a durable replay while the marker remains invisible', async () => {
+    let posts = 0;
+    let reserved = false;
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/pulls/1/reviews') && init?.method === 'POST') {
+        posts++;
+        throw new TypeError('connection reset after acceptance');
+      }
+      return jsonResponse([]);
+    });
+    const reserve = async () => {
+      if (reserved) return false;
+      reserved = true;
+      return true;
+    };
+    const invoke = () => publishReview('o', 'r', 1, 'abc',
+      { ...cleanReviewResult(), approved: false, criticalIssues: ['x causes y'] },
+      't', undefined, undefined, 'main', 'run-1', { tries: 1, delayMs: 0 }, reserve);
+    await expect(invoke()).rejects.toThrow(/publication unresolved/);
+    await expect(invoke()).rejects.toThrow(/publication unresolved/);
+    expect(posts).toBe(1);
+  });
+  it('a not-found poll after an ambiguous failure STOPS automation (manual verification, single POST total)', async () => {
     let postAttempts = 0;
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
@@ -512,7 +534,7 @@ describe('publishReview — unresolved ambiguous failure never POSTs twice', () 
         't', undefined, undefined, 'main', 'run-1',
         { tries: 2, delayMs: 10 } // fast poll for the test; production default is 5×5s
       )
-    ).rejects.toThrow(/deferring to step retry/);
+    ).rejects.toThrow(/manual verification required/);
     expect(postAttempts).toBe(1); // exactly one POST — absence of the marker is not proof of failure
   });
 });

@@ -148,6 +148,12 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           storedContext !== undefined &&
           requestFingerprint(storedContext) === requestFingerprint(context);
         if (sameRequest) {
+          // Preserve the latest head even when it matches the active run:
+          // that run can still fail or have reviewed a different base.
+          const pendingDeferred = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+          if (pendingDeferred && context.headSha && pendingDeferred.headSha !== context.headSha) {
+            await this.state.storage.put(STATE_KEYS.pendingLatest, context);
+          }
           console.log('Duplicate review delivery acknowledged without restarting', {
             state: existingStatus.state,
             ageMs,
@@ -278,10 +284,21 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       // head when known) suppresses a deferred DUPLICATE of the very request
       // we just ran — different intent on the same head still runs.
       await this.startPendingLatestIfAny(
-        storedContext,
+        update.state === 'complete' ? storedContext : undefined,
         update.headSha ?? storedContext?.headSha
       );
     }
+  }
+
+  /** Reserve a publication before its POST. A reservation is never cleared
+   * automatically: a lost response cannot safely be distinguished from success. */
+  async reservePublication(runId: string): Promise<boolean> {
+    const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    if (!status || status.runId !== runId) return false;
+    const key = `publication:${runId}`;
+    if (await this.state.storage.get(key)) return false;
+    await this.state.storage.put(key, true);
+    return true;
   }
 
   /**

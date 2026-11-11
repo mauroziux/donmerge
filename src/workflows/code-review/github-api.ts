@@ -422,7 +422,8 @@ export async function publishReview(
   filePatches?: FilePatch[],
   baseRef?: string,
   runId?: string,
-  pollOptions: { tries?: number; delayMs?: number } = {}
+  pollOptions: { tries?: number; delayMs?: number } = {},
+  reservePublication?: () => Promise<boolean>
 ): Promise<DroppedComment[]> {
   const existingFingerprints = new Set<string>();
   if (previousComments && previousComments.length > 0) {
@@ -556,6 +557,12 @@ export async function publishReview(
     console.log('Superseded outdated review(s) with a different base', { supersededCount });
   }
 
+  // Persist intent before any POST. On replay an invisible marker is not proof
+  // of failure: an existing reservation prohibits another POST for this run.
+  if (reservePublication && !(await reservePublication())) {
+    throw new Error(`publication unresolved for run ${runId} — manual verification required, automated re-POST disabled`);
+  }
+
   // Wrap the POST in a bounded retry for GitHub's transient "internal error" 422.
   // bail predicate scopes retries to the transient body only — real validation 422s
   // (anchor / body-length / suggestion) fail fast so they surface, not loop.
@@ -606,7 +613,7 @@ export async function publishReview(
             return { reconciled: true };
           }
           throw new Error(
-            `publication unresolved for run ${runId} after ambiguous failure — deferring to step retry, refusing a second POST`
+            `publication unresolved for run ${runId} after ambiguous failure — manual verification required, automated re-POST disabled`
           );
         }
         throw error;

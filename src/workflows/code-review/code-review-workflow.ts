@@ -256,13 +256,22 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       });
 
       // Step 4: Publish review — retried with a 30s delay so an unresolved
-      // ambiguous publication (marker not yet visible) re-searches well after
-      // GitHub's listing lag instead of re-POSTing immediately.
+      // ambiguous publication (marker not yet visible) gets a fresh marker
+      // search well after GitHub's listing lag. A STILL-unresolved ambiguity
+      // is terminal (manual verification): automated re-POST is disabled.
       await step.do('publish-review', {
         retries: { limit: 2, delay: '30 seconds', backoff: 'exponential' },
         timeout: '3 minutes',
       }, async () => {
-        return this.publishReview(llmResult, processorStub, runId);
+        try {
+          return await this.publishReview(llmResult, processorStub, runId);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('publication unresolved')) {
+            // Never retry an unproven POST: stop the step cold.
+            throw new NonRetryableError(error.message);
+          }
+          throw error;
+        }
       });
     } catch (error) {
       const { code, detail } = classifyError(error);
@@ -286,6 +295,19 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
               '🔀 PR updated during review',
               `The PR received new commits while the review was running.`,
               `DonMerge stopped this run instead of reporting on a stale version of the diff.\n\nThe latest push will be reviewed; you can also comment \`@donmerge\` to re-trigger immediately.`,
+              prData.githubToken
+            );
+          } else if (code === ErrorCode.PUBLISH_UNRESOLVED) {
+            // The review POST may or may not have reached GitHub. Automated
+            // re-posting is disabled (it could duplicate the review): surface
+            // a neutral, actionable check instead of a blind retry.
+            await completeCheckRunNeutral(
+              prData.owner,
+              prData.repo,
+              prData.checkRunId,
+              '🔍 Review publication pending verification',
+              `DonMerge could not confirm whether the review was posted to GitHub.`,
+              `The review request may have reached GitHub but the confirmation was lost. To avoid posting a duplicate, DonMerge will NOT retry automatically.\n\n**Action:** check the PR's conversation for the review. If it is missing, comment \`@donmerge\` to re-run it.`,
               prData.githubToken
             );
           } else {
@@ -961,7 +983,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       activePreviousComments,
       preparedFiles.filePatches,
       prData.baseBranch,
-      runId
+      runId,
+      {},
+      runId ? () => (processorStub as any).reservePublication(runId) : undefined
     );
 
     // Attach comment IDs to new issues

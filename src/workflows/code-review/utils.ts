@@ -296,6 +296,9 @@ export function classifyError(error: unknown): { code: ErrorCodeType; detail: st
   if (message.includes('review budget exhausted')) {
     return { code: ErrorCode.BUDGET_EXCEEDED, detail: message };
   }
+  if (message.includes('publication unresolved')) {
+    return { code: ErrorCode.PUBLISH_UNRESOLVED, detail: message };
+  }
   if (message.includes('Flue prompt failed') || message.includes('SkillOutputError')) {
     return { code: ErrorCode.LLM_FAILURE, detail: message };
   }

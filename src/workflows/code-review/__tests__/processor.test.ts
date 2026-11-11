@@ -654,3 +654,33 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
     expect(created).toHaveLength(1); // different identity → handed off
   });
 });
+
+
+describe('ReviewProcessor coordination — orphaned deferred cleanup', () => {
+  it('head-carrying duplicate of the ACTIVE head drops a deferred DIFFERENT head', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date(Date.now() - 60_000).toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    // The branch head returned to 'aaa' (matches the active run) after 'bbb' was deferred
+    const result = await processor.startReview({ ...baseContext, headSha: 'aaa' });
+
+    expect(result).toMatchObject({ started: false, reason: 'already_running' });
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'aaa' }); // latest retained if active fails
+  });
+
+  it('comment redelivery (no headSha) never drops a deferred push', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date(Date.now() - 60_000).toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, commentId: 55 });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    const result = await processor.startReview({ ...baseContext, commentId: 55 });
+
+    expect(result).toMatchObject({ started: false, reason: 'already_running' });
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' }); // preserved
+  });
+});
