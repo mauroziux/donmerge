@@ -60,6 +60,8 @@ interface ReviewContext {
   model?: string; // Optional: override LLM model (push API)
   maxFiles?: number; // Optional: override max files to review (push API)
   initiatorKeyHash?: string; // Hash of API key that initiated the review (for status auth)
+  githubCredentialHash?: string; // SHA-256 digest; never the raw token in the fingerprint
+  requestNonce?: string; // Distinguishes API requests when the head could not be fetched
 }
 
 interface ReviewStatus {
@@ -75,7 +77,7 @@ interface ReviewStatus {
 
 export interface StartReviewResult {
   started: boolean;
-  reason: 'started' | 'already_running' | 'stale_recovered' | 'deferred_new_push';
+  reason: 'started' | 'already_running' | 'stale_recovered' | 'deferred_new_push' | 'pending_conflict';
   /** Run identity for the run that owns the DO state (fencing token). */
   runId?: string;
 }
@@ -98,6 +100,9 @@ function requestFingerprint(context: ReviewContext): string {
     model: context.model ?? null,
     maxFiles: context.maxFiles ?? null,
     installationId: context.installationId ?? null,
+    ...(context.initiatorKeyHash ? { initiatorKeyHash: context.initiatorKeyHash } : {}),
+    ...(context.githubCredentialHash ? { githubCredentialHash: context.githubCredentialHash } : {}),
+    ...(context.requestNonce ? { requestNonce: context.requestNonce } : {}),
   });
 }
 
@@ -152,6 +157,15 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       const isStale = existingStatus.state === 'pending' && !existingStatus.runId &&
         !deferred && !handoff && ageMs > threshold;
       if (!isStale) {
+        // A single latest-push slot must never silently discard an API
+        // request belonging to another principal, credential or unknown head.
+        // Reject the incoming request so its caller can retry explicitly.
+        if (deferred && (deferred.initiatorKeyHash || context.initiatorKeyHash) &&
+          (deferred.initiatorKeyHash !== context.initiatorKeyHash ||
+           deferred.githubCredentialHash !== context.githubCredentialHash ||
+           deferred.requestNonce !== context.requestNonce)) {
+          return { started: false, reason: 'pending_conflict' };
+        }
         const storedContext = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
         const sameRequest =
           storedContext !== undefined &&
@@ -314,6 +328,16 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
     if (!status || status.runId !== runId) return false;
     const key = `publication:${runId}`;
+    if (await this.state.storage.get(key)) return false;
+    await this.state.storage.put(key, true);
+    return true;
+  }
+
+  /** Reserve each optional fixed reply before its POST; never replay an ambiguous POST. */
+  async reserveFixedReply(runId: string, commentId: number): Promise<boolean> {
+    const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    if (!status || status.runId !== runId) return false;
+    const key = `fixedReply:${runId}:${commentId}`;
     if (await this.state.storage.get(key)) return false;
     await this.state.storage.put(key, true);
     return true;

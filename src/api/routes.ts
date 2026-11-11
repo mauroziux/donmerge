@@ -24,13 +24,13 @@ import { getTriageProcessor } from '../workflows/triage/processor';
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /** SHA-256 hash truncated to 16 hex chars — used as rate-limit storage key. */
-async function hashKey(apiKey: string): Promise<string> {
+async function hashKey(apiKey: string, length = 16): Promise<string> {
   const data = new TextEncoder().encode(apiKey);
   const buf = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
-    .substring(0, 16);
+    .substring(0, length);
 }
 
 async function checkRateLimit(
@@ -197,6 +197,8 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles?: number;
     retrigger: boolean;
     initiatorKeyHash?: string;
+    githubCredentialHash?: string;
+    requestNonce?: string;
     headSha?: string;
   }) => Promise<{ started: boolean; reason: string; runId?: string }>)({
     githubToken: body.github_token,
@@ -207,10 +209,15 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles: body.max_files,
     retrigger: false,
     initiatorKeyHash: callerKeyHash,
+    githubCredentialHash: await hashKey(body.github_token, 64),
+    requestNonce: headSha ? undefined : crypto.randomUUID(),
     headSha,
   });
 
   if (!startResult.started) {
+    if (startResult.reason === 'pending_conflict') {
+      return c.json({ error: 'Review queue busy', message: 'Another request is already pending; retry later.' }, 409);
+    }
     const jobId = buildReviewJobId(body.owner, body.repo, body.pr_number);
     return c.json({
       job_id: jobId,

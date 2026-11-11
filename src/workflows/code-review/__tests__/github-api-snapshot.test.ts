@@ -18,6 +18,7 @@ import {
   fetchPrHeadSha,
   fetchRepoContext,
   fetchRepoFile,
+  resolveFixedComments,
 } from '../github-api';
 import type { CoverageManifest } from '../review-coverage';
 
@@ -32,6 +33,22 @@ function jsonResponse(body: unknown) {
 function fileEntry(filename: string, patch = '@@ -1 +1 @@\n+x') {
   return { filename, patch };
 }
+
+describe('fixed reply reservations', () => {
+  it('never reposts after an ambiguous transport failure', async () => {
+    mockFetch.mockRejectedValue(new Error('response lost'));
+    const reserved = new Set<number>();
+    const reserve = async (id: number) => {
+      if (reserved.has(id)) return false;
+      reserved.add(id);
+      return true;
+    };
+    const comments = [{ id: 21, path: 'a.ts', line: 1, body: 'issue', resolved: false }];
+    await resolveFixedComments('owner', 'repo', 9, comments, 'token', reserve);
+    await resolveFixedComments('owner', 'repo', 9, comments, 'token', reserve);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('fetchAllPrFiles', () => {
   it('paginates until a short page and returns every file', async () => {

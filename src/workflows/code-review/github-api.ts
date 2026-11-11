@@ -1100,13 +1100,17 @@ export async function resolveFixedComments(
   repo: string,
   prNumber: number,
   comments: PreviousComment[],
-  token: string
+  token: string,
+  reserveReply: (commentId: number) => Promise<boolean>
 ): Promise<void> {
   for (const comment of comments) {
     if (comment.resolved) {
       continue;
     }
 
+    // Reserve before the non-idempotent POST. An ambiguous response must
+    // never cause another POST, even if this sacrifices an optional reply.
+    if (!(await reserveReply(comment.id))) continue;
     try {
       await githubFetch(
         `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`,

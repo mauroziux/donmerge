@@ -935,7 +935,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     // Resolve fixed comments (if enabled)
     const postFixedReplies = this.env.DONMERGE_POST_FIXED_REPLIES === 'true';
-    if (postFixedReplies && matchResult.resolvedIssues.length > 0) {
+    if (postFixedReplies && runId && matchResult.resolvedIssues.length > 0) {
       await resolveFixedComments(
         owner,
         repo,
@@ -947,7 +947,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           body: issue.body,
           resolved: issue.status === 'fixed',
         })),
-        githubToken
+        githubToken,
+        (commentId) => (processorStub as any).reserveFixedReply(runId, commentId)
       );
     }
 

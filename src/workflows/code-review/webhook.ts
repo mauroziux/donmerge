@@ -227,6 +227,10 @@ export async function processGitHubCodeReviewWebhook(
   });
 
   if (!startResult.started) {
+    if (startResult.reason === 'pending_conflict') {
+      // Let the queue retry rather than overwrite another caller's request.
+      throw new Error('Review pending slot occupied by another caller');
+    }
     if (startResult.reason === 'deferred_new_push') {
       // A newer push/intent arrived while a run is active. The DO stored it
       // as the latest deferred request and will hand it off when the active

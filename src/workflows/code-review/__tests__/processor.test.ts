@@ -290,6 +290,39 @@ describe('ReviewProcessor coordination', () => {
     expect(await storage.get('reviewPendingLatest')).toBeUndefined();
   });
 
+  it.each(['initiatorKeyHash', 'githubCredentialHash', 'requestNonce'] as const)('defers requests with different %s', async (field) => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' });
+    const ctx = { ...baseContext, headSha: 'aaa', [field]: 'first' };
+    store.set('reviewContext', ctx);
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    const result = await processor.startReview({ ...ctx, [field]: 'second' });
+    expect(result.reason).toBe('deferred_new_push');
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ [field]: 'second' });
+  });
+
+  it('rejects C instead of overwriting B while A is active', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' });
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa', initiatorKeyHash: 'a' });
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    const b = { ...baseContext, headSha: 'bbb', initiatorKeyHash: 'b', githubCredentialHash: 'token-b' };
+    expect((await processor.startReview(b)).reason).toBe('deferred_new_push');
+    expect((await processor.startReview({ ...b, initiatorKeyHash: 'c' })).reason).toBe('pending_conflict');
+    expect((await processor.startReview({ ...baseContext, headSha: 'ccc' })).reason).toBe('pending_conflict');
+    expect(await storage.get('reviewPendingLatest')).toEqual(b);
+  });
+
+  it('reserves a fixed reply once and fences obsolete runs', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', runId: 'run-a' });
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    expect(await processor.reserveFixedReply('old', 12)).toBe(false);
+    expect(await processor.reserveFixedReply('run-a', 12)).toBe(true);
+    expect(await processor.reserveFixedReply('run-a', 12)).toBe(false);
+    expect(await processor.reserveFixedReply('run-a', 13)).toBe(true);
+  });
+
   it('a 10-minute-old running review is NOT stale (healthy long reviews survive)', async () => {
     const { store, storage } = createMockStorage();
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
