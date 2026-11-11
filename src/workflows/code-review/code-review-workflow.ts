@@ -671,6 +671,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       const promptErrorHint =
         'Your previous response was invalid. Produce valid JSON matching the schema. ' +
         'Ensure `summary` is present and 1-2 sentences. Ensure `prSummary` includes overview, keyChanges (non-empty), codeQuality, testingNotes, riskAssessment. ' +
+        'The arrays `lineComments`, `criticalIssues` and `suggestions` MUST all be present (use [] when empty). ' +
+        'Each lineComment needs a positive integer `line`, side LEFT or RIGHT, severity critical/suggestion/low, and a non-empty path and body. ' +
         'Only use `lineComments` for concrete findings anchored to lines in the diff.';
 
       const result = await runReviewModels({

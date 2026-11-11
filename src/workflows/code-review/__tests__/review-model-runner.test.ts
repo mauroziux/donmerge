@@ -7,6 +7,7 @@ import {
 } from '../review-model-runner';
 
 const validReview = JSON.stringify({
+  approved: true,
   summary: 'Review completed.',
   prSummary: {
     overview: 'The change is coherent.',
