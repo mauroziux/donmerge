@@ -260,6 +260,22 @@ export function buildCoverageManifest(
   };
 }
 
+/**
+ * Check-run conclusion for a review outcome (plan 002-U4).
+ *
+ *   failure — blocking findings exist (regardless of coverage)
+ *   success — clean review AND full-PR scope
+ *   neutral — clean review but the scope was partial/focused/limited
+ */
+export function checkConclusion(
+  hasBlocking: boolean,
+  coverage?: CoverageManifest
+): 'success' | 'neutral' | 'failure' {
+  if (hasBlocking) return 'failure';
+  const scopeComplete = coverage ? coverage.scopeComplete : true;
+  return scopeComplete ? 'success' : 'neutral';
+}
+
 /** Human-readable coverage note for check-run output and PR description. */
 export function coverageReportText(manifest: CoverageManifest): string {
   if (manifest.scopeComplete) {

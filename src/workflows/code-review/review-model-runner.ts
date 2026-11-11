@@ -242,8 +242,9 @@ export async function runReviewModels({
   const failures: ModelReviewError[] = [];
 
   for (const model of models) {
+    const attemptStartedAt = Date.now();
     try {
-      return await promptForModel(
+      const result = await promptForModel(
         flue,
         prompt,
         promptErrorHint,
@@ -253,12 +254,37 @@ export async function runReviewModels({
         patternWeights,
         deadlineMs,
       );
+      // Structured attempt telemetry (plan 001-U3): model label, outcome and
+      // wall time only — no prompt content, no credentials.
+      console.log(
+        '[review-metrics]',
+        JSON.stringify({
+          event: 'model-attempt',
+          model: `${model.providerID}/${model.modelID}`,
+          attempt: failures.length + 1,
+          outcome: 'ok',
+          durationMs: Date.now() - attemptStartedAt,
+        })
+      );
+      return result;
     } catch (error) {
       if (!(error instanceof ModelReviewError)) {
         throw error;
       }
 
       failures.push(error);
+      console.warn(
+        '[review-metrics]',
+        JSON.stringify({
+          event: 'model-attempt',
+          model: error.modelLabel,
+          attempt: failures.length,
+          outcome: 'failed',
+          durationMs: Date.now() - attemptStartedAt,
+          reason: error.message.slice(0, 200),
+          willFallback: failures.length < models.length,
+        })
+      );
       console.warn('[code-review] model failed, will fallback', {
         model: error.modelLabel,
         error: error.message,

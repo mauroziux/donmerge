@@ -16,7 +16,7 @@ import {
   type PrFilesDiscovery,
 } from './review-snapshot';
 import type { CoverageManifest } from './review-coverage';
-import { coverageReportText } from './review-coverage';
+import { checkConclusion, coverageReportText } from './review-coverage';
 import { buildCommentableMap, validateInlineComments } from './comment-anchors';
 import { GitHubApiError, withBoundedRetry, isTransientGitHubError, TRANSIENT_RETRY_DELAYS_MS } from './github-retry';
 import { isDegenerateReviewBody, DEGENERATE_BODY_FALLBACK, reviewSkipDecision } from './review-body-guard';
@@ -230,11 +230,10 @@ export async function completeCheckRun(
   coverage?: CoverageManifest
 ): Promise<void> {
   const approved = !hasBlockingFindings(review);
-  const scopeComplete = coverage ? coverage.scopeComplete : true;
-  const conclusion = !approved ? 'failure' : scopeComplete ? 'success' : 'neutral';
+  const conclusion = checkConclusion(!approved, coverage);
   const title = !approved
     ? '⚠️ Ojo, some things need attention'
-    : scopeComplete
+    : conclusion === 'success'
       ? '✅ All good, compadre!'
       : '🟡 Partial review — no blocking issues in the reviewed scope';
   const criticalFindings = collectCriticalFindings(review);

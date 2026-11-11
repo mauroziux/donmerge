@@ -6,7 +6,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "eval:review": "vitest run src/workflows/code-review/__tests__/evaluation.test.ts",
+    "eval:review:compare": "node scripts/compare-eval-reports.mjs"
   },
   "keywords": [],
   "author": "",
