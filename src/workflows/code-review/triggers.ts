@@ -46,7 +46,11 @@ export function parseTrigger(
   if (event === 'issue_comment') {
     const body = payload.comment?.body ?? '';
     const isPrComment = Boolean(payload.issue?.pull_request);
-    const shouldRun = payload.action === 'created' && isPrComment && triggerRegex.test(body);
+    const shouldRun =
+      payload.action === 'created' &&
+      isPrComment &&
+      !isBotUser(payload.comment?.user) &&
+      triggerRegex.test(body);
     if (!shouldRun || !payload.issue) {
       return {
         shouldRun: false,
@@ -73,6 +77,7 @@ export function parseTrigger(
             feedback: command,
             commentId: payload.comment?.id,
             commentType: 'issue',
+            commentBody: body,
             githubUser: payload.comment?.user?.login,
             inReplyToId: payload.comment?.in_reply_to_id,
             reason: 'feedback command',
@@ -87,6 +92,7 @@ export function parseTrigger(
           feedback: command,
           commentId: payload.comment?.id,
           commentType: 'issue',
+          commentBody: body,
           githubUser: payload.comment?.user?.login,
           inReplyToId: payload.comment?.in_reply_to_id,
           reason: 'feedback command',
@@ -109,6 +115,7 @@ export function parseTrigger(
       retrigger: true,
       commentId: payload.comment?.id,
       commentType: 'issue',
+      commentBody: body,
       instruction: instructionResult.instruction,
       focusFiles: instructionResult.focusFiles,
       githubUser: payload.comment?.user?.login,
@@ -118,8 +125,35 @@ export function parseTrigger(
 
   if (event === 'pull_request_review_comment') {
     const body = payload.comment?.body ?? '';
-    const shouldRun = payload.action === 'created' && triggerRegex.test(body);
+    const shouldRun =
+      payload.action === 'created' &&
+      !isBotUser(payload.comment?.user) &&
+      triggerRegex.test(body);
     if (!shouldRun || !payload.pull_request) {
+      // Natural-language replies to review comments are teaching candidates:
+      // "no aplica porque X" on a DonMerge thread should become a learning.
+      // Only human replies in threads (in_reply_to_id) qualify — bots are skipped
+      // so DonMerge's own acknowledgments never re-enter the loop.
+      if (
+        payload.action === 'created' &&
+        payload.pull_request &&
+        payload.comment?.in_reply_to_id &&
+        !isBotUser(payload.comment?.user) &&
+        body.trim().length > 0
+      ) {
+        return {
+          shouldRun: true,
+          prNumber: payload.pull_request.number,
+          retrigger: false,
+          naturalReply: true,
+          commentId: payload.comment?.id,
+          commentType: 'review',
+          commentBody: body,
+          githubUser: payload.comment?.user?.login,
+          inReplyToId: payload.comment.in_reply_to_id,
+          reason: 'natural reply to review comment',
+        };
+      }
       return {
         shouldRun: false,
         prNumber: 0,
@@ -145,6 +179,7 @@ export function parseTrigger(
             feedback: command,
             commentId: payload.comment?.id,
             commentType: 'review',
+            commentBody: body,
             githubUser: payload.comment?.user?.login,
             inReplyToId: payload.comment?.in_reply_to_id,
             reason: 'feedback command',
@@ -159,6 +194,7 @@ export function parseTrigger(
           feedback: command,
           commentId: payload.comment?.id,
           commentType: 'review',
+          commentBody: body,
           githubUser: payload.comment?.user?.login,
           inReplyToId: payload.comment?.in_reply_to_id,
           reason: 'feedback command',
@@ -179,6 +215,7 @@ export function parseTrigger(
       shouldRun: true,
       prNumber: payload.pull_request.number,
       retrigger: true,
+      commentBody: body,
       commentId: payload.comment?.id,
       commentType: 'review',
       instruction: instructionResult.instruction,
@@ -210,6 +247,12 @@ export function parseTrigger(
   }
 
   return { shouldRun: false, prNumber: 0, retrigger: false, reason: `unsupported event: ${event}` };
+}
+
+/** True when the comment author is a bot (GitHub Apps post as type "Bot"). */
+function isBotUser(user?: { login: string; type?: string }): boolean {
+  if (!user) return false;
+  return user.type === 'Bot' || /\[bot\]$/i.test(user.login);
 }
 
 /**

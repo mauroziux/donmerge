@@ -16,6 +16,10 @@ export interface WorkerEnv {
   CF_AI_GATEWAY_URL?: string;
   CF_AI_GATEWAY_TOKEN?: string;
   CF_AI_GATEWAY_ROUTE?: string;
+  /** CLEF on Workers AI — cheap intent classifier (REST) for reply learning
+   *  when no chat LLM is available. Requires a token with Workers AI permission. */
+  CF_ACCOUNT_ID?: string;
+  CF_AI_API_TOKEN?: string;
   GITHUB_WEBHOOK_SECRET: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
@@ -148,7 +152,12 @@ export interface WebhookPayload {
     number: number;
     pull_request?: Record<string, unknown>;
   };
-  comment?: { body?: string; id?: number; in_reply_to_id?: number; user?: { login: string } };
+  comment?: {
+    body?: string;
+    id?: number;
+    in_reply_to_id?: number;
+    user?: { login: string; type?: string };
+  };
   check_run?: CheckRunPayload;
   reaction?: { content: string };
   sender?: { login: string };
@@ -278,6 +287,10 @@ export interface WebhookContext {
   feedback?: FeedbackCommand;
   githubUser?: string;
   inReplyToId?: number;
+  /** Natural-language reply to a review comment — candidate for reply learning. */
+  naturalReply?: boolean;
+  /** Reply/comment body as received in the webhook (queue consumers can't refetch it). */
+  commentBody?: string;
 }
 
 export interface FastValidationResult {
@@ -299,6 +312,9 @@ export interface TriggerResult {
   feedback?: FeedbackCommand;
   githubUser?: string;
   inReplyToId?: number;
+  /** True when this is a natural-language reply that may teach something (not a review trigger). */
+  naturalReply?: boolean;
+  commentBody?: string;
 }
 
 export interface ModelConfig {

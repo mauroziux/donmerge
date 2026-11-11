@@ -570,3 +570,156 @@ describe('getTriggerRegex', () => {
     expect(regex.test('@botXv2')).toBe(false);
   });
 });
+
+// ─── Natural reply detection (reply learning candidates) ────────────
+
+describe('pull_request_review_comment — natural reply detection', () => {
+  const replyOverrides = {
+    comment: {
+      body: 'No aplica porque el null ya se valida arriba',
+      id: 200,
+      in_reply_to_id: 100,
+      user: { login: 'developer', type: 'User' },
+    },
+  };
+
+  it('flags a human reply without trigger tag as naturalReply', () => {
+    const payload = createReviewCommentPayload('', replyOverrides);
+    const result = parseTrigger('pull_request_review_comment', payload);
+
+    expect(result.shouldRun).toBe(true);
+    expect(result.naturalReply).toBe(true);
+    expect(result.retrigger).toBe(false);
+    expect(result.prNumber).toBe(42);
+    expect(result.commentId).toBe(200);
+    expect(result.commentType).toBe('review');
+    expect(result.commentBody).toContain('No aplica');
+    expect(result.githubUser).toBe('developer');
+    expect(result.inReplyToId).toBe(100);
+  });
+
+  it('does NOT trigger bot comments even when they contain the trigger tag', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: { body: '@donmerge review', id: 204, user: { login: 'donmerge[bot]', type: 'Bot' } },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    expect(result.shouldRun).toBe(false);
+  });
+
+  it('does NOT flag a bot reply (donmerge acks must not re-enter)', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: 'Learned. I will stop flagging this pattern.',
+        id: 201,
+        in_reply_to_id: 100,
+        user: { login: 'donmerge[bot]', type: 'Bot' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+
+    expect(result.shouldRun).toBe(false);
+    expect(result.naturalReply).toBeUndefined();
+  });
+
+  it('keeps @donmerge replies as review triggers, not natural replies', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: '@donmerge re-check this file',
+        id: 200,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+
+    expect(result.shouldRun).toBe(true);
+    expect(result.naturalReply).toBeUndefined();
+    expect(result.retrigger).toBe(true);
+  });
+
+  it('routes command questions to feedback where the intent gate decides (dismiss?)', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: '@donmerge dismiss?',
+        id: 205,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    // Routing no longer guesses intent from phrasing: the command reaches the
+    // feedback branch with its body, and classifyCommandIntent (LLM → CLEF →
+    // punctuation) decides directive vs question before any memory write.
+    expect(result.feedback).toEqual({ type: 'dismiss' });
+    expect(result.naturalReply).toBeUndefined();
+    expect(result.commentBody).toBe('@donmerge dismiss?');
+  });
+
+  it('routes preference questions to feedback with the body for the intent gate', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: '@donmerge preference should we ignore logging',
+        id: 206,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    expect(result.feedback).toEqual({ type: 'preference', text: 'should we ignore logging' });
+    expect(result.naturalReply).toBeUndefined();
+    expect(result.commentBody).toBe('@donmerge preference should we ignore logging');
+  });
+
+  it('routes punctuation-free Spanish command questions to feedback too', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: '@donmerge preference por  qu\u00e9 no aplica',
+        id: 207,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    expect(result.feedback).toBeDefined();
+    expect(result.naturalReply).toBeUndefined();
+    expect(result.commentBody).toBe('@donmerge preference por  qu\u00e9 no aplica');
+  });
+
+  it('keeps command replies on the feedback path', () => {
+    const payload = createReviewCommentPayload('@donmerge dismiss', {
+      comment: {
+        body: '@donmerge dismiss',
+        id: 202,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+
+    expect(result.shouldRun).toBe(false);
+    expect(result.feedback).toBeDefined();
+    expect(result.feedback!.type).toBe('dismiss');
+    expect(result.feedback!.fingerprint).toBeUndefined();
+    expect(result.inReplyToId).toBe(100);
+  });
+
+  it('ignores non-reply comments without the trigger tag', () => {
+    const payload = createReviewCommentPayload('nice catch', {
+      comment: { body: 'nice catch', id: 203, user: { login: 'developer', type: 'User' } },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+
+    expect(result.shouldRun).toBe(false);
+    expect(result.naturalReply).toBeUndefined();
+  });
+
+  it('ignores edited replies', () => {
+    const payload = createReviewCommentPayload('', {
+      action: 'edited',
+      ...replyOverrides,
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+
+    expect(result.shouldRun).toBe(false);
+  });
+});
