@@ -15,8 +15,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { SYNTHETIC_CORPUS, HONESTY_CASES } from '../evaluation/fixtures';
 import { evaluationGate, runEvaluation } from '../evaluation/runner';
@@ -154,6 +156,38 @@ describe('evaluation — gate and report', () => {
     const gate = evaluationGate(broken);
     expect(gate.pass).toBe(false);
     expect(gate.failures[0]).toContain('sentinel');
+  });
+
+  it('the compare script exits non-zero on a deliberately regressed candidate (native execution)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'donmerge-eval-'));
+    const baselinePath = join(dir, 'baseline.json');
+    const brokenPath = join(dir, 'broken.json');
+    writeFileSync(baselinePath, JSON.stringify(report));
+
+    const broken = JSON.parse(JSON.stringify(report));
+    broken.detection.precision = 0.8;
+    broken.detection.criticalRecall = 0.66;
+    broken.sentinelsLost = ['booking-idempotency-buggy:missing-idempotency-key'];
+    writeFileSync(brokenPath, JSON.stringify(broken));
+
+    const script = join(process.cwd(), 'scripts', 'compare-eval-reports.mjs');
+    let failed = false;
+    try {
+      execFileSync('node', [script, '--baseline', baselinePath, '--candidate', brokenPath], {
+        stdio: 'pipe',
+      });
+    } catch (error) {
+      failed = true;
+      const stderr = String((error as { stderr?: Buffer }).stderr ?? '');
+      expect(stderr).toContain('sentinel');
+      expect(stderr).toContain('precision');
+    }
+    expect(failed).toBe(true);
+
+    // Identical reports must pass
+    execFileSync('node', [script, '--baseline', baselinePath, '--candidate', baselinePath], {
+      stdio: 'pipe',
+    });
   });
 
   it('marks the report as synthetic-only (not live-model proof)', () => {

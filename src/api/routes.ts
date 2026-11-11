@@ -186,7 +186,7 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles?: number;
     retrigger: boolean;
     initiatorKeyHash?: string;
-  }) => Promise<{ started: boolean; reason: string }>)({
+  }) => Promise<{ started: boolean; reason: string; runId?: string }>)({
     githubToken: body.github_token,
     owner: body.owner,
     repo: body.repo,
@@ -221,6 +221,8 @@ export const handlePushReview = withAuth(async (c, auth) => {
           model: body.model,
           maxFiles: body.max_files,
           retrigger: false,
+          // Run identity assigned by the DO, carried in params (plan 004-U1).
+          runId: startResult.runId,
         },
       });
     } catch (e: unknown) {

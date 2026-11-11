@@ -39,6 +39,11 @@ export interface VerifyReviewResultOutput {
   notes: string[];
 }
 
+function summarizeCritical(comment: ReviewComment): string {
+  const match = comment.body.match(/(?:🔴\s*)?\*\*(?:Critical\s+)?Issue:\*\*\s*([^\n]+)/i);
+  return match?.[1]?.trim() || comment.body.split('\n')[0]?.trim() || 'Critical inline finding';
+}
+
 const VerifierResponseSchema = v.object({
   verdict: v.picklist(
     ['supported', 'refuted', 'insufficient_evidence'],
@@ -134,9 +139,19 @@ async function verifyCandidate(
 }
 
 /**
- * Verify every critical lineComment of a review. Only `supported` criticals
- * survive in `lineComments`; refuted/undecidable ones are withheld and
- * reported in `notes`. Non-critical comments pass through untouched.
+ * Verify every critical lineComment of a review.
+ *
+ *   - `supported` criticals stay and may block.
+ *   - `refuted` criticals are withheld — the claim was wrong; a green verdict
+ *     for the rest is correct.
+ *   - `insufficient_evidence` criticals are withheld AND mark the result
+ *     `verificationPending`, so a full-coverage run can never report a green
+ *     clean check while an unconfirmed critical limitation exists — the check
+ *     lands neutral until the finding is re-established.
+ *
+ * Non-critical comments pass through untouched. criticalIssues is rebuilt
+ * from the surviving inline findings (never an independent list that could
+ * bypass evidence).
  */
 export async function verifyReviewResult(args: {
   promptFn: PromptFn;
@@ -148,6 +163,7 @@ export async function verifyReviewResult(args: {
   const { promptFn, model, repo, diffText, result } = args;
   const notes: string[] = [];
   const kept: ReviewComment[] = [];
+  let insufficient = 0;
 
   for (const comment of result.lineComments) {
     if (comment.severity !== 'critical') {
@@ -166,12 +182,18 @@ export async function verifyReviewResult(args: {
       continue;
     }
 
+    if (outcome.verdict === 'insufficient_evidence') {
+      insufficient += 1;
+    }
     notes.push(
       `Withheld critical finding on \`${comment.path}:${comment.line}\` (${outcome.verdict}): ${outcome.explanation}`
     );
   }
 
-  const withheldCount = result.lineComments.filter((c) => c.severity === 'critical').length - kept.filter((c) => c.severity === 'critical').length;
+  const keptCriticals = kept.filter((c) => c.severity === 'critical');
+  const withheldCount =
+    result.lineComments.filter((c) => c.severity === 'critical').length - keptCriticals.length;
+
   if (withheldCount === 0 && notes.length === 0) {
     return { result, notes };
   }
@@ -180,19 +202,23 @@ export async function verifyReviewResult(args: {
     result: {
       ...result,
       lineComments: kept,
-      // criticalIssues must never bypass evidence: drop entries whose inline
-      // counterpart was withheld (they are 1:1 by construction in normalize).
-      criticalIssues: result.criticalIssues.slice(0, kept.filter((c) => c.severity === 'critical').length),
-      summary: appendNotes(result.summary, notes),
+      // Rebuilt from the survivors: consistent with the inline evidence.
+      criticalIssues: keptCriticals.map(summarizeCritical),
+      verificationPending: insufficient > 0 || undefined,
+      summary: appendNotes(result.summary, notes, insufficient),
     },
     notes,
   };
 }
 
-function appendNotes(summary: string, notes: string[]): string {
+function appendNotes(summary: string, notes: string[], insufficient: number): string {
   if (notes.length === 0) return summary;
   const block = notes.map((n) => `- ${n}`).join('\n');
-  return `${summary}\n\n---\n🔍 Verification withheld ${notes.length} unconfirmed finding(s):\n${block}`;
+  const pendingLine =
+    insufficient > 0
+      ? `\n⚠️ ${insufficient} finding(s) remain unverified (insufficient evidence) — this run does not certify the PR as clean.`
+      : '';
+  return `${summary}\n\n---\n🔍 Verification withheld ${notes.length} unconfirmed finding(s):\n${block}${pendingLine}`;
 }
 
 /**

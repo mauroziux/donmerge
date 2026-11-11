@@ -52,6 +52,7 @@ function createMockStorage() {
       async delete(key: string): Promise<boolean> {
         return store.delete(key);
       },
+      setAlarm: async (_time: number) => {},
     },
   };
 }
@@ -312,6 +313,7 @@ describe('ReviewProcessor coordination', () => {
     expect(created[0].id).toContain('review-tableoltd-test-repo-42');
     expect(created[0].id).toContain('-auto-');
     expect(created[0].params).toMatchObject({ instruction: 'check concurrency' });
+    expect(typeof created[0].params.runId).toBe('string');
     expect(created[0].params).not.toHaveProperty('headSha');
     // New run owns the DO with a fresh runId; pendingLatest consumed
     const status = (await storage.get<StoredStatus>('reviewStatus'))!;
@@ -362,6 +364,60 @@ describe('ReviewProcessor coordination', () => {
 
     await processor.saveTrackedIssuesRpc([{ id: 'y' } as never], 'run-new');
     expect(await storage.get('trackedIssues')).toEqual([{ id: 'y' }]);
+  });
+
+  it('handoff create failure keeps pendingLatest and schedules an alarm retry (push never lost)', async () => {
+    const { store, storage } = createMockStorage();
+    const alarms: number[] = [];
+    storage.setAlarm = async (time: number) => {
+      alarms.push(time);
+    };
+    const binding = {
+      create: vi.fn((): Promise<void> => Promise.reject(new Error('workflow api unavailable'))),
+      get: vi.fn(),
+    };
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', baseContext);
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
+
+    // The deferred push survived the failed handoff and a retry is scheduled
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' });
+    expect(alarms).toHaveLength(1);
+
+    // The alarm retries the handoff; success consumes pendingLatest
+    binding.create.mockImplementation(async () => { /* success */ });
+    await processor.alarm();
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
+    const status = (await storage.get<StoredStatus>('reviewStatus'))!;
+    expect(status.state).toBe('pending');
+  });
+
+  it('handoff instance id is deterministic per request (no duplicate instances on retry)', async () => {
+    const { store, storage } = createMockStorage();
+    const ids: string[] = [];
+    const binding = {
+      create: vi.fn(async (opts: { id: string }) => {
+        ids.push(opts.id);
+      }),
+      get: vi.fn(),
+    };
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', baseContext);
+    const pending = { ...baseContext, headSha: 'bbb' };
+    store.set('reviewPendingLatest', pending);
+
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
+    // simulate a crash-before-commit: pendingLatest restored manually, handoff re-runs
+    store.set('reviewPendingLatest', pending);
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
+
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
   });
 
   it('getRunId returns the current fencing token', async () => {

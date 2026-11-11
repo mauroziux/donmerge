@@ -213,7 +213,7 @@ export async function processGitHubCodeReviewWebhook(
     commentId?: number; commentType?: 'issue' | 'review';
     installationId?: number; instruction?: string; focusFiles?: string[];
     headSha?: string;
-  }): Promise<{ started: boolean; reason: string }> }).startReview({
+  }): Promise<{ started: boolean; reason: string; runId?: string }> }).startReview({
     owner,
     repo,
     prNumber,
@@ -262,6 +262,9 @@ export async function processGitHubCodeReviewWebhook(
         installationId,
         instruction,
         focusFiles,
+        // Run identity assigned by the DO: carried in params so a restarted
+        // instance keeps its own fencing token (plan 004-U1).
+        runId: startResult.runId,
       },
     });
   } else {

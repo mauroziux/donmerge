@@ -131,6 +131,8 @@ describe('verifyReviewResult', () => {
     expect(output.notes[0]).toContain('refuted');
     expect(output.notes[0]).toContain('src/api/bookings.ts:42');
     expect(output.result.summary).toContain('Withheld');
+    // A refuted claim is wrong, not pending: no verificationPending flag
+    expect(output.result.verificationPending).toBeUndefined();
   });
 
   it('verifier infrastructure failure withholds the finding (never publishes unverified)', async () => {
@@ -149,6 +151,8 @@ describe('verifyReviewResult', () => {
     expect(output.result.lineComments).toHaveLength(0);
     expect(output.notes[0]).toContain('insufficient_evidence');
     expect(output.notes[0]).toContain('gateway exploded');
+    // Undecidable ≠ clean: the run must not certify the PR as clean
+    expect(output.result.verificationPending).toBe(true);
   });
 
   it('non-contract verifier output counts as insufficient evidence', async () => {
@@ -182,6 +186,9 @@ describe('verifyReviewResult', () => {
     expect(output.result.lineComments).toHaveLength(1);
     expect(output.result.lineComments[0].issueKey).toBe('missing-idempotency-key');
     expect(output.notes).toHaveLength(1);
+    // criticalIssues rebuilt from the SURVIVING inline findings
+    expect(output.result.criticalIssues).toHaveLength(1);
+    expect(output.result.criticalIssues[0]).toContain('idempotency');
   });
 });
 

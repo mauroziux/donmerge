@@ -164,6 +164,21 @@ describe('completeCheckRun with coverage', () => {
     expect(body.conclusion).toBe('failure');
   });
 
+  it('verificationPending on a full-scope clean review reports NEUTRAL, not green', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({}));
+
+    const complete = { ...partialManifest(), scopeComplete: true, pendingCount: 0, pending: [] };
+    await completeCheckRun(
+      'owner', 'repo', 1,
+      { ...cleanReview, verificationPending: true },
+      'token', [], complete
+    );
+
+    const body = JSON.parse((mockFetch.mock.calls[0][1] as any).body);
+    expect(body.conclusion).toBe('neutral');
+    expect(body.output.title).toContain('unverified');
+  });
+
   it('keeps the historical success default when no coverage manifest is provided', async () => {
     mockFetch.mockResolvedValue(jsonResponse({}));
 

@@ -18,7 +18,7 @@ import {
 import type { CoverageManifest } from './review-coverage';
 import { checkConclusion, coverageReportText } from './review-coverage';
 import { buildCommentableMap, validateInlineComments } from './comment-anchors';
-import { GitHubApiError, withBoundedRetry, isTransientGitHubError, TRANSIENT_RETRY_DELAYS_MS } from './github-retry';
+import { GitHubApiError, withBoundedRetry, isTransientGitHubError, isTransportError, TRANSIENT_RETRY_DELAYS_MS } from './github-retry';
 import { isDegenerateReviewBody, DEGENERATE_BODY_FALLBACK, reviewSkipDecision } from './review-body-guard';
 
 const RESOLVED_REPLY_MARKER = '✅ **Fixed!**';
@@ -235,12 +235,14 @@ export async function completeCheckRun(
   coverage?: CoverageManifest
 ): Promise<void> {
   const approved = !hasBlockingFindings(review);
-  const conclusion = checkConclusion(!approved, coverage);
+  const conclusion = checkConclusion(!approved, coverage, review.verificationPending);
   const title = !approved
     ? '⚠️ Ojo, some things need attention'
     : conclusion === 'success'
       ? '✅ All good, compadre!'
-      : '🟡 Partial review — no blocking issues in the reviewed scope';
+      : review.verificationPending
+        ? '🟡 No blocking findings verified — unverified finding(s) pending'
+        : '🟡 Partial review — no blocking issues in the reviewed scope';
   const criticalFindings = collectCriticalFindings(review);
   const critical =
     criticalFindings.length > 0
@@ -560,11 +562,10 @@ export async function publishReview(
           payload
         );
       } catch (error) {
-        if (
-          runId &&
-          isTransientGitHubError(error) &&
-          (await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token))
-        ) {
+        // Any failure on the POST may be an accepted-but-lost request (transient
+        // 422, dropped connection, transport rejection): the marker is proof of
+        // publication regardless of error class. Reconcile instead of duplicating.
+        if (runId && (await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token))) {
           console.log('Ambiguous publication failure reconciled — review already posted', {
             owner,
             repo,
@@ -578,7 +579,7 @@ export async function publishReview(
     },
     {
       delays: TRANSIENT_RETRY_DELAYS_MS,
-      bail: (err) => !isTransientGitHubError(err),
+      bail: (err) => !(isTransientGitHubError(err) || isTransportError(err)),
       name: 'publishReview',
     }
   );
@@ -823,6 +824,10 @@ ${riskAssessment}
 
   if (coverage && !coverage.scopeComplete) {
     section += `\n### 📊 Coverage\n${coverageReportText(coverage)}\n`;
+  }
+
+  if (review.verificationPending) {
+    section += `\n### 🔍 Verification\nSome critical finding(s) could not be verified with the available evidence. This review does not certify the PR as clean; re-trigger to re-establish them.\n`;
   }
 
   section += `\n---\n*Reviewed by DonMerge 🤠 — ${timestamp}*\n`;

@@ -261,19 +261,22 @@ export function buildCoverageManifest(
 }
 
 /**
- * Check-run conclusion for a review outcome (plan 002-U4).
+ * Check-run conclusion for a review outcome (plan 002-U4 + 003-U3).
  *
  *   failure — blocking findings exist (regardless of coverage)
- *   success — clean review AND full-PR scope
- *   neutral — clean review but the scope was partial/focused/limited
+ *   success — clean review AND full-PR scope AND nothing pending verification
+ *   neutral — clean review but the scope was partial/focused/limited, or an
+ *             unverified critical limitation is outstanding
  */
 export function checkConclusion(
   hasBlocking: boolean,
-  coverage?: CoverageManifest
+  coverage?: CoverageManifest,
+  verificationPending?: boolean
 ): 'success' | 'neutral' | 'failure' {
   if (hasBlocking) return 'failure';
   const scopeComplete = coverage ? coverage.scopeComplete : true;
-  return scopeComplete ? 'success' : 'neutral';
+  if (scopeComplete && !verificationPending) return 'success';
+  return 'neutral';
 }
 
 /** Human-readable coverage note for check-run output and PR description. */

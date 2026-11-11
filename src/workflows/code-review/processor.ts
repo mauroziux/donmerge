@@ -94,6 +94,17 @@ function requestFingerprint(context: ReviewContext): string {
   });
 }
 
+/** Deterministic FNV-1a hex token: same deferred request → same instance id
+ * on every retry, so handoffs cannot spawn duplicate workflow instances. */
+function fnv1aHex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0').slice(0, 8);
+}
+
 export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   private state: DurableObjectState;
   private env: EnvWithBindings;
@@ -251,8 +262,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
 
   /**
    * Fencing token for the workflow run that currently owns this DO.
-   * CodeReviewWorkflow calls this once at start and echoes the runId on
-   * every subsequent RPC so stale runs cannot overwrite fresh state.
+   * Runs now carry their identity in Workflow params (plan 004-U1); this RPC
+   * remains for diagnostics/status tooling.
    */
   async getRunId(): Promise<string | undefined> {
     const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
@@ -260,23 +271,27 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   }
 
   /**
+   * Alarm: retry a handoff whose workflow creation failed transiently.
+   * pendingLatest survives failed handoffs — a deferred push is never lost.
+   */
+  async alarm(): Promise<void> {
+    await this.startPendingLatestIfAny();
+  }
+
+  /**
    * Hand the latest deferred request to a fresh workflow run.
-   * Uses a run-scoped instance id (`…-auto-<runId>`): the previous instance
-   // is terminal and cannot carry the new request's params.
+   *
+   * Durability contract (plan 004-U1):
+   *   - the workflow is created BEFORE the deferred request is consumed; a
+   *     transient failure (or a crash mid-handoff) leaves pendingLatest in
+   *     place and an alarm retries;
+   *   - the instance id and run token are DERIVED from the request
+   *     fingerprint, so retrying the same deferred request reuses the same
+   *     instance (already_exists → restart) instead of spawning duplicates.
    */
   private async startPendingLatestIfAny(): Promise<void> {
     const pending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
     if (!pending) return;
-    await this.state.storage.delete(STATE_KEYS.pendingLatest);
-
-    const runId = crypto.randomUUID();
-    await this.state.storage.put(STATE_KEYS.context, pending);
-    await this.state.storage.put(STATE_KEYS.status, {
-      state: 'pending',
-      attempts: 0,
-      startedAt: new Date().toISOString(),
-      runId,
-    });
 
     if (!this.env.CODE_REVIEW_WORKFLOW) {
       console.warn('Deferred review cannot start: CODE_REVIEW_WORKFLOW binding missing', {
@@ -287,13 +302,15 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       return;
     }
 
+    const token = fnv1aHex(requestFingerprint(pending));
+    const runId = `auto-${token}`;
     const baseId = buildReviewWorkflowInstanceId(
       pending.owner,
       pending.repo,
       pending.prNumber,
       pending.commentId
     );
-    const instanceId = `${baseId}-auto-${runId.slice(0, 8)}`;
+    const instanceId = `${baseId}-auto-${token}`;
     try {
       await this.env.CODE_REVIEW_WORKFLOW.create({
         id: instanceId,
@@ -310,6 +327,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           githubToken: pending.githubToken,
           model: pending.model,
           maxFiles: pending.maxFiles,
+          runId,
         },
       });
       console.log('Deferred review handed off to a new workflow run', { instanceId });
@@ -321,15 +339,34 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           await instance.restart();
           console.log('Deferred review restarted existing instance', { instanceId });
         } catch (restartError) {
-          console.error('Deferred review restart failed', {
+          console.error('Deferred review restart failed; will retry via alarm', {
             instanceId,
             error: restartError instanceof Error ? restartError.message : String(restartError),
           });
+          await this.state.storage.setAlarm(Date.now() + 30_000);
+          return;
         }
       } else {
-        console.error('Deferred review workflow create failed', { instanceId, error: message });
+        console.error('Deferred review workflow create failed; will retry via alarm', {
+          instanceId,
+          error: message,
+        });
+        await this.state.storage.setAlarm(Date.now() + 30_000);
+        return; // pendingLatest stays stored — the deferred push is not lost
       }
     }
+
+    // Commit only after the workflow exists: if the DO dies before this
+    // point, pendingLatest is still set and the alarm (or the next terminal
+    // update) retries the same deterministic instance id.
+    await this.state.storage.put(STATE_KEYS.context, pending);
+    await this.state.storage.put(STATE_KEYS.status, {
+      state: 'pending',
+      attempts: 0,
+      startedAt: new Date().toISOString(),
+      runId,
+    });
+    await this.state.storage.delete(STATE_KEYS.pendingLatest);
   }
 
   /**

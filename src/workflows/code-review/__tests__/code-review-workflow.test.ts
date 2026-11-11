@@ -228,9 +228,9 @@ function makeWorkflow() {
 // ── the matrix ───────────────────────────────────────────────────────────────
 
 describe('publishReview verdict matrix', () => {
-  it('clean review + full coverage → success, and auto-resolves unmatched open issues', async () => {
+  it('clean review + full coverage → success, and auto-resolves unmatched open issues in REVIEWED files', async () => {
     const calls = setupGitHubMock();
-    const openIssue = createTrackedIssue({ filePath: 'b.ts', status: 'open' });
+    const openIssue = createTrackedIssue({ filePath: 'a.ts', status: 'open' });
     const { stub, saved } = setupProcessorStub([openIssue]);
 
     await (makeWorkflow() as unknown as {
@@ -245,6 +245,26 @@ describe('publishReview verdict matrix', () => {
     const lastSave = saved[saved.length - 1] ?? [];
     const storedOpen = lastSave.find((i) => i.id === openIssue.id);
     expect(storedOpen?.status).toBe('fixed');
+  });
+
+  it('full coverage does NOT auto-resolve issues in files outside the reviewed scope (policy-excluded)', async () => {
+    const calls = setupGitHubMock();
+    // b.ts is NOT in filePatches (e.g. excluded by .donmerge policy)
+    const excludedIssue = createTrackedIssue({ filePath: 'b.ts', status: 'open' });
+    const { stub, saved } = setupProcessorStub([excludedIssue]);
+
+    await (makeWorkflow() as unknown as {
+      publishReview: (r: unknown, s: unknown, runId?: string) => Promise<void>;
+    }).publishReview(llmResult(fullCoverage(), cleanReview()), stub);
+
+    const checkPatch = calls.find(
+      (c) => c.url.includes('/check-runs/777') && c.method === 'PATCH'
+    );
+    expect(checkPatch?.body).toMatchObject({ conclusion: 'success' });
+
+    const lastSave = saved[saved.length - 1] ?? [];
+    const stored = lastSave.find((i) => i.id === excludedIssue.id);
+    expect(stored?.status).toBe('open'); // never assessed → never auto-fixed
   });
 
   it('clean review + PARTIAL coverage → neutral check, unmatched open issue stays open', async () => {

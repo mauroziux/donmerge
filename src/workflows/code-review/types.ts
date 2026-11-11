@@ -264,6 +264,9 @@ export interface ReviewResult {
   suggestions: string[];
   resolvedComments?: number[];
   fileSummaries?: FileSummary[];
+  /** True when verification withheld criticals for insufficient evidence: a
+   * full-coverage run must report neutral, never a green clean (plan 003-U3). */
+  verificationPending?: boolean;
 }
 
 /**

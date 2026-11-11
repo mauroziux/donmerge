@@ -25,6 +25,12 @@ export interface MatchOptions {
    * fixed.
    */
   assumeMissingResolved?: boolean;
+  /**
+   * Even on a full-scope run, only issues in files the run actually reviewed
+   * may auto-resolve: a file excluded by .donmerge policy was never assessed,
+   * so its open issues must survive (plan 002-U4 hardening).
+   */
+  reviewedPaths?: Set<string>;
 }
 
 export function matchCurrentFindingsToStored(
@@ -33,6 +39,7 @@ export function matchCurrentFindingsToStored(
   options: MatchOptions = {}
 ): IssueMatchResult {
   const assumeMissingResolved = options.assumeMissingResolved !== false;
+  const reviewedPaths = options.reviewedPaths;
   const newIssues: TrackedIssue[] = [];
   const persistingIssues: TrackedIssue[] = [];
   const resolvedIssues: TrackedIssue[] = [];
@@ -62,6 +69,11 @@ export function matchCurrentFindingsToStored(
     if (!assumeMissingResolved) {
       // Partial/focused scope: keep the stored state untouched. The issue was
       // simply not assessed in this run.
+      continue;
+    }
+    if (reviewedPaths && !reviewedPaths.has(issue.filePath)) {
+      // The file holding this issue was not part of the reviewed scope (e.g.
+      // excluded by repo policy): absence of a finding says nothing about it.
       continue;
     }
     if (issue.status === 'open' || issue.status === 'new') {

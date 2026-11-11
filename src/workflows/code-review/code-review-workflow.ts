@@ -104,6 +104,10 @@ export interface WorkflowParams {
   githubToken?: string; // Push API: caller-provided token
   model?: string;       // Push API: override LLM model
   maxFiles?: number;    // Push API: override max files
+  /** Run identity for fencing: assigned by the DO when this run was started.
+   * Carried in the workflow PARAMS so a restarted older instance keeps its
+   * own token instead of adopting the current owner's (plan 004-U1). */
+  runId?: string;
 }
 
 // ── Intermediate data passed between steps ───────────────────────────────────
@@ -189,10 +193,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const doName = `${params.owner}/${params.repo}/${params.prNumber}`;
     const processorStub = this.getProcessorStub(doName);
 
-    // Fencing token: every state write below echoes this run's identity so a
-    // superseded run (stale override, deferred handoff) cannot clobber the
-    // state of the run that currently owns the DO (plan 004-U1).
-    const runId: string | undefined = await (processorStub as any).getRunId();
+    // Fencing token for THIS run: carried in params (not read from the DO at
+    // start) so a restarted older instance keeps its own identity and its
+    // late writes are rejected instead of adopted (plan 004-U1).
+    const runId: string | undefined = params.runId;
 
     // Mark review as running
     await (processorStub as any).updateFromWorkflow({ state: 'running', runId });
@@ -853,6 +857,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const currentIssues = await buildCurrentIssues(context, headSha, result.lineComments);
     const matchResult = matchCurrentFindingsToStored(currentIssues, storedIssues, {
       assumeMissingResolved: preparedFiles.coverage.scopeComplete,
+      // Only issues in files this run actually reviewed may auto-resolve; a
+      // policy-excluded file was never assessed (plan 002-U4 hardening).
+      reviewedPaths: new Set(preparedFiles.filePatches.map((f) => f.filename)),
     });
 
     // Update tracked issues in DO via RPC
