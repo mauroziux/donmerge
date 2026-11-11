@@ -228,3 +228,209 @@ describe('fetchRepoContext (ref + deterministic priority)', () => {
     expect(url).toContain('ref=sha%20with%20spaces');
   });
 });
+
+// ─── Idempotent publication (plan 004-U4) ────────────────────────────────────
+
+import {
+  findPublishedReviewForRun,
+  publishReview,
+  parseReviewMarker,
+} from '../github-api';
+import type { ReviewResult as RR } from '../types';
+
+function cleanReviewResult(): RR {
+  return {
+    approved: true,
+    summary: 'Nothing blocking in the reviewed scope.',
+    prSummary: {
+      overview: 'o',
+      keyChanges: ['k'],
+      codeQuality: 'q',
+      testingNotes: 't',
+      riskAssessment: 'Low.',
+    },
+    lineComments: [],
+    criticalIssues: [],
+    suggestions: [],
+  };
+}
+
+describe('review marker with runId', () => {
+  it('marker round-trips runId and stays parseable', () => {
+    const marker = parseReviewMarker('<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"run-1","baseRef":"main"} -->\n\nbody');
+    expect(marker).toMatchObject({ headSha: 'abc', runId: 'run-1', baseRef: 'main' });
+  });
+
+  it('legacy markers without runId still parse (read back-compat)', () => {
+    const marker = parseReviewMarker('<!-- DONMERGE_REVIEW: {"headSha":"abc","baseRef":"main"} -->');
+    expect(marker?.headSha).toBe('abc');
+    expect(marker?.runId).toBeUndefined();
+  });
+});
+
+describe('findPublishedReviewForRun', () => {
+  it('matches only the same runId AND headSha', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse([
+        { body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"other"} -->' },
+        { body: '<!-- DONMERGE_REVIEW: {"headSha":"zzz","runId":"run-1"} -->' },
+        { body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"run-1"} -->' },
+      ])
+    );
+
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe(true);
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-2', 'abc', 't')).toBe(false);
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'other', 't')).toBe(false);
+  });
+
+  it('paginates until a short page', async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(Array.from({ length: 100 }, () => ({ body: 'x' }))))
+      .mockResolvedValueOnce(jsonResponse([{ body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"run-1"} -->' }]));
+
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('publishReview idempotency', () => {
+  function postUrls() {
+    return mockFetch.mock.calls.filter(
+      ([url, init]) => (url as string).endsWith('/pulls/1/reviews') && (init as RequestInit)?.method === 'POST'
+    );
+  }
+
+  it('skips the POST when this run already published (step replay)', async () => {
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.includes('/pulls/1/reviews?') && method === 'GET') {
+        return jsonResponse([
+          { body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"run-1"} -->\n\nearlier' },
+        ]);
+      }
+      return jsonResponse({});
+    });
+
+    const dropped = await publishReview(
+      'o', 'r', 1, 'abc', cleanReviewResult(), 't',
+      undefined, undefined, 'main', 'run-1'
+    );
+
+    expect(dropped).toEqual([]);
+    expect(postUrls()).toHaveLength(0);
+  });
+
+  it('posts when no marker matches, and embeds runId in the body', async () => {
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/pulls/1/reviews?')) return jsonResponse([]);
+      return jsonResponse({ id: 9 });
+    });
+
+    await publishReview(
+      'o', 'r', 1, 'abc', { ...cleanReviewResult(), approved: false, criticalIssues: ['x causes y'] },
+      't', undefined, undefined, 'main', 'run-1'
+    );
+
+    expect(postUrls()).toHaveLength(1);
+    const body = JSON.parse((postUrls()[0][1] as RequestInit).body as string);
+    expect(body.body).toContain('"runId":"run-1"');
+  });
+
+  it('reconciles an accepted-but-lost POST instead of duplicating it', async () => {
+    let postAttempts = 0;
+    let posted = false;
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/pulls/1/reviews') && method === 'POST') {
+        postAttempts += 1;
+        if (postAttempts === 1) {
+          posted = true; // GitHub accepted it but the response was lost
+          return {
+            ok: false,
+            status: 422,
+            text: async () => JSON.stringify({ message: 'An internal error occurred, please try again.' }),
+          };
+        }
+        throw new Error('must not POST a second time');
+      }
+      if (url.includes('/pulls/1/reviews?') && method === 'GET') {
+        // Only AFTER the first (accepted) POST does the review exist.
+        return jsonResponse(
+          posted
+            ? [{ body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"run-1"} -->\n\nposted' }]
+            : []
+        );
+      }
+      return jsonResponse({});
+    });
+
+    await publishReview(
+      'o', 'r', 1, 'abc', { ...cleanReviewResult(), approved: false, criticalIssues: ['x causes y'] },
+      't', undefined, undefined, 'main', 'run-1'
+    );
+
+    expect(postAttempts).toBe(1);
+  });
+});
+
+// ─── Host-side file context (plan 003-U1) ────────────────────────────────────
+
+import { fetchFileContentsAtRef } from '../github-api';
+
+describe('fetchFileContentsAtRef', () => {
+  function okBody(content: string) {
+    return jsonResponse({ content: btoa(content), encoding: 'base64' });
+  }
+
+  it('fetches at the pinned ref within file and char budgets', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('contents/a.ts')) {
+        expect(url).toContain('ref=head1');
+        return okBody('const a = 1;');
+      }
+      if (url.includes('contents/b.ts')) return okBody('const b = 2;');
+      return { ok: false, status: 404, text: async () => 'nf' };
+    });
+
+    const files = await fetchFileContentsAtRef('o', 'r', ['a.ts', 'b.ts', 'missing.ts'], 'head1', 't', {
+      maxFiles: 8,
+      maxCharsPerFile: 100,
+      maxCharsTotal: 1_000,
+    });
+
+    expect(files.map((f) => f.path)).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('drops files that would exceed the total budget (no partial overflow)', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('big1')) return okBody('x'.repeat(60));
+      if (url.includes('big2')) return okBody('y'.repeat(60));
+      return { ok: false, status: 404, text: async () => 'nf' };
+    });
+
+    const files = await fetchFileContentsAtRef('o', 'r', ['big1.ts', 'big2.ts'], 'head1', 't', {
+      maxFiles: 8,
+      maxCharsPerFile: 100,
+      maxCharsTotal: 100,
+    });
+
+    expect(files).toHaveLength(1);
+  });
+
+  it('caps the number of files fetched regardless of path count', async () => {
+    const requested: string[] = [];
+    mockFetch.mockImplementation(async (url: string) => {
+      const match = url.match(/contents\/([^?]+)/);
+      if (match) requested.push(match[1]);
+      return { ok: false, status: 404, text: async () => 'nf' };
+    });
+
+    await fetchFileContentsAtRef('o', 'r', ['a', 'b', 'c'], 'head1', 't', {
+      maxFiles: 2,
+      maxCharsPerFile: 10,
+      maxCharsTotal: 100,
+    });
+
+    expect(requested).toEqual(['a', 'b']);
+  });
+});

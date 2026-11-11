@@ -37,6 +37,7 @@ import {
   fetchRepoFile,
   fetchAllPrFiles,
   fetchPrHeadSha,
+  fetchFileContentsAtRef,
   resolveFixedComments,
   publishReview,
   completeCheckRun,
@@ -662,6 +663,24 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         fallbackModel,
       });
 
+      // Optional host-side file context (plan 003-U1): full reviewed files at
+      // head as untrusted data, so the model can check guards/callers the
+      // diff hides. Budgeted; off by default (DONMERGE_FILE_CONTEXT).
+      let fileContents: Array<{ path: string; content: string }> | undefined;
+      if (this.env.DONMERGE_FILE_CONTEXT === 'true') {
+        fileContents = await fetchFileContentsAtRef(
+          prData.owner,
+          prData.repo,
+          preparedFiles.filePatches.map((f) => f.filename),
+          prData.headSha,
+          prData.githubToken,
+          { maxFiles: 8, maxCharsPerFile: 20_000, maxCharsTotal: 60_000 }
+        );
+        console.log('[file-context] loaded full files at head', {
+          count: fileContents.length,
+        });
+      }
+
       const prompt = buildReviewPrompt(
         {
           owner: prData.owner,
@@ -679,6 +698,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           donmergeResolved,
           memoryContext,
           adversarial: this.env.DONMERGE_ADVERSARIAL_PROMPT === 'true',
+          fileContents,
         }
       );
 
@@ -740,6 +760,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
             memoryContext,
             secondPass: true,
             adversarial: this.env.DONMERGE_ADVERSARIAL_PROMPT === 'true',
+            fileContents,
           }
         );
         const second = await runReviewModels({
@@ -929,7 +950,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       githubToken,
       activePreviousComments,
       preparedFiles.filePatches,
-      prData.baseBranch
+      prData.baseBranch,
+      runId
     );
 
     // Attach comment IDs to new issues

@@ -33,6 +33,8 @@ export interface WorkerEnv {
   DONMERGE_VERIFY_FINDINGS?: string;
   /** 'true' → second independent search when a high-risk change reviews clean (003-U4). */
   DONMERGE_SECOND_PASS?: string;
+  /** 'true' → inject full reviewed files at head as untrusted context (003-U1). */
+  DONMERGE_FILE_CONTEXT?: string;
   REPO_CONFIGS?: string;     // "owner/repo:branch,owner/repo2:branch2" - branch is optional
   REVIEW_TRIGGER?: string;
   DONMERGE_POST_FIXED_REPLIES?: string;

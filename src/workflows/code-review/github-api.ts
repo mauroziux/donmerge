@@ -29,11 +29,14 @@ const REVIEW_META_PREFIX = '<!-- DONMERGE_REVIEW:';
  * Build a per-review metadata HTML comment pinning the reviewed commit and base ref.
  * Invisible in rendered markdown but machine-parseable, so a reader can tell whether
  * findings are stale after a push. Distinct from the per-comment DONMERGE marker.
+ * `runId` makes the publication idempotent: a step replay can detect its own
+ * earlier POST and reconcile instead of duplicating the review (plan 004-U4).
  */
-function buildReviewMeta(input: { headSha: string; baseRef?: string }): string {
+function buildReviewMeta(input: { headSha: string; baseRef?: string; runId?: string }): string {
   const payload = {
     headSha: input.headSha,
     baseRef: input.baseRef,
+    runId: input.runId,
     reviewedAt: new Date().toISOString(),
   };
   return `${REVIEW_META_PREFIX} ${JSON.stringify(payload)} -->\n\n`;
@@ -43,6 +46,8 @@ function buildReviewMeta(input: { headSha: string; baseRef?: string }): string {
 export interface ReviewMarker {
   headSha: string;
   baseRef?: string;
+  /** Present on reviews published after run fencing landed (plan 004). */
+  runId?: string;
   reviewedAt?: string;
 }
 
@@ -413,7 +418,8 @@ export async function publishReview(
   token: string,
   previousComments?: PreviousComment[],
   filePatches?: FilePatch[],
-  baseRef?: string
+  baseRef?: string,
+  runId?: string
 ): Promise<DroppedComment[]> {
   const existingFingerprints = new Set<string>();
   if (previousComments && previousComments.length > 0) {
@@ -508,9 +514,24 @@ export async function publishReview(
     body = DEGENERATE_BODY_FALLBACK;
   }
 
+  // Idempotent publication (plan 004-U4): a durable step replay (or a retry
+  // after an ambiguous transport failure) must not post the same run's review
+  // twice. If a review carrying THIS run's marker already exists, reconcile
+  // by skipping the POST — the remaining publish effects (check run, PR
+  // description) are separately idempotent.
+  if (runId && (await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token))) {
+    console.log('Publication already recorded for this run — skipping duplicate POST', {
+      owner,
+      repo,
+      prNumber,
+      runId,
+    });
+    return droppedComments;
+  }
+
   const payload = {
     commit_id: headSha,
-    body: buildReviewMeta({ headSha, baseRef }) + body,
+    body: buildReviewMeta({ headSha, baseRef, runId }) + body,
     event: review.approved ? 'COMMENT' : 'REQUEST_CHANGES',
     comments,
   };
@@ -525,16 +546,36 @@ export async function publishReview(
   // Wrap the POST in a bounded retry for GitHub's transient "internal error" 422.
   // bail predicate scopes retries to the transient body only — real validation 422s
   // (anchor / body-length / suggestion) fail fast so they surface, not loop.
+  // Ambiguous transport failures reconcile against the publication marker before
+  // re-sending: an accepted-but-lost POST is detected, never duplicated (004-U4).
   // Idempotency-safe: githubFetch throws on non-2xx before returning, so a
   // successful post is never retried.
   await withBoundedRetry(
-    () =>
-      githubFetch(
-        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
-        token,
-        'POST',
-        payload
-      ),
+    async () => {
+      try {
+        return await githubFetch(
+          `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
+          token,
+          'POST',
+          payload
+        );
+      } catch (error) {
+        if (
+          runId &&
+          isTransientGitHubError(error) &&
+          (await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token))
+        ) {
+          console.log('Ambiguous publication failure reconciled — review already posted', {
+            owner,
+            repo,
+            prNumber,
+            runId,
+          });
+          return { reconciled: true };
+        }
+        throw error;
+      }
+    },
     {
       delays: TRANSIENT_RETRY_DELAYS_MS,
       bail: (err) => !isTransientGitHubError(err),
@@ -605,6 +646,70 @@ export async function fetchAllPrFiles(
   }
 
   return { files, apiFileCapReached, pagesFetched: page };
+}
+
+/**
+ * Find a review already published by THIS run (same runId + headSha) by
+ * scanning the PR's reviews for our machine marker. Used to make the
+ * publish step idempotent across durable replays and ambiguous transport
+ * failures (plan 004-U4). Reviews published before run fencing carry no
+ * runId and never match.
+ */
+export async function findPublishedReviewForRun(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  runId: string,
+  headSha: string,
+  token: string
+): Promise<boolean> {
+  for (let page = 1; page <= 5; page += 1) {
+    const reviews = await githubFetch<Array<{ body?: string }>>(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
+      token
+    );
+    for (const review of reviews) {
+      const marker = review.body ? parseReviewMarker(review.body) : null;
+      if (marker?.runId === runId && marker.headSha === headSha) {
+        return true;
+      }
+    }
+    if (reviews.length < 100) return false;
+  }
+  return false;
+}
+
+/**
+ * Fetch full file contents at an explicit ref for prompt context (plan 003-U1).
+ * Host-side retrieval: the model receives code as DATA, never as a tool it
+ * can point elsewhere. Budgeted — stops at the file/char caps.
+ */
+export async function fetchFileContentsAtRef(
+  owner: string,
+  repo: string,
+  paths: string[],
+  ref: string,
+  token: string,
+  limits: { maxFiles: number; maxCharsPerFile: number; maxCharsTotal: number }
+): Promise<Array<{ path: string; content: string }>> {
+  const candidates = paths.slice(0, limits.maxFiles);
+  const results = await Promise.all(
+    candidates.map(async (path) => ({
+      path,
+      content: await fetchRepoFile(owner, repo, path, token, ref),
+    }))
+  );
+
+  const collected: Array<{ path: string; content: string }> = [];
+  let total = 0;
+  for (const { path, content } of results) {
+    if (content === null || content === undefined) continue;
+    const capped = content.slice(0, limits.maxCharsPerFile);
+    if (total + capped.length > limits.maxCharsTotal) continue;
+    collected.push({ path, content: capped });
+    total += capped.length;
+  }
+  return collected;
 }
 
 /**
