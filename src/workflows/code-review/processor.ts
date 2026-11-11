@@ -24,26 +24,6 @@ const STATE_KEYS = {
   handoff: 'reviewHandoff',
 };
 
-/**
- * How long a 'pending' review may stay pending before it is considered stale
- * and overridden by a new startReview() call.
- *
- * Background: the webhook pipeline enqueues to CODE_REVIEW_QUEUE, whose consumer
- * calls startReview() (sets 'pending') then Workflow.create(). If the consumer
- * is killed between those two steps (e.g. duplicate-delivery throw, deploy),
- * the DO would otherwise be stuck in 'pending' forever and block ALL future
- * reviews for that PR. This threshold allows recovery.
- */
-const STALE_PENDING_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
-
-/**
- * How long a 'running' review may stay running before it is considered stale.
- * A single LLM prompt may legitimately run 10 minutes and the whole LLM step
- * up to ~40, so this must stay ABOVE those budgets: the 5-minute pending
- * threshold must never kill a healthy long review (plan 004-U1).
- */
-const STALE_RUNNING_THRESHOLD_MS = 50 * 60 * 1000; // 50 min
-
 interface ReviewContext {
   owner: string;
   repo: string;
@@ -136,28 +116,13 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
    * without creating or restarting another Workflow.
    */
   async startReview(context: ReviewContext): Promise<StartReviewResult> {
-    // Check if there's already a review in progress. Allow overriding stale
-    // 'pending'/'running' states so a crashed consumer doesn't permanently
-    // block future reviews for this PR.
+    // Time alone cannot prove an active owner stopped producing effects.
     const existingStatus = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
     if (existingStatus && (existingStatus.state === 'running' || existingStatus.state === 'pending')) {
       const startedAtMs = existingStatus.startedAt ? Date.parse(existingStatus.startedAt) : 0;
       const ageMs = Date.now() - startedAtMs;
-      // A healthy running review can legitimately take tens of minutes; only
-      // a hung one is stale. Pending means the workflow never started.
-      const threshold = existingStatus.state === 'pending'
-        ? STALE_PENDING_THRESHOLD_MS
-        : STALE_RUNNING_THRESHOLD_MS;
-      // A live or suspended workflow can still execute external GitHub writes.
-      // Time alone cannot fence those writes, so never replace a running owner
-      // solely by age; recovery must reconcile the workflow's actual state.
       const deferred = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
-      const handoff = await this.state.storage.get(STATE_KEYS.handoff);
-      // Age is not proof that a fenced workflow was never created. Only
-      // recover a legacy, unfenced pending record if no request can be lost.
-      const isStale = existingStatus.state === 'pending' && !existingStatus.runId &&
-        !deferred && !handoff && ageMs > threshold;
-      if (!isStale) {
+      // Absence of a runId also cannot prove a legacy owner stopped.
         // A single latest-push slot must never silently discard an API
         // request belonging to another principal, credential or unknown head.
         // Reject the incoming request so its caller can retry explicitly.
@@ -197,13 +162,6 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           newHeadSha: context.headSha,
         });
         return { started: false, reason: 'deferred_new_push' };
-      }
-      console.log('Stale in-progress review detected, overriding', {
-        state: existingStatus.state,
-        ageMs,
-        threshold,
-      });
-      // fall through to overwrite
     }
 
     const runId = crypto.randomUUID();
@@ -227,9 +185,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     await this.state.storage.put(STATE_KEYS.status, status);
     return {
       started: true,
-      reason: existingStatus && (existingStatus.state === 'running' || existingStatus.state === 'pending')
-        ? 'stale_recovered'
-        : 'started',
+      reason: 'started',
       runId,
     };
   }
@@ -572,10 +528,22 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           ).status();
           const statusValue =
             typeof statusResult === 'string' ? statusResult : statusResult?.status;
-          if (statusValue === 'errored' || statusValue === 'terminated') {
-            await instance.restart();
-            console.log('Deferred review restarted terminal instance', { instanceId });
-          } else if (['running', 'queued', 'waiting', 'paused', 'waitingForPause', 'complete'].includes(statusValue ?? '')) {
+          if (['errored', 'terminated', 'complete'].includes(statusValue ?? '')) {
+            // A terminal instance may have been stopped intentionally. Never
+            // restart it; retire only this intent and preserve a newer one.
+            const current = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+            const intent = await this.state.storage.get<{ runId: string }>(STATE_KEYS.handoff);
+            if (current?.runId !== runId || intent?.runId !== runId) return;
+            const latest = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+            if (latest && requestFingerprint(latest) === fingerprint) {
+              await this.state.storage.delete(STATE_KEYS.pendingLatest);
+            }
+            await this.state.storage.delete(STATE_KEYS.handoff);
+            if (current.state === 'pending' || current.state === 'running') {
+              await this.updateFromWorkflow({ state: 'failed', runId, completedAt: new Date().toISOString(), error: `Workflow ended (${statusValue}) without a terminal review update` });
+            }
+            return;
+          } else if (['running', 'queued', 'waiting', 'paused', 'waitingForPause'].includes(statusValue ?? '')) {
             // Waiting and paused executions are still alive; complete also
             // must not be restarted merely because create returned late.
             console.log('Deferred review instance already exists — coalescing', { instanceId, statusValue });

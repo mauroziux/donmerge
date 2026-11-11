@@ -1,9 +1,8 @@
 /**
  * Tests for ReviewProcessor.startReview() stale-state recovery.
  *
- * Covers the STALE_PENDING_THRESHOLD_MS (5 min) logic: a 'pending' or 'running'
- * status older than the threshold is overwritten; one younger than the threshold
- * is preserved (early return).
+ * Pending and running owners are preserved regardless of age; age alone
+ * cannot prove an old workflow has stopped producing external effects.
  *
  * The ReviewProcessor class is a DurableObject subclass, so we instantiate it
  * with an in-memory mock storage that mirrors the real DurableObjectStorage
@@ -75,7 +74,7 @@ beforeEach(() => {
 });
 
 describe('ReviewProcessor.startReview — stale-state recovery', () => {
-  it('overwrites a pending status older than the 5-min threshold', async () => {
+  it('preserves a legacy pending owner even after the 5-min threshold', async () => {
     const { store, storage } = createMockStorage();
     // Seed a stale 'pending' status: startedAt = 10 minutes ago
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -88,19 +87,11 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toMatchObject({ started: true, reason: 'stale_recovered' });
-    expect(result.runId).toBeTruthy();
+    expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
-    // Must have been overwritten: startedAt should now be ~now, not 10 min ago
     expect(finalStatus.state).toBe('pending');
-    expect(finalStatus.startedAt).not.toBe(tenMinAgo);
-    // New startedAt should be within the last few seconds
-    const ageMs = Date.now() - Date.parse(finalStatus.startedAt!);
-    expect(ageMs).toBeLessThan(5000);
-
-    // Context must also be (re)stored
-    const ctx = await storage.get('reviewContext');
-    expect(ctx).toEqual(baseContext);
+    expect(finalStatus.startedAt).toBe(tenMinAgo);
+    expect(await storage.get('reviewPendingLatest')).toEqual(baseContext);
   });
 
   it('does not replace a running owner merely because 50 minutes elapsed', async () => {
@@ -159,19 +150,18 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     expect(finalStatus.attempts).toBe(1);
   });
 
-  it('overwrites at exactly the boundary case (status missing startedAt)', async () => {
-    // If startedAt is missing, ageMs defaults to Date.now() - 0 = huge → stale.
-    // This is the recovery path for legacy/corrupt state.
+  it('preserves a pending owner with missing startedAt', async () => {
+    // Missing timing data cannot prove that the workflow stopped.
     const { store, storage } = createMockStorage();
     store.set('reviewStatus', { state: 'pending', attempts: 0 } as StoredStatus);
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     const result = await processor.startReview(baseContext);
 
-    expect(result).toMatchObject({ started: true, reason: 'stale_recovered' });
-    expect(result.runId).toBeTruthy();
+    expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
     const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
-    expect(finalStatus.startedAt).toBeDefined();
+    expect(finalStatus.startedAt).toBeUndefined();
+    expect(await storage.get('reviewPendingLatest')).toEqual(baseContext);
   });
 
   it('starts a fresh review when no prior status exists', async () => {
@@ -686,6 +676,44 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
     const processor = new ReviewProcessor(createMockState(storageFrom(store)), { CODE_REVIEW_WORKFLOW: binding } as never);
     await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a', headSha: 'aaa' });
     expect(restart).not.toHaveBeenCalled();
+  });
+
+  it.each(['terminated', 'errored'])('does not restart an externally %s handoff', async (statusValue) => {
+    const store = baseStore();
+    const restart = vi.fn();
+    const binding = {
+      create: vi.fn(async () => { throw new Error('already_exists'); }),
+      get: vi.fn(async () => ({ status: async () => ({ status: statusValue }), restart })),
+    };
+    const processor = new ReviewProcessor(createMockState(storageFrom(store)), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a', headSha: 'aaa' });
+    expect(restart).not.toHaveBeenCalled();
+    expect(store.get('reviewStatus')).toMatchObject({ state: 'failed' });
+    expect(store.get('reviewPendingLatest')).toBeUndefined();
+  });
+
+  it('delivers a newer request after observing a terminated handoff', async () => {
+    const store = baseStore();
+    const restart = vi.fn();
+    const created: Array<{ params: { runId: string } }> = [];
+    let attempt = 0;
+    const binding = {
+      create: vi.fn(async (opts: { params: { runId: string } }) => {
+        created.push(opts);
+        if (++attempt === 1) {
+          store.set('reviewPendingLatest', { ...baseContext, headSha: 'ccc' });
+          throw new Error('already_exists');
+        }
+      }),
+      get: vi.fn(async () => ({ status: async () => ({ status: 'terminated' }), restart })),
+    };
+    const processor = new ReviewProcessor(createMockState(storageFrom(store)), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a', headSha: 'aaa' });
+    expect(restart).not.toHaveBeenCalled();
+    expect(created).toHaveLength(2);
+    expect(created[1].params.runId).not.toBe(created[0].params.runId);
+    expect(store.get('reviewContext')).toMatchObject({ headSha: 'ccc' });
+    expect(store.get('reviewPendingLatest')).toBeUndefined();
   });
 
   it('reads the SDK status() OBJECT shape ({status}) for coalescing', async () => {
