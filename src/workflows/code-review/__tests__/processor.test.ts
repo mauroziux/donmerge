@@ -323,6 +323,49 @@ describe('ReviewProcessor coordination', () => {
     expect(await processor.reserveFixedReply('run-a', 13)).toBe(true);
   });
 
+  it('retries a still-pending handoff with its exact saved instance id', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', runId: 'run-a', instanceId: 'old' });
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+    const ids: string[] = [];
+    const create = vi.fn(async ({ id }: { id: string }) => { ids.push(id); });
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create } } as never);
+    await processor.updateFromWorkflow({ state: 'failed', runId: 'run-a' });
+    await processor.alarm();
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]);
+  });
+
+  it('reconciles an externally terminated owner and hands off the pending request', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', runId: 'run-a', instanceId: 'instance-a' });
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+    const create = vi.fn(async () => {});
+    const get = vi.fn(async () => ({ status: async () => ({ status: 'terminated' }) }));
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { get, create } } as never);
+    await processor.alarm();
+    expect(get).toHaveBeenCalledWith('instance-a');
+    expect(create).toHaveBeenCalledOnce();
+    expect(await storage.get('reviewStatus')).toMatchObject({ state: 'pending' });
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
+  });
+
+  it.each(['running', 'paused', 'waiting'])('does not replace a %s instance', async (state) => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', runId: 'run-a', instanceId: 'instance-a' });
+    store.set('reviewContext', baseContext);
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+    const create = vi.fn();
+    const get = vi.fn(async () => ({ status: async () => ({ status: state }) }));
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { get, create } } as never);
+    await processor.alarm();
+    expect(create).not.toHaveBeenCalled();
+    expect(await storage.get('reviewStatus')).toMatchObject({ state: 'running', runId: 'run-a' });
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' });
+  });
+
   it('a 10-minute-old running review is NOT stale (healthy long reviews survive)', async () => {
     const { store, storage } = createMockStorage();
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -335,7 +378,7 @@ describe('ReviewProcessor coordination', () => {
     expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
   });
 
-  it('terminal update hands the deferred request to a fresh workflow run (alarm armed before create, cleared after commit)', async () => {
+  it('terminal update hands the deferred request to a fresh workflow run and keeps its watchdog armed', async () => {
     const { store, storage } = createMockStorage();
     const { binding, created } = createWorkflowBinding();
     const { state, alarms, alarmCleared } = createMockStateWithAlarms(storage);
@@ -354,9 +397,9 @@ describe('ReviewProcessor coordination', () => {
     const processor = new ReviewProcessor(state, { CODE_REVIEW_WORKFLOW: binding } as never);
     await processor.updateFromWorkflow({ state: 'complete', completedAt: new Date().toISOString(), runId: 'run-a' });
 
-    // The safety alarm was armed BEFORE the create call and cleared on commit
+    // The safety alarm is armed before create and remains armed for the new run.
     expect(alarms.length).toBeGreaterThanOrEqual(1);
-    expect(alarmCleared()).toBe(true);
+    expect(alarmCleared()).toBe(false);
     expect(ownerAtCreate).toMatchObject({ state: 'pending' });
     expect((ownerAtCreate as StoredStatus).runId).toBeTruthy();
 
@@ -708,12 +751,14 @@ describe('ReviewProcessor coordination — initial create recovery', () => {
   it('does not restart a queued workflow when create reports already_exists', async () => {
     const { storage } = createMockStorage();
     const create = vi.fn(async () => { throw new Error('already_exists'); });
-    const get = vi.fn();
+    const restart = vi.fn();
+    const get = vi.fn(async () => ({ status: async () => ({ status: 'queued' }), restart }));
     const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create, get } } as never);
     await processor.startReview(baseContext);
     await processor.alarm();
     expect(create).toHaveBeenCalledTimes(1);
-    expect(get).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledOnce();
+    expect(restart).not.toHaveBeenCalled();
   });
 });
 

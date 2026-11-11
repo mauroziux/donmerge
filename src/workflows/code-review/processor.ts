@@ -69,6 +69,7 @@ interface ReviewStatus {
   attempts: number;
   /** Fencing token: updates carrying a different runId are ignored. */
   runId?: string;
+  instanceId?: string;
   error?: string;
   startedAt?: string;
   completedAt?: string;
@@ -221,6 +222,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       attempts: 0,
       startedAt: new Date().toISOString(),
       runId,
+      instanceId: buildRunScopedInstanceId(context.owner, context.repo, context.prNumber, context.commentId, runId),
     };
     await this.state.storage.put(STATE_KEYS.status, status);
     return {
@@ -300,6 +302,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     if (update.completedAt !== undefined) status.completedAt = update.completedAt;
     if (update.result !== undefined) status.result = update.result;
 
+    if (update.state === 'running') await this.state.storage.setAlarm(Date.now() + 60_000);
     await this.state.storage.put(STATE_KEYS.status, status);
 
     // Redact github token from stored context after workflow completes
@@ -360,13 +363,32 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   async alarm(): Promise<void> {
     const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
     const handoff = await this.state.storage.get(STATE_KEYS.handoff);
+    if (status?.state === 'running' && status.runId) {
+      // Never infer death from age. Only an authoritative terminal Workflow
+      // state permits releasing ownership. Unknown and live states stay fenced.
+      await this.state.storage.setAlarm(Date.now() + 60_000);
+      if (!status.instanceId || !this.env.CODE_REVIEW_WORKFLOW) return;
+      try {
+        const instance = await this.env.CODE_REVIEW_WORKFLOW.get(status.instanceId);
+        const observed = await instance.status();
+        if (!['complete', 'errored', 'terminated'].includes(observed.status)) return;
+        const current = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+        if (current?.state !== 'running' || current.runId !== status.runId) return;
+        // A terminal instance without a DO terminal update has no trustworthy
+        // result; mark failed, not complete, before delivering pending work.
+        await this.updateFromWorkflow({ state: 'failed', runId: status.runId, completedAt: new Date().toISOString(), error: `Workflow ended (${observed.status}) without a terminal review update` });
+      } catch (error) {
+        console.warn('Unable to reconcile running review; retaining owner', { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     if (status?.state === 'pending' && status.runId && !handoff) {
       const context = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
       if (!context || !this.env.CODE_REVIEW_WORKFLOW) {
         await this.state.storage.setAlarm(Date.now() + 60_000);
         return;
       }
-      const instanceId = buildRunScopedInstanceId(context.owner, context.repo, context.prNumber, context.commentId, status.runId);
+      const instanceId = status.instanceId ?? buildRunScopedInstanceId(context.owner, context.repo, context.prNumber, context.commentId, status.runId);
       // Retry this exact identity and immutable parameters, never a new run.
       await this.state.storage.setAlarm(Date.now() + 60_000);
       try {
@@ -383,7 +405,18 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         });
       } catch (error) {
         if (!(error instanceof Error && error.message.includes('already_exists'))) throw error;
-        // Existing may be queued or running: do not restart it.
+        // Existing may be live; reconcile only an authoritative terminal state.
+        try {
+          const instance = await this.env.CODE_REVIEW_WORKFLOW.get(instanceId);
+          const observed = await instance.status();
+          const current = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+          if (['complete', 'errored', 'terminated'].includes(observed.status) &&
+              current?.state === 'pending' && current.runId === status.runId) {
+            await this.updateFromWorkflow({ state: 'failed', runId: status.runId, completedAt: new Date().toISOString(), error: `Workflow ended (${observed.status}) without a terminal review update` });
+          }
+        } catch (lookupError) {
+          console.warn('Unable to reconcile pending review; retaining owner', { error: lookupError instanceof Error ? lookupError.message : String(lookupError) });
+        }
       }
       return;
     }
@@ -501,6 +534,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         attempts: 0,
         startedAt: new Date().toISOString(),
         runId,
+        instanceId,
       });
     }
 
@@ -583,7 +617,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     if (currentPending && requestFingerprint(currentPending) === requestFingerprint(pending)) {
       await this.state.storage.delete(STATE_KEYS.pendingLatest);
       await this.state.storage.delete(STATE_KEYS.handoff);
-      await this.state.storage.deleteAlarm();
+      // Keep monitoring the handed-off run even if it dies without an RPC.
+      await this.state.storage.setAlarm(Date.now() + 60_000);
     } else if (currentPending) {
       console.log('Deferred request was replaced during handoff — newer request kept', {
         instanceId,
@@ -591,7 +626,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       await this.state.storage.delete(STATE_KEYS.handoff);
       await this.state.storage.setAlarm(Date.now() + 30_000);
     } else {
-      await this.state.storage.deleteAlarm();
+      await this.state.storage.setAlarm(Date.now() + 60_000);
     }
   }
 
