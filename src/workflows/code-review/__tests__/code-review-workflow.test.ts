@@ -225,6 +225,19 @@ function makeWorkflow() {
   return new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50' } as never);
 }
 
+describe('workflow ownership at startup', () => {
+  it('does not start any step when the processor rejects the run', async () => {
+    const updateFromWorkflow = vi.fn(async () => false);
+    const step = { do: vi.fn() };
+    const workflow = new CodeReviewWorkflow({} as never, {
+      ReviewProcessor: { idFromName: () => 'id', get: () => ({ updateFromWorkflow }) },
+    } as never);
+    await workflow.run({ payload: { owner: 'o', repo: 'r', prNumber: 1, retrigger: false, runId: 'old' } } as never, step as never);
+    expect(step.do).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
 // ── the matrix ───────────────────────────────────────────────────────────────
 
 describe('publishReview verdict matrix', () => {

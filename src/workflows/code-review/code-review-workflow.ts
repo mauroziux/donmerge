@@ -198,8 +198,13 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     // late writes are rejected instead of adopted (plan 004-U1).
     const runId: string | undefined = params.runId;
 
-    // Mark review as running
-    await (processorStub as any).updateFromWorkflow({ state: 'running', runId });
+    // A superseded or terminal run must stop before creating a check, fetching
+    // content or publishing anything. Rejection is explicit across the RPC.
+    const accepted: boolean = await (processorStub as any).updateFromWorkflow({ state: 'running', runId });
+    if (!accepted) {
+      console.warn('Review workflow no longer owns the processor', { doName, runId });
+      return;
+    }
 
     let prData: PrData | undefined;
 

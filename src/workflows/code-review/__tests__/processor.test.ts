@@ -646,8 +646,30 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
 });
 
 
+describe('ReviewProcessor coordination — aged fenced pending', () => {
+  it('does not replace an old pending owner or discard its newer deferred push', async () => {
+    const { store, storage } = createMockStorage();
+    const old = { ...baseContext, headSha: 'a' };
+    store.set('reviewStatus', { state: 'pending', attempts: 0, startedAt: new Date(Date.now() - 600_000).toISOString(), runId: 'run-a' });
+    store.set('reviewContext', old);
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'b' });
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    await processor.startReview({ ...baseContext, headSha: 'c' });
+    expect((await storage.get<StoredStatus>('reviewStatus'))!.runId).toBe('run-a');
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'c' });
+  });
+
+  it('rejects an old owner starting after replacement', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'pending', attempts: 0, runId: 'new' });
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    expect(await processor.updateFromWorkflow({ state: 'running', runId: 'old' })).toBe(false);
+    expect((await storage.get<StoredStatus>('reviewStatus'))!.runId).toBe('new');
+  });
+});
+
 describe('ReviewProcessor coordination — failed handoff recovery', () => {
-  it('an alarm during active A does not freeze deferred B before latest returns to A', async () => {
+  it('an old duplicate of A does not erase deferred B', async () => {
     const { store, storage } = createMockStorage();
     const active = { ...baseContext, headSha: 'a' };
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'a' });
@@ -658,9 +680,9 @@ describe('ReviewProcessor coordination — failed handoff recovery', () => {
     await processor.alarm();
     expect(await storage.get('reviewHandoff')).toBeUndefined();
     await processor.startReview(active);
-    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'a' });
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'b' });
     await processor.updateFromWorkflow({ state: 'complete', runId: 'a', headSha: 'a' });
-    expect(create).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
     expect(await storage.get('reviewPendingLatest')).toBeUndefined();
     expect(await storage.get('reviewHandoff')).toBeUndefined();
   });
@@ -701,7 +723,7 @@ describe('ReviewProcessor coordination — failed handoff recovery', () => {
 });
 
 describe('ReviewProcessor coordination — orphaned deferred cleanup', () => {
-  it('head-carrying duplicate of the ACTIVE head drops a deferred DIFFERENT head', async () => {
+  it('head-carrying duplicate of the ACTIVE head preserves a deferred DIFFERENT head', async () => {
     const { store, storage } = createMockStorage();
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date(Date.now() - 60_000).toISOString(), runId: 'run-a' } as StoredStatus);
     store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
@@ -712,7 +734,7 @@ describe('ReviewProcessor coordination — orphaned deferred cleanup', () => {
     const result = await processor.startReview({ ...baseContext, headSha: 'aaa' });
 
     expect(result).toMatchObject({ started: false, reason: 'already_running' });
-    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'aaa' }); // latest retained if active fails
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' });
   });
 
   it('comment redelivery (no headSha) never drops a deferred push', async () => {

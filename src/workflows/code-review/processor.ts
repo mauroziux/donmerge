@@ -145,19 +145,20 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       // A live or suspended workflow can still execute external GitHub writes.
       // Time alone cannot fence those writes, so never replace a running owner
       // solely by age; recovery must reconcile the workflow's actual state.
-      const isStale = existingStatus.state === 'pending' && ageMs > threshold;
+      const deferred = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+      const handoff = await this.state.storage.get(STATE_KEYS.handoff);
+      // Age is not proof that a fenced workflow was never created. Only
+      // recover a legacy, unfenced pending record if no request can be lost.
+      const isStale = existingStatus.state === 'pending' && !existingStatus.runId &&
+        !deferred && !handoff && ageMs > threshold;
       if (!isStale) {
         const storedContext = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
         const sameRequest =
           storedContext !== undefined &&
           requestFingerprint(storedContext) === requestFingerprint(context);
         if (sameRequest) {
-          // Preserve the latest head even when it matches the active run:
-          // that run can still fail or have reviewed a different base.
-          const pendingDeferred = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
-          if (pendingDeferred && context.headSha && pendingDeferred.headSha !== context.headSha) {
-            await this.state.storage.put(STATE_KEYS.pendingLatest, context);
-          }
+          // A duplicate delivery may arrive after a newer push; never allow it
+          // to overwrite the deferred request. The next run fetches the live PR.
           console.log('Duplicate review delivery acknowledged without restarting', {
             state: existingStatus.state,
             ageMs,
@@ -242,9 +243,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     runId?: string;
     /** Head the terminating run actually reviewed (suppression signal). */
     headSha?: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
-    if (!status) return;
+    if (!status) return false;
 
     // Run fencing: a late terminal write from a superseded run must not
     // clobber the state of the run that currently owns this DO.
@@ -259,14 +260,17 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         updateRunId: update.runId,
         state: update.state,
       });
-      return;
+      return false;
     }
     if (!update.runId && status.runId) {
       console.warn('Ignoring legacy (runId-less) update while a fenced owner exists', {
         currentRunId: status.runId,
         state: update.state,
       });
-      return;
+      return false;
+    }
+    if (update.state === 'running' && (status.state === 'complete' || status.state === 'failed')) {
+      return false;
     }
 
     status.state = update.state;
@@ -293,6 +297,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         update.headSha ?? storedContext?.headSha
       );
     }
+    return true;
   }
 
   /** Reserve a publication before its POST. A reservation is never cleared
