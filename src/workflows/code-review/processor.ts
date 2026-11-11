@@ -514,11 +514,17 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           ).status();
           const statusValue =
             typeof statusResult === 'string' ? statusResult : statusResult?.status;
-          if (statusValue === 'running' || statusValue === 'queued') {
-            console.log('Deferred review already has a live instance — coalescing', { instanceId });
-          } else {
+          if (statusValue === 'errored' || statusValue === 'terminated') {
             await instance.restart();
-            console.log('Deferred review restarted existing instance', { instanceId });
+            console.log('Deferred review restarted terminal instance', { instanceId });
+          } else if (['running', 'queued', 'waiting', 'paused', 'waitingForPause', 'complete'].includes(statusValue ?? '')) {
+            // Waiting and paused executions are still alive; complete also
+            // must not be restarted merely because create returned late.
+            console.log('Deferred review instance already exists — coalescing', { instanceId, statusValue });
+          } else {
+            // Unknown status is not evidence of termination. Preserve the
+            // handoff and retry observation rather than restarting blindly.
+            throw new Error(`Unknown workflow status: ${String(statusValue)}`);
           }
         } catch (restartError) {
           console.error('Deferred review restart failed; alarm will retry', {

@@ -599,6 +599,19 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
     expect(store.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' }); // preserved
   });
 
+  it.each(['waiting', 'paused', 'waitingForPause', 'complete'])('never restarts an existing %s instance', async (statusValue) => {
+    const store = baseStore();
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' });
+    const restart = vi.fn();
+    const binding = {
+      create: vi.fn(async () => { throw new Error('already_exists'); }),
+      get: vi.fn(async () => ({ status: async () => ({ status: statusValue }), restart })),
+    };
+    const processor = new ReviewProcessor(createMockState(storageFrom(store)), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a', headSha: 'aaa' });
+    expect(restart).not.toHaveBeenCalled();
+  });
+
   it('reads the SDK status() OBJECT shape ({status}) for coalescing', async () => {
     const store = baseStore();
     store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
