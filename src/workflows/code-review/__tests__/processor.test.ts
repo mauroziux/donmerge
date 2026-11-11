@@ -103,26 +103,15 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
     expect(ctx).toEqual(baseContext);
   });
 
-  it('overwrites a running status older than the 50-min running threshold', async () => {
+  it('does not replace a running owner merely because 50 minutes elapsed', async () => {
     const { store, storage } = createMockStorage();
-    // Running reviews may legitimately take tens of minutes (10-min prompts,
-    // multi-model chain). Only a truly hung run (50 min) is stale.
     const fiftyOneMinAgo = new Date(Date.now() - 51 * 60 * 1000).toISOString();
-    store.set('reviewStatus', {
-      state: 'running',
-      attempts: 1,
-      startedAt: fiftyOneMinAgo,
-    } as StoredStatus);
-
+    store.set('reviewStatus', { state: 'running', attempts: 1, startedAt: fiftyOneMinAgo, runId: 'old' });
+    store.set('reviewContext', baseContext);
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
-    const result = await processor.startReview(baseContext);
-
-    expect(result).toMatchObject({ started: true, reason: 'stale_recovered' });
-    expect(result.runId).toBeTruthy();
-    const finalStatus = (await storage.get<StoredStatus>('reviewStatus'))!;
-    expect(finalStatus.startedAt).not.toBe(fiftyOneMinAgo);
-    // attempts reset to 0 on a fresh start
-    expect(finalStatus.attempts).toBe(0);
+    const result = await processor.startReview({ ...baseContext, headSha: 'new' });
+    expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
+    expect((await storage.get<StoredStatus>('reviewStatus'))!.runId).toBe('old');
   });
 
   it('early-returns for a pending status younger than the threshold (same request = duplicate)', async () => {

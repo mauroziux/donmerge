@@ -142,7 +142,10 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       const threshold = existingStatus.state === 'pending'
         ? STALE_PENDING_THRESHOLD_MS
         : STALE_RUNNING_THRESHOLD_MS;
-      const isStale = ageMs > threshold;
+      // A live or suspended workflow can still execute external GitHub writes.
+      // Time alone cannot fence those writes, so never replace a running owner
+      // solely by age; recovery must reconcile the workflow's actual state.
+      const isStale = existingStatus.state === 'pending' && ageMs > threshold;
       if (!isStale) {
         const storedContext = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
         const sameRequest =
@@ -500,6 +503,10 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // request ONLY if a newer request did not replace it while we were
     // awaiting the create: losing that newer intent would drop a push. When
     // replaced, leave it stored and keep the alarm armed for its own handoff.
+    // create() may return after this handoff already finished and a newer one
+    // took ownership. Never clear another generation's intent or alarm.
+    const currentHandoff = await this.state.storage.get<{ runId: string }>(STATE_KEYS.handoff);
+    if (currentHandoff?.runId !== runId) return;
     const currentPending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
     if (currentPending && requestFingerprint(currentPending) === requestFingerprint(pending)) {
       await this.state.storage.delete(STATE_KEYS.pendingLatest);
