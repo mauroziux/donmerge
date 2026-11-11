@@ -673,6 +673,7 @@ describe('ReviewProcessor coordination — failed handoff recovery', () => {
     await processor.updateFromWorkflow({ state: 'complete', runId: 'a', headSha: 'a' });
     expect(create).not.toHaveBeenCalled();
     expect(await storage.get('reviewPendingLatest')).toBeUndefined();
+    expect(await storage.get('reviewHandoff')).toBeUndefined();
   });
 
   it('delivers C if B finishes after its create response was lost', async () => {

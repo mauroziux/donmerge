@@ -393,6 +393,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       if (completedFingerprint === requestFingerprint(pending)) {
         console.log('Deferred request duplicates the just-completed run — superseded, dropping');
         await this.state.storage.delete(STATE_KEYS.pendingLatest);
+        await this.state.storage.delete(STATE_KEYS.handoff);
         await this.state.storage.deleteAlarm();
         return;
       }
@@ -424,13 +425,15 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // rejected by fencing (judge-hardened plan 004-U1). pendingLatest stays
     // stored until the create succeeds — the alarm re-runs this handoff on
     // any interruption, converging on the same instance id.
-    await this.state.storage.put(STATE_KEYS.context, pending);
-    await this.state.storage.put(STATE_KEYS.status, {
-      state: 'pending',
-      attempts: 0,
-      startedAt: new Date().toISOString(),
-      runId,
-    });
+    if (currentStatus?.runId !== runId || currentStatus.state !== 'running') {
+      await this.state.storage.put(STATE_KEYS.context, pending);
+      await this.state.storage.put(STATE_KEYS.status, {
+        state: 'pending',
+        attempts: 0,
+        startedAt: new Date().toISOString(),
+        runId,
+      });
+    }
 
     try {
       await this.env.CODE_REVIEW_WORKFLOW.create({
