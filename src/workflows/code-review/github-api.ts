@@ -8,6 +8,15 @@ import { attachFingerprint, computeFingerprint, parseFingerprint } from './finge
 import { normalizeEntityType, normalizeRuleId, normalizeSymbolName } from './issue-identity';
 import { deriveIssueKey } from './issue-key';
 import { filterCriticalIssuesByQuality, filterLineCommentsByQuality, hasBlockingFindings } from './processor-utils';
+import {
+  buildPrFilesPageUrl,
+  shouldStopPaginating,
+  GITHUB_PR_FILES_HARD_CAP,
+  type PrFileEntry,
+  type PrFilesDiscovery,
+} from './review-snapshot';
+import type { CoverageManifest } from './review-coverage';
+import { coverageReportText } from './review-coverage';
 import { buildCommentableMap, validateInlineComments } from './comment-anchors';
 import { GitHubApiError, withBoundedRetry, isTransientGitHubError, TRANSIENT_RETRY_DELAYS_MS } from './github-retry';
 import { isDegenerateReviewBody, DEGENERATE_BODY_FALLBACK, reviewSkipDecision } from './review-body-guard';
@@ -205,7 +214,11 @@ export async function createCheckRun(
 }
 
 /**
- * Complete a check run with the review result.
+ * Complete check run with the review result.
+ *
+ * The conclusion is honest about scope (plan 002-U4): a run that could not
+ * review the whole PR (budget/focus/API cap) reports `neutral`, never a green
+ * success, unless blocking findings make it a failure regardless.
  */
 export async function completeCheckRun(
   owner: string,
@@ -213,10 +226,17 @@ export async function completeCheckRun(
   checkRunId: number,
   review: ReviewResult,
   token: string,
-  droppedComments: DroppedComment[] = []
+  droppedComments: DroppedComment[] = [],
+  coverage?: CoverageManifest
 ): Promise<void> {
   const approved = !hasBlockingFindings(review);
-  const title = approved ? '✅ All good, compadre!' : '⚠️ Ojo, some things need attention';
+  const scopeComplete = coverage ? coverage.scopeComplete : true;
+  const conclusion = !approved ? 'failure' : scopeComplete ? 'success' : 'neutral';
+  const title = !approved
+    ? '⚠️ Ojo, some things need attention'
+    : scopeComplete
+      ? '✅ All good, compadre!'
+      : '🟡 Partial review — no blocking issues in the reviewed scope';
   const criticalFindings = collectCriticalFindings(review);
   const critical =
     criticalFindings.length > 0
@@ -228,7 +248,8 @@ export async function completeCheckRun(
       : '- All clean!';
 
   const droppedNote = formatDroppedCommentsNote(droppedComments);
-  const text = `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}${droppedNote}`;
+  const coverageNote = coverage ? `\n\n${coverageReportText(coverage)}` : '';
+  const text = `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}${droppedNote}${coverageNote}`;
   // When comments were dropped, flag it in the title so it is visible at a glance.
   const finalTitle = droppedComments.length > 0 ? `${title} · ${droppedComments.length} comment(s) dropped` : title;
 
@@ -238,7 +259,7 @@ export async function completeCheckRun(
     'PATCH',
     {
       status: 'completed',
-      conclusion: approved ? 'success' : 'failure',
+      conclusion,
       completed_at: new Date().toISOString(),
       output: {
         title: finalTitle,
@@ -544,6 +565,67 @@ export async function fetchReviewComments(
 }
 
 /**
+ * Discover every file in the PR (all pages) for a versioned snapshot.
+ *
+ * Paginates the files listing until a short page, the PR's declared
+ * `changed_files` count, or GitHub's 3000-file hard cap. The caller must
+ * re-check the PR head afterwards (fetchPrHeadSha) — this endpoint describes
+ * a mutable PR, so a push mid-pagination can mix versions.
+ */
+export async function fetchAllPrFiles(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token: string,
+  declaredCount: number
+): Promise<PrFilesDiscovery> {
+  const files: PrFileEntry[] = [];
+  let page = 1;
+  let apiFileCapReached = false;
+
+  for (;;) {
+    const batch = await githubFetch<Array<{ filename: string; patch?: string }>>(
+      buildPrFilesPageUrl(owner, repo, prNumber, page),
+      token
+    );
+    files.push(...batch);
+
+    if (
+      shouldStopPaginating({
+        fetchedThisPage: batch.length,
+        totalFetched: files.length,
+        declaredCount,
+        page,
+      })
+    ) {
+      apiFileCapReached = files.length >= GITHUB_PR_FILES_HARD_CAP;
+      break;
+    }
+
+    page += 1;
+  }
+
+  return { files, apiFileCapReached, pagesFetched: page };
+}
+
+/**
+ * Current PR head SHA — used to detect that the PR moved while a snapshot
+ * was being built (or right before publishing).
+ */
+export async function fetchPrHeadSha(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token: string
+): Promise<string> {
+  const pr = await githubFetch<{ head: { sha: string } }>(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+    token
+  );
+  return pr.head.sha;
+}
+
+/**
  * Update the PR description with the review summary.
  */
 export async function updatePRDescription(
@@ -551,14 +633,14 @@ export async function updatePRDescription(
   repo: string,
   prNumber: number,
   review: ReviewResult,
-  token: string
+  token: string,
+  coverage?: CoverageManifest
 ): Promise<void> {
   const pr = await githubFetch<{ body: string; title: string }>(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
     token
   );
 
-  const donmergeSection = buildDonmergeSection(review);
   const separator = '<!-- donmerge-review -->';
 
   let newBody = pr.body ?? '';
@@ -570,7 +652,7 @@ export async function updatePRDescription(
   }
 
   // Append new donmerge section
-  newBody = `${newBody}\n\n${separator}\n${donmergeSection}`;
+  newBody = `${newBody}\n\n${separator}\n${buildDonmergeSection(review, coverage)}`;
 
   await githubFetch(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
@@ -583,7 +665,7 @@ export async function updatePRDescription(
 /**
  * Build the DonMerge section for the PR description.
  */
-function buildDonmergeSection(review: ReviewResult): string {
+function buildDonmergeSection(review: ReviewResult, coverage?: CoverageManifest): string {
   const statusEmoji = review.approved ? '✅' : '⚠️';
   const statusText = review.approved ? 'All good, compadre!' : 'Ojo, some things need attention';
   const timestamp = new Date().toISOString();
@@ -633,6 +715,10 @@ ${riskAssessment}
 
   if (review.suggestions.length > 0) {
     section += `\n### 💡 Suggestions\n${review.suggestions.map((s) => `- ${s}`).join('\n')}\n`;
+  }
+
+  if (coverage && !coverage.scopeComplete) {
+    section += `\n### 📊 Coverage\n${coverageReportText(coverage)}\n`;
   }
 
   section += `\n---\n*Reviewed by DonMerge 🤠 — ${timestamp}*\n`;
@@ -855,11 +941,13 @@ export async function fetchRepoFile(
   owner: string,
   repo: string,
   path: string,
-  token: string
+  token: string,
+  ref?: string
 ): Promise<string | null> {
   try {
+    const refQuery = ref ? `?ref=${encodeURIComponent(ref)}` : '';
     const response = await githubFetch<{ content: string; encoding: string }>(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}${refQuery}`,
       token
     );
     
@@ -877,58 +965,70 @@ export async function fetchRepoFile(
 }
 
 /**
- * Files to fetch for repo context, in priority order
+ * Files to fetch for repo context. `priority` breaks ties within a key:
+ * when several paths map to the same key (e.g. ESLint variants), the
+ * lowest-priority-number existing file wins — deterministically, instead of
+ * whichever parallel fetch happened to resolve last (plan 005-U1).
  */
-const REPO_CONTEXT_FILES: Array<{ path: string; key: keyof RepoContext }> = [
+const REPO_CONTEXT_FILES: Array<{ path: string; key: keyof RepoContext; priority: number }> = [
   // Standards/Instructions
-  { path: 'AGENTS.md', key: 'agents' },
-  { path: '.cursorrules', key: 'cursorrules' },
-  { path: 'CLAUDE.md', key: 'claude' },
-  { path: 'CONTRIBUTING.md', key: 'contributing' },
-  { path: 'DEVELOPMENT.md', key: 'development' },
-  
-  // Config files
-  { path: 'package.json', key: 'packageJson' },
-  { path: 'tsconfig.json', key: 'tsconfig' },
-  { path: 'eslint.config.js', key: 'eslint' },
-  { path: '.eslintrc.js', key: 'eslint' },
-  { path: '.eslintrc.json', key: 'eslint' },
-  { path: '.eslintrc', key: 'eslint' },
-  { path: '.prettierrc', key: 'prettier' },
-  { path: '.prettierrc.json', key: 'prettier' },
-  { path: 'biome.json', key: 'biome' },
-  
+  { path: 'AGENTS.md', key: 'agents', priority: 1 },
+  { path: '.cursorrules', key: 'cursorrules', priority: 1 },
+  { path: 'CLAUDE.md', key: 'claude', priority: 1 },
+  { path: 'CONTRIBUTING.md', key: 'contributing', priority: 1 },
+  { path: 'DEVELOPMENT.md', key: 'development', priority: 1 },
+
+  // Config files (priority = preference order within the key)
+  { path: 'package.json', key: 'packageJson', priority: 1 },
+  { path: 'tsconfig.json', key: 'tsconfig', priority: 1 },
+  { path: 'eslint.config.js', key: 'eslint', priority: 1 },
+  { path: '.eslintrc.js', key: 'eslint', priority: 2 },
+  { path: '.eslintrc.json', key: 'eslint', priority: 3 },
+  { path: '.eslintrc', key: 'eslint', priority: 4 },
+  { path: '.prettierrc', key: 'prettier', priority: 1 },
+  { path: '.prettierrc.json', key: 'prettier', priority: 2 },
+  { path: 'biome.json', key: 'biome', priority: 1 },
+
   // Documentation
-  { path: 'README.md', key: 'readme' },
+  { path: 'README.md', key: 'readme', priority: 1 },
 ];
 
 /**
  * Fetch repository context files (standards, configs, docs) for better reviews.
- * Returns an object with the content of each file that exists.
+ * Reads at an explicit ref (the reviewed head) so the context matches the code
+ * being reviewed instead of whatever the default branch points at.
  */
 export async function fetchRepoContext(
   owner: string,
   repo: string,
+  ref: string,
   token: string
 ): Promise<RepoContext> {
   const context: RepoContext = {};
-  
-  // Fetch all files in parallel
-  const fetchPromises = REPO_CONTEXT_FILES.map(async ({ path, key }) => {
-    // Skip if we already have this key (e.g., eslint.config.js took precedence)
-    if (context[key]) return;
-    
-    const content = await fetchRepoFile(owner, repo, path, token);
-    if (content !== null) {
+
+  // Fetch all candidates in parallel, then select per key by declared priority.
+  const results = await Promise.all(
+    REPO_CONTEXT_FILES.map(async ({ path }) => ({
+      path,
+      content: await fetchRepoFile(owner, repo, path, token, ref),
+    }))
+  );
+
+  const contentByPath = new Map(results.map(({ path, content }) => [path, content]));
+  const selectedPriority = new Map<keyof RepoContext, number>();
+  for (const { path, key, priority } of REPO_CONTEXT_FILES) {
+    const content = contentByPath.get(path);
+    if (content === null || content === undefined) continue;
+    const existingPriority = selectedPriority.get(key);
+    if (existingPriority === undefined || priority < existingPriority) {
+      selectedPriority.set(key, priority);
       context[key] = content;
     }
-  });
-  
-  await Promise.all(fetchPromises);
-  
+  }
+
   // Log what we found
   const found = Object.keys(context).filter(k => context[k as keyof RepoContext]);
-  console.log('Fetched repo context files', { owner, repo, files: found });
-  
+  console.log('Fetched repo context files', { owner, repo, ref, files: found });
+
   return context;
 }

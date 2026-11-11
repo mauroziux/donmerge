@@ -12,6 +12,8 @@ export const ErrorCode = {
   INTERNAL: 'DM-E005',
   /** API quota or rate limit exceeded */
   QUOTA_LIMIT: 'DM-E006',
+  /** The PR head moved while the review snapshot was being built */
+  PR_CHANGED: 'DM-E007',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -28,4 +30,6 @@ export const ErrorCodeDescriptions: Record<ErrorCode, string> = {
     'An unexpected internal error occurred during the review.',
   [ErrorCode.QUOTA_LIMIT]:
     'The AI model API quota or rate limit has been exceeded. Please check billing and try again later.',
+  [ErrorCode.PR_CHANGED]:
+    'The PR received new commits while the review was running. The review was stopped so it cannot report on a stale version; the latest push will be reviewed.',
 };

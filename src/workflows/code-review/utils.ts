@@ -290,6 +290,9 @@ export function classifyError(error: unknown): { code: ErrorCodeType; detail: st
       message.includes('429')) {
     return { code: ErrorCode.QUOTA_LIMIT, detail: message };
   }
+  if (message.includes('PR head changed')) {
+    return { code: ErrorCode.PR_CHANGED, detail: message };
+  }
   if (message.includes('Flue prompt failed') || message.includes('SkillOutputError')) {
     return { code: ErrorCode.LLM_FAILURE, detail: message };
   }

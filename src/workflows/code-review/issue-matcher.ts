@@ -14,10 +14,25 @@ export interface IssueMatchResult {
   reintroducedIssues: TrackedIssue[];
 }
 
+export interface MatchOptions {
+  /**
+   * When true (default, historical behavior), stored open issues that the
+   * current run did not observe are treated as resolved.
+   *
+   * When false (partial/focused reviews, plan 002-U4), absence of a finding
+   * is NOT evidence of a fix: the file may not have been reviewed at all, so
+   * unmatched open issues stay open ("not assessed") instead of flipping to
+   * fixed.
+   */
+  assumeMissingResolved?: boolean;
+}
+
 export function matchCurrentFindingsToStored(
   current: CurrentIssue[],
-  stored: TrackedIssue[]
+  stored: TrackedIssue[],
+  options: MatchOptions = {}
 ): IssueMatchResult {
+  const assumeMissingResolved = options.assumeMissingResolved !== false;
   const newIssues: TrackedIssue[] = [];
   const persistingIssues: TrackedIssue[] = [];
   const resolvedIssues: TrackedIssue[] = [];
@@ -42,6 +57,11 @@ export function matchCurrentFindingsToStored(
 
   for (const issue of stored) {
     if (matchedStoredIds.has(issue.id)) {
+      continue;
+    }
+    if (!assumeMissingResolved) {
+      // Partial/focused scope: keep the stored state untouched. The issue was
+      // simply not assessed in this run.
       continue;
     }
     if (issue.status === 'open' || issue.status === 'new') {
