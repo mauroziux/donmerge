@@ -658,7 +658,7 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
 
 
 describe('ReviewProcessor coordination — failed handoff recovery', () => {
-  it('delivers a newer pending request after the previous create failed', async () => {
+  it('reconciles an ambiguous create before delivering the newer pending request', async () => {
     const { store, storage } = createMockStorage();
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'old' });
     store.set('reviewContext', { ...baseContext, headSha: 'a' });
@@ -666,12 +666,16 @@ describe('ReviewProcessor coordination — failed handoff recovery', () => {
     const create = vi.fn().mockRejectedValueOnce(new Error('unavailable')).mockResolvedValue(undefined);
     const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create } } as never);
     await processor.updateFromWorkflow({ state: 'complete', runId: 'old' });
-    expect((await storage.get<StoredStatus>('reviewStatus'))!.state).toBe('failed');
+    const handoffRun = (await storage.get<StoredStatus>('reviewStatus'))!.runId!;
+    expect((await storage.get<StoredStatus>('reviewStatus'))!.state).toBe('pending');
     store.set('reviewPendingLatest', { ...baseContext, headSha: 'c' });
     await processor.alarm();
     expect(create).toHaveBeenCalledTimes(2);
+    expect((await storage.get<typeof baseContext & { headSha: string }>('reviewContext'))!.headSha).toBe('b');
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'c' });
+    await processor.updateFromWorkflow({ state: 'complete', runId: handoffRun, headSha: 'b' });
+    expect(create).toHaveBeenCalledTimes(3);
     expect((await storage.get<typeof baseContext & { headSha: string }>('reviewContext'))!.headSha).toBe('c');
-    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
   });
 });
 

@@ -165,6 +165,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         // latest request (only the latest survives). The terminal update of
         // the active run hands it off to a fresh workflow run — the push is
         // never dropped.
+        await this.state.storage.setAlarm(Date.now() + 60_000);
         await this.state.storage.put(STATE_KEYS.pendingLatest, context);
         console.log('Review deferred: run active, latest request stored for handoff', {
           activeState: existingStatus.state,
@@ -335,7 +336,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     completedContext?: ReviewContext,
     completedHeadSha?: string
   ): Promise<void> {
-    const pending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+    const latest = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+    const existingHandoff = await this.state.storage.get<{ fingerprint: string; runId: string; context?: ReviewContext }>(STATE_KEYS.handoff);
+    const pending = existingHandoff?.context ?? latest;
     if (!pending) return;
 
     // Serialization: never hand off while another run owns the DO and is
@@ -345,9 +348,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // (same deterministic token) after a crash between commit and create.
     const currentStatus = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
     const fingerprint = requestFingerprint(pending);
-    let handoff = await this.state.storage.get<{ fingerprint: string; runId: string }>(STATE_KEYS.handoff);
+    let handoff = existingHandoff;
     if (!handoff || handoff.fingerprint !== fingerprint) {
-      handoff = { fingerprint, runId: crypto.randomUUID() };
+      handoff = { fingerprint, runId: crypto.randomUUID(), context: pending };
       await this.state.storage.put(STATE_KEYS.handoff, handoff);
     }
     const runId = handoff.runId;
@@ -468,12 +471,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           instanceId,
           error: message,
         });
-        // The workflow was not created. Release the failed provisional owner
-        // so a newer deferred request can be delivered by the alarm.
-        const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
-        if (status?.runId === runId && status.state === 'pending') {
-          await this.state.storage.put(STATE_KEYS.status, { ...status, state: 'failed' });
-        }
+        // A transport error can mean create succeeded. Retain this handoff's
+        // owner and identity; the alarm retries the same instance, not a newer
+        // request, until its outcome is reconciled.
         await this.state.storage.setAlarm(Date.now() + 30_000);
         return;
       }
@@ -492,6 +492,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       console.log('Deferred request was replaced during handoff — newer request kept', {
         instanceId,
       });
+      await this.state.storage.delete(STATE_KEYS.handoff);
       await this.state.storage.setAlarm(Date.now() + 30_000);
     } else {
       await this.state.storage.deleteAlarm();
