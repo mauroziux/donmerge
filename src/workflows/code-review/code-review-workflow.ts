@@ -877,7 +877,6 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     let storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
     if (activePreviousComments.length > 0 && storedIssues.length > 0) {
       storedIssues = syncTrackedIssuesFromComments(storedIssues, activePreviousComments);
-      await (processorStub as any).saveTrackedIssuesRpc(storedIssues, runId);
     }
 
     // Build current issues + match. A partial/focused run must not interpret
@@ -909,8 +908,6 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     for (const issue of matchResult.newIssues) {
       updatedIssues.set(issue.id, transitionToNew(issue, headSha));
     }
-    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()), runId);
-
     // Record review outcomes in D1 memory (best-effort)
     if (this.env.DB) {
       try {
@@ -992,6 +989,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       {},
       runId ? () => (processorStub as any).reservePublication(runId) : undefined
     );
+
+    // Persist after the review POST succeeds or its marker is reconciled. A
+    // retry after a pre-POST failure must still see these findings as new.
+    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()), runId);
 
     // Attach comment IDs to new issues
     if (matchResult.newIssues.length > 0) {

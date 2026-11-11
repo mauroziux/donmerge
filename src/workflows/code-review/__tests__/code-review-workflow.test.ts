@@ -241,6 +241,22 @@ describe('workflow ownership at startup', () => {
 // ── the matrix ───────────────────────────────────────────────────────────────
 
 describe('publishReview verdict matrix', () => {
+  it('does not persist tracking transitions when marker lookup fails before posting', async () => {
+    setupGitHubMock();
+    const normalFetch = mockFetch.getMockImplementation()!;
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/pulls/42/reviews?') && (init?.method ?? 'GET') === 'GET') {
+        throw new Error('marker lookup unavailable');
+      }
+      return normalFetch(url, init);
+    });
+    const { stub } = setupProcessorStub([createTrackedIssue({ filePath: 'a.ts', status: 'open' })]);
+    await expect((makeWorkflow() as unknown as {
+      publishReview: (r: unknown, s: unknown, runId: string) => Promise<void>;
+    }).publishReview(llmResult(fullCoverage(), cleanReview()), stub, 'run-1')).rejects.toThrow();
+    expect(stub.saveTrackedIssuesRpc).not.toHaveBeenCalled();
+  });
+
   it('clean review + full coverage → success, and auto-resolves unmatched open issues in REVIEWED files', async () => {
     const calls = setupGitHubMock();
     const openIssue = createTrackedIssue({ filePath: 'a.ts', status: 'open' });
