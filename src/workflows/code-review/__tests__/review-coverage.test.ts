@@ -211,7 +211,7 @@ describe('buildCoverageManifest', () => {
     ).toBe(false);
   });
 
-  it('policy excludes do not break completeness', () => {
+  it('policy excludes break scopeComplete (strict whole-PR coverage) and are reported distinctly', () => {
     const plan = planReviewFiles({
       discovered: [file('a.ts'), file('dist/bundle.js')],
       isExcluded: (p) => p.startsWith('dist/'),
@@ -219,8 +219,13 @@ describe('buildCoverageManifest', () => {
     });
     const manifest = buildCoverageManifest(plan, { ...baseCtx, changedFilesCount: 2 });
 
-    expect(manifest.scopeComplete).toBe(true);
+    // A configured exclude is explicit, but it still means the file was NOT
+    // reviewed: the verdict must be neutral, with the exclusion visible.
+    expect(manifest.scopeComplete).toBe(false);
     expect(manifest.excludedPolicyCount).toBe(1);
+    const text = coverageReportText(manifest);
+    expect(text).toContain('excluded by repo policy');
+    expect(text).toContain('does not certify them');
   });
 });
 

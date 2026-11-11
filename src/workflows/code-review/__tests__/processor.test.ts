@@ -53,6 +53,7 @@ function createMockStorage() {
         return store.delete(key);
       },
       setAlarm: async (_time: number) => {},
+      deleteAlarm: async () => {},
     },
   };
 }
@@ -238,6 +239,19 @@ describe('ReviewProcessor.startReview — stale-state recovery', () => {
 // ─── Coordination: deferral, fencing, durable handoff (plan 004-U1) ─────────
 
 describe('ReviewProcessor coordination', () => {
+  function createMockStateWithAlarms(storage: ReturnType<typeof createMockStorage>['storage']) {
+    const alarms: number[] = [];
+    let alarmCleared = false;
+    storage.setAlarm = async (time: number) => {
+      alarms.push(time);
+      alarmCleared = false;
+    };
+    storage.deleteAlarm = async () => {
+      alarmCleared = true;
+    };
+    return { state: createMockState(storage), alarms, alarmCleared: () => alarmCleared };
+  }
+
   function createWorkflowBinding() {
     const created: Array<{ id: string; params: Record<string, unknown> }> = [];
     const restarted: string[] = [];
@@ -299,15 +313,20 @@ describe('ReviewProcessor coordination', () => {
     expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
   });
 
-  it('terminal update hands the deferred request to a fresh workflow run', async () => {
+  it('terminal update hands the deferred request to a fresh workflow run (alarm armed before create, cleared after commit)', async () => {
     const { store, storage } = createMockStorage();
     const { binding, created } = createWorkflowBinding();
+    const { state, alarms, alarmCleared } = createMockStateWithAlarms(storage);
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
     store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
     store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb', instruction: 'check concurrency' });
 
-    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    const processor = new ReviewProcessor(state, { CODE_REVIEW_WORKFLOW: binding } as never);
     await processor.updateFromWorkflow({ state: 'complete', completedAt: new Date().toISOString(), runId: 'run-a' });
+
+    // The safety alarm was armed BEFORE the create call and cleared on commit
+    expect(alarms.length).toBeGreaterThanOrEqual(1);
+    expect(alarmCleared()).toBe(true);
 
     expect(created).toHaveLength(1);
     expect(created[0].id).toContain('review-tableoltd-test-repo-42');
@@ -340,7 +359,7 @@ describe('ReviewProcessor coordination', () => {
     expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'later' });
   });
 
-  it('updateFromWorkflow accepts legacy updates without runId (back-compat)', async () => {
+  it('rejects legacy (runId-less) updates while a fenced owner exists', async () => {
     const { store, storage } = createMockStorage();
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
     store.set('reviewContext', baseContext);
@@ -349,8 +368,32 @@ describe('ReviewProcessor coordination', () => {
     await processor.updateFromWorkflow({ state: 'failed', error: 'legacy crash' });
 
     const status = (await storage.get<StoredStatus>('reviewStatus'))!;
+    expect(status.state).toBe('running'); // late legacy write could not clobber the fenced owner
+  });
+
+  it('accepts legacy updates while the stored status itself predates fencing (pure legacy session)', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString() } as StoredStatus);
+    store.set('reviewContext', baseContext);
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    await processor.updateFromWorkflow({ state: 'failed', error: 'legacy crash' });
+
+    const status = (await storage.get<StoredStatus>('reviewStatus'))!;
     expect(status.state).toBe('failed');
     expect(status.error).toBe('legacy crash');
+  });
+
+  it('treats two API requests with different model/maxFiles as different requests (fingerprint)', async () => {
+    const { store, storage } = createMockStorage();
+    const oneMinAgo = new Date(Date.now() - 60 * 1000).toISOString();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: oneMinAgo, runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, model: 'kimi/k3', maxFiles: 50 });
+
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    const result = await processor.startReview({ ...baseContext, model: 'openai/gpt-4o', maxFiles: 50 });
+
+    expect(result).toMatchObject({ started: false, reason: 'deferred_new_push' });
   });
 
   it('saveTrackedIssuesRpc is fenced: a superseded run cannot rewrite the issue store', async () => {
@@ -372,6 +415,7 @@ describe('ReviewProcessor coordination', () => {
     storage.setAlarm = async (time: number) => {
       alarms.push(time);
     };
+    storage.deleteAlarm = async () => {};
     const binding = {
       create: vi.fn((): Promise<void> => Promise.reject(new Error('workflow api unavailable'))),
       get: vi.fn(),
@@ -383,9 +427,10 @@ describe('ReviewProcessor coordination', () => {
     const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
     await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
 
-    // The deferred push survived the failed handoff and a retry is scheduled
+    // The deferred push survived the failed handoff and retries are scheduled
+    // (one armed before create + one on the failure path)
     expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' });
-    expect(alarms).toHaveLength(1);
+    expect(alarms.length).toBeGreaterThanOrEqual(2);
 
     // The alarm retries the handoff; success consumes pendingLatest
     binding.create.mockImplementation(async () => { /* success */ });

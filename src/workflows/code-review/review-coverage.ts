@@ -231,13 +231,20 @@ export function buildCoverageManifest(
     plan.entries.filter((entry) => entry.status === status);
 
   const pending = [...byStatus('pending-budget'), ...byStatus('no-patch')];
+  const excluded = byStatus('excluded-policy');
   const discoveredCount = plan.entries.length;
 
+  // Strict whole-PR coverage: even policy-excluded files break `scopeComplete`
+  // — the check reports neutral with the exclusions listed, so a configured
+  // exclude can never produce a green "full" verdict the diff does not back
+  // (judge-hardened plan 002-U4). The exclusions remain visible and distinct
+  // from budget limitations.
   const scopeComplete =
     !plan.focused &&
     !plan.focusNoMatch &&
     !plan.diffTruncated &&
     pending.length === 0 &&
+    excluded.length === 0 &&
     discoveredCount >= ctx.changedFilesCount &&
     !ctx.apiFileCapReached;
 
@@ -308,6 +315,11 @@ export function coverageReportText(manifest: CoverageManifest): string {
     if (manifest.pendingCount > manifest.pending.length) {
       lines.push(`… and ${manifest.pendingCount - manifest.pending.length} more.`);
     }
+  }
+  if (manifest.excludedPolicyCount > 0) {
+    lines.push(
+      `${manifest.excludedPolicyCount} file(s) excluded by repo policy (.donmerge) were NOT reviewed; this verdict does not certify them.`
+    );
   }
   if (manifest.apiFileCapReached) {
     lines.push(

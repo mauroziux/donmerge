@@ -293,9 +293,9 @@ describe('findPublishedReviewForRun', () => {
       ])
     );
 
-    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe(true);
-    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-2', 'abc', 't')).toBe(false);
-    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'other', 't')).toBe(false);
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe('found');
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-2', 'abc', 't')).toBe('not-found');
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'other', 't')).toBe('not-found');
   });
 
   it('paginates until a short page', async () => {
@@ -303,8 +303,17 @@ describe('findPublishedReviewForRun', () => {
       .mockResolvedValueOnce(jsonResponse(Array.from({ length: 100 }, () => ({ body: 'x' }))))
       .mockResolvedValueOnce(jsonResponse([{ body: '<!-- DONMERGE_REVIEW: {"headSha":"abc","runId":"run-1"} -->' }]));
 
-    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe(true);
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe('found');
     expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns unknown (not not-found) when the scan hits its page cap', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse(Array.from({ length: 100 }, () => ({ body: 'no marker here' })))
+    );
+
+    expect(await findPublishedReviewForRun('o', 'r', 1, 'run-1', 'abc', 't')).toBe('unknown');
+    expect(mockFetch).toHaveBeenCalledTimes(5);
   });
 });
 
@@ -349,6 +358,34 @@ describe('publishReview idempotency', () => {
     expect(postUrls()).toHaveLength(1);
     const body = JSON.parse((postUrls()[0][1] as RequestInit).body as string);
     expect(body.body).toContain('"runId":"run-1"');
+  });
+
+  it('refuses a blind retry when the marker scan is page-capped (unknown) after an ambiguous failure', async () => {
+    let postAttempts = 0;
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/pulls/1/reviews') && method === 'POST') {
+        postAttempts += 1;
+        return {
+          ok: false,
+          status: 422,
+          text: async () => JSON.stringify({ message: 'An internal error occurred, please try again.' }),
+        };
+      }
+      if (url.includes('/pulls/1/reviews?') && method === 'GET') {
+        // >500 reviews without our marker: the scan cannot prove absence.
+        return jsonResponse(Array.from({ length: 100 }, () => ({ body: 'x' })));
+      }
+      return jsonResponse({});
+    });
+
+    await expect(
+      publishReview(
+        'o', 'r', 1, 'abc', { ...cleanReviewResult(), approved: false, criticalIssues: ['x causes y'] },
+        't', undefined, undefined, 'main', 'run-1'
+      )
+    ).rejects.toThrow(/refusing blind retry/);
+    expect(postAttempts).toBe(1);
   });
 
   it('reconciles an accepted-but-lost POST instead of duplicating it', async () => {

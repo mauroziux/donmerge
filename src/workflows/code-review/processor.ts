@@ -83,7 +83,10 @@ interface EnvWithBindings extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
 }
 
-/** Identity of a review request: same identity = duplicate delivery. */
+/** Identity of a review request: same identity = duplicate delivery.
+ * Includes everything that changes what the run would do (head, instruction,
+ * focus, model, file limits, installation credentials, comment) so two API
+ * requests with different parameters are NEVER conflated as duplicates. */
 function requestFingerprint(context: ReviewContext): string {
   return JSON.stringify({
     headSha: context.headSha ?? null,
@@ -91,6 +94,9 @@ function requestFingerprint(context: ReviewContext): string {
     focusFiles: (context.focusFiles ?? []).slice().sort(),
     retrigger: context.retrigger === true,
     commentId: context.commentId ?? null,
+    model: context.model ?? null,
+    maxFiles: context.maxFiles ?? null,
+    installationId: context.installationId ?? null,
   });
 }
 
@@ -228,13 +234,23 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     if (!status) return;
 
     // Run fencing: a late terminal write from a superseded run must not
-    // clobber the state of the run that currently owns this DO. Legacy
-    // instances deployed before runId existed may omit it — those are
-    // accepted (explicit back-compat).
+    // clobber the state of the run that currently owns this DO.
+    //   - runId mismatch → reject.
+    //   - update WITHOUT runId while an owner WITH runId exists → reject too:
+    //     a legacy instance writing alongside a fenced owner is by definition
+    //     not the owner. runId-less updates are only accepted while the stored
+    //     status itself predates fencing (pure legacy session).
     if (update.runId && status.runId && update.runId !== status.runId) {
       console.warn('Ignoring stale workflow update from superseded run', {
         currentRunId: status.runId,
         updateRunId: update.runId,
+        state: update.state,
+      });
+      return;
+    }
+    if (!update.runId && status.runId) {
+      console.warn('Ignoring legacy (runId-less) update while a fenced owner exists', {
+        currentRunId: status.runId,
         state: update.state,
       });
       return;
@@ -311,6 +327,11 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       pending.commentId
     );
     const instanceId = `${baseId}-auto-${token}`;
+
+    // Schedule the safety alarm BEFORE creating the workflow: if the DO dies
+    // anywhere between here and the commit below, the alarm retries the same
+    // deterministic instance id instead of losing the deferred push.
+    await this.state.storage.setAlarm(Date.now() + 60_000);
     try {
       await this.env.CODE_REVIEW_WORKFLOW.create({
         id: instanceId,
@@ -339,7 +360,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           await instance.restart();
           console.log('Deferred review restarted existing instance', { instanceId });
         } catch (restartError) {
-          console.error('Deferred review restart failed; will retry via alarm', {
+          console.error('Deferred review restart failed; alarm will retry', {
             instanceId,
             error: restartError instanceof Error ? restartError.message : String(restartError),
           });
@@ -347,7 +368,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           return;
         }
       } else {
-        console.error('Deferred review workflow create failed; will retry via alarm', {
+        console.error('Deferred review workflow create failed; alarm will retry', {
           instanceId,
           error: message,
         });
@@ -356,9 +377,9 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       }
     }
 
-    // Commit only after the workflow exists: if the DO dies before this
-    // point, pendingLatest is still set and the alarm (or the next terminal
-    // update) retries the same deterministic instance id.
+    // Commit only after the workflow exists, then clear the safety alarm: a
+    // crash before this point leaves pendingLatest + alarm armed, and the
+    // retry reuses the same deterministic instance id.
     await this.state.storage.put(STATE_KEYS.context, pending);
     await this.state.storage.put(STATE_KEYS.status, {
       state: 'pending',
@@ -367,6 +388,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       runId,
     });
     await this.state.storage.delete(STATE_KEYS.pendingLatest);
+    await this.state.storage.deleteAlarm();
   }
 
   /**

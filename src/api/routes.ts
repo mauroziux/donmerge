@@ -17,6 +17,7 @@ import type {
   TrackerConfig,
 } from './types';
 import { getReviewProcessor } from '../workflows/code-review/processor';
+import { fetchPrHeadSha } from '../workflows/code-review/github-api';
 import { getTriageProcessor } from '../workflows/triage/processor';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -175,7 +176,16 @@ export const handlePushReview = withAuth(async (c, auth) => {
   // Compute the caller's key hash for authorization scoping on status queries
   const callerKeyHash = await hashKey(auth.apiKey);
 
-  // Start review with caller-provided token
+  // Start review with caller-provided token. Best-effort head resolution so
+  // the coordinator's request fingerprint distinguishes pushes: two API calls
+  // for different heads are different requests, never duplicate deliveries.
+  let headSha: string | undefined;
+  try {
+    headSha = await fetchPrHeadSha(body.owner, body.repo, body.pr_number, body.github_token);
+  } catch {
+    headSha = undefined; // best-effort: fingerprint falls back to null head
+  }
+
   // DurableObjectStub proxies methods as unknown — cast for type safety
   const startResult = await (processorStub.startReview as (ctx: {
     githubToken: string;
@@ -186,6 +196,7 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles?: number;
     retrigger: boolean;
     initiatorKeyHash?: string;
+    headSha?: string;
   }) => Promise<{ started: boolean; reason: string; runId?: string }>)({
     githubToken: body.github_token,
     owner: body.owner,
@@ -195,6 +206,7 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles: body.max_files,
     retrigger: false,
     initiatorKeyHash: callerKeyHash,
+    headSha,
   });
 
   if (!startResult.started) {

@@ -519,16 +519,21 @@ export async function publishReview(
   // Idempotent publication (plan 004-U4): a durable step replay (or a retry
   // after an ambiguous transport failure) must not post the same run's review
   // twice. If a review carrying THIS run's marker already exists, reconcile
-  // by skipping the POST — the remaining publish effects (check run, PR
-  // description) are separately idempotent.
-  if (runId && (await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token))) {
-    console.log('Publication already recorded for this run — skipping duplicate POST', {
-      owner,
-      repo,
-      prNumber,
-      runId,
-    });
-    return droppedComments;
+  // by skipping the POST. `unknown` (page-capped scan) proceeds with the POST
+  // on this fresh path — a replay after a successful post is expected to see
+  // the marker; refusing on `unknown` would drop a genuinely unpublished
+  // review on very large PRs.
+  if (runId) {
+    const lookup = await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token);
+    if (lookup === 'found') {
+      console.log('Publication already recorded for this run — skipping duplicate POST', {
+        owner,
+        repo,
+        prNumber,
+        runId,
+      });
+      return droppedComments;
+    }
   }
 
   const payload = {
@@ -563,23 +568,46 @@ export async function publishReview(
         );
       } catch (error) {
         // Any failure on the POST may be an accepted-but-lost request (transient
-        // 422, dropped connection, transport rejection): the marker is proof of
-        // publication regardless of error class. Reconcile instead of duplicating.
-        if (runId && (await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token))) {
-          console.log('Ambiguous publication failure reconciled — review already posted', {
+        // 422, dropped connection, transport rejection). Poll for the marker:
+        //   found    → reconcile (never a second POST)
+        //   not-found→ the POST genuinely failed → normal bounded retry
+        //   unknown  → we cannot prove absence (page-capped) → refuse a blind
+        //              retry: fail the step so the replay re-searches later
+        if (runId) {
+          const lookup = await waitForPublishedReviewForRun(
             owner,
             repo,
             prNumber,
             runId,
-          });
-          return { reconciled: true };
+            headSha,
+            token
+          );
+          if (lookup === 'found') {
+            console.log('Ambiguous publication failure reconciled — review already posted', {
+              owner,
+              repo,
+              prNumber,
+              runId,
+            });
+            return { reconciled: true };
+          }
+          if (lookup === 'unknown') {
+            throw new Error(
+              `publication state unknown for run ${runId} after ambiguous failure — refusing blind retry`
+            );
+          }
         }
         throw error;
       }
     },
     {
       delays: TRANSIENT_RETRY_DELAYS_MS,
-      bail: (err) => !(isTransientGitHubError(err) || isTransportError(err)),
+      bail: (err) =>
+        !(
+          isTransientGitHubError(err) ||
+          (isTransportError(err) &&
+            !/refusing blind retry/.test(err instanceof Error ? err.message : String(err)))
+        ),
       name: 'publishReview',
     }
   );
@@ -649,12 +677,18 @@ export async function fetchAllPrFiles(
   return { files, apiFileCapReached, pagesFetched: page };
 }
 
+export type PublicationLookup = 'found' | 'not-found' | 'unknown';
+
 /**
  * Find a review already published by THIS run (same runId + headSha) by
  * scanning the PR's reviews for our machine marker. Used to make the
  * publish step idempotent across durable replays and ambiguous transport
  * failures (plan 004-U4). Reviews published before run fencing carry no
  * runId and never match.
+ *
+ * Tri-state: `unknown` when the scan hit its page cap without seeing the end
+ * of the list — absence of proof is NOT proof of absence there, so callers
+ * must not blind-POST after an ambiguous failure on `unknown`.
  */
 export async function findPublishedReviewForRun(
   owner: string,
@@ -663,7 +697,7 @@ export async function findPublishedReviewForRun(
   runId: string,
   headSha: string,
   token: string
-): Promise<boolean> {
+): Promise<PublicationLookup> {
   for (let page = 1; page <= 5; page += 1) {
     const reviews = await githubFetch<Array<{ body?: string }>>(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
@@ -672,12 +706,39 @@ export async function findPublishedReviewForRun(
     for (const review of reviews) {
       const marker = review.body ? parseReviewMarker(review.body) : null;
       if (marker?.runId === runId && marker.headSha === headSha) {
-        return true;
+        return 'found';
       }
     }
-    if (reviews.length < 100) return false;
+    if (reviews.length < 100) return 'not-found';
   }
-  return false;
+  return 'unknown';
+}
+
+/**
+ * Poll briefly for the publication marker after an ambiguous POST failure:
+ * GitHub's review listing can lag the write. Finds → reconciled. Still
+ * absent after the poll → 'not-found'; page-capped → 'unknown'.
+ */
+export async function waitForPublishedReviewForRun(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  runId: string,
+  headSha: string,
+  token: string,
+  options: { tries?: number; delayMs?: number } = {}
+): Promise<PublicationLookup> {
+  const tries = options.tries ?? 3;
+  const delayMs = options.delayMs ?? 1_500;
+  let last: PublicationLookup = 'not-found';
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    last = await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token);
+    if (last !== 'not-found') return last;
+    if (attempt < tries - 1) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return last;
 }
 
 /**
