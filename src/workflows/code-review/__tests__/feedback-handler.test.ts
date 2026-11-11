@@ -90,6 +90,21 @@ describe('parseDonmergeCommand', () => {
     expect(result).toEqual({ type: 'preference', text: 'Focus on: authentication' });
   });
 
+  it.each([
+    ['preference', 'Logging is useful\nexcept in tests', 'Logging is useful\nexcept in tests'],
+    ['ignore', 'Logging\nexcept security events', "Don't comment on: Logging\nexcept security events"],
+    ['focus', 'Authentication\nand authorization', 'Focus on: Authentication\nand authorization'],
+  ])('preserves multiline %s directives', (command, body, expected) => {
+    expect(parseDonmergeCommand(`@donmerge ${command} ${body}`)).toEqual({
+      type: 'preference', text: expected,
+    });
+  });
+
+  it('does not execute a later quoted command inside a multiline preference', () => {
+    expect(parseDonmergeCommand('@donmerge preference Keep this rule\nExample: @donmerge dismiss'))
+      .toEqual({ type: 'preference', text: 'Keep this rule\nExample: @donmerge dismiss' });
+  });
+
   it('is case-insensitive for command prefix', () => {
     const result = parseDonmergeCommand('@DonMerge DISMISS abc123');
     expect(result).toEqual({ type: 'dismiss', fingerprint: 'abc123' });

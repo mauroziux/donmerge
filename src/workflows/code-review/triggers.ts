@@ -262,7 +262,7 @@ function isBotUser(user?: { login: string; type?: string }): boolean {
 export function extractInstruction(body: string, triggerTag: string): string | undefined {
   // Create regex to find trigger tag and capture everything after it
   const escaped = triggerTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(`${escaped}\\s+(.+)$`, 'im');
+  const regex = new RegExp(`${escaped}\\s+([\\s\\S]+)$`, 'i');
   const match = body.match(regex);
 
   if (match && match[1]) {
@@ -326,7 +326,7 @@ function isNonActionableInstruction(instruction: string): boolean {
 }
 
 function extractFocusFiles(instruction: string): { files: string[]; instruction: string } {
-  const focusPrefix = instruction.match(/^(recheck|check|focus|review)\s+(.+)$/i);
+  const focusPrefix = instruction.match(/^(recheck|check|focus|review)\s+([\s\S]+)$/i);
   if (!focusPrefix) {
     return { files: [], instruction };
   }
