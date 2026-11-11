@@ -336,7 +336,7 @@ describe('ReviewProcessor coordination', () => {
     expect(alarms.length).toBeGreaterThanOrEqual(1);
     expect(alarmCleared()).toBe(true);
     expect(ownerAtCreate).toMatchObject({ state: 'pending' });
-    expect((ownerAtCreate as StoredStatus).runId).toMatch(/^auto-/);
+    expect((ownerAtCreate as StoredStatus).runId).toBeTruthy();
 
     expect(created).toHaveLength(1);
     expect(created[0].id).toContain('review-tableoltd-test-repo-42');
@@ -467,9 +467,10 @@ describe('ReviewProcessor coordination', () => {
 
     const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
     await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
-    // simulate a crash-before-consume: pendingLatest restored manually, the
-    // alarm retries the handoff (no completed-head suppression on this path)
+    // Simulate crash-before-consume: restore both pending and persisted intent.
+    const runId = (await storage.get<StoredStatus>('reviewStatus'))!.runId!;
     store.set('reviewPendingLatest', pending);
+    store.set('reviewHandoff', { fingerprint: JSON.stringify({ headSha: 'bbb', instruction: null, focusFiles: [], retrigger: false, commentId: null, model: null, maxFiles: null, installationId: null }), runId });
     await processor.alarm();
 
     expect(ids).toHaveLength(2);
@@ -655,6 +656,24 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
   });
 });
 
+
+describe('ReviewProcessor coordination — failed handoff recovery', () => {
+  it('delivers a newer pending request after the previous create failed', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'old' });
+    store.set('reviewContext', { ...baseContext, headSha: 'a' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'b' });
+    const create = vi.fn().mockRejectedValueOnce(new Error('unavailable')).mockResolvedValue(undefined);
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create } } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'old' });
+    expect((await storage.get<StoredStatus>('reviewStatus'))!.state).toBe('failed');
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'c' });
+    await processor.alarm();
+    expect(create).toHaveBeenCalledTimes(2);
+    expect((await storage.get<typeof baseContext & { headSha: string }>('reviewContext'))!.headSha).toBe('c');
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
+  });
+});
 
 describe('ReviewProcessor coordination — orphaned deferred cleanup', () => {
   it('head-carrying duplicate of the ACTIVE head drops a deferred DIFFERENT head', async () => {

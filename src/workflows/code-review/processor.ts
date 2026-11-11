@@ -21,6 +21,7 @@ const STATE_KEYS = {
   status: 'reviewStatus',
   /** Latest deferred request: a push/comment arrived while a run was active. */
   pendingLatest: 'reviewPendingLatest',
+  handoff: 'reviewHandoff',
 };
 
 /**
@@ -343,8 +344,14 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     // orphan a live owner. Exception: resuming OUR OWN committed handoff
     // (same deterministic token) after a crash between commit and create.
     const currentStatus = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
-    const token = fnv1aHex(requestFingerprint(pending));
-    const runId = `auto-${token}`;
+    const fingerprint = requestFingerprint(pending);
+    let handoff = await this.state.storage.get<{ fingerprint: string; runId: string }>(STATE_KEYS.handoff);
+    if (!handoff || handoff.fingerprint !== fingerprint) {
+      handoff = { fingerprint, runId: crypto.randomUUID() };
+      await this.state.storage.put(STATE_KEYS.handoff, handoff);
+    }
+    const runId = handoff.runId;
+    const token = runId;
     if (
       currentStatus &&
       (currentStatus.state === 'pending' || currentStatus.state === 'running') &&
@@ -461,8 +468,14 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           instanceId,
           error: message,
         });
+        // The workflow was not created. Release the failed provisional owner
+        // so a newer deferred request can be delivered by the alarm.
+        const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+        if (status?.runId === runId && status.state === 'pending') {
+          await this.state.storage.put(STATE_KEYS.status, { ...status, state: 'failed' });
+        }
         await this.state.storage.setAlarm(Date.now() + 30_000);
-        return; // ownership committed + pendingLatest stored — the alarm retries
+        return;
       }
     }
 
@@ -473,6 +486,7 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     const currentPending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
     if (currentPending && requestFingerprint(currentPending) === requestFingerprint(pending)) {
       await this.state.storage.delete(STATE_KEYS.pendingLatest);
+      await this.state.storage.delete(STATE_KEYS.handoff);
       await this.state.storage.deleteAlarm();
     } else if (currentPending) {
       console.log('Deferred request was replaced during handoff — newer request kept', {
