@@ -1,6 +1,6 @@
 # 004 — Revisar la última versión sin duplicar trabajo ni efectos
 
-**Estado:** TODO · **Prioridad:** P0/P1 · **Base:** `8fd3eef` · **Esfuerzo:** L · **Depende de:** contrato de snapshot/cobertura de 002.
+**Estado:** HECHO (núcleo) — runId fencing + pendingLatest + handoff durable en `processor.ts`; presupuesto extremo-a-extremo en `review-model-runner.ts`; publicación idempotente por marcador de run en `github-api.ts`. Cancelación real del adaptador Flue e inventario de retries del Gateway: PENDIENTE-ACTIVACIÓN (requiere entorno desechable).
 
 ## Objetivo
 

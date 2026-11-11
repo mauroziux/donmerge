@@ -1,6 +1,6 @@
 # 002 — Cobertura explícita, snapshot consistente y veredictos honestos
 
-**Estado:** TODO · **Prioridad:** P0 · **Base:** `8fd3eef` · **Esfuerzo:** M–L · **Dependencias:** ninguna; reutilizar corpus de 001.
+**Estado:** HECHO — U1–U4 implementadas (`review-snapshot.ts`, `review-coverage.ts`, `review-output-schema.ts`, workflow, github-api, issue-matcher) con suites dedicadas.
 
 ## Objetivo
 

@@ -1,6 +1,6 @@
 # DonMerge: reviews de mayor valor y mejor rendimiento
 
-Estado: **plan propuesto, no implementado**. Base inspeccionada: `8fd3eef`.
+Estado: **núcleo implementado en la rama `improvements`** (base del plan: `8fd3eef`). Las unidades que requieren datos reales, gasto LLM o activación en producción quedan marcadas como PENDIENTE-ACTIVACIÓN en cada plan; el resto está implementado y verificado con tests (1241 tests, 54 suites).
 
 ## Objetivo y decisión del operador
 
@@ -32,11 +32,13 @@ Esfuerzo orientativo: M = 1–3 días, L = 3–6 días de implementación y prue
 
 | Plan | Objetivo | Dependencias | Estado |
 |---|---|---|---|
-| [001](001-evaluacion-y-baseline.md) | Medir precisión, recall, cobertura, latencia y coste | Ninguna | TODO |
-| [002](002-cobertura-y-veredictos.md) | No emitir falsos limpios; snapshot consistente y contrato de evidencia | Ninguna; usar fixtures de 001 cuando existan | TODO |
-| [004](004-ejecucion-y-presupuestos.md) | No perder pushes ni duplicar publicación; deadlines y fencing | Snapshot/run contract de 002 | TODO |
-| [003](003-review-adversarial-adaptativo.md) | Contexto dirigido + búsqueda de contraejemplos + verificador | 001, 002, 004 | TODO |
-| [005](005-rendimiento-incremental.md) | Bajar trabajo repetido y elegir modelos por resultados | 001–004 | TODO |
+| [001](001-evaluacion-y-baseline.md) | Medir precisión, recall, cobertura, latencia y coste | Ninguna | PARCIAL — harness offline completo (`npm run eval:review`, `eval:review:compare`); pendiente corpus real etiquetado y telemetría de tokens (Flue no expone usage) |
+| [002](002-cobertura-y-veredictos.md) | No emitir falsos limpios; snapshot consistente y contrato de evidencia | Ninguna | HECHO — U1–U4 implementadas y testeadas |
+| [004](004-ejecucion-y-presupuestos.md) | No perder pushes ni duplicar publicación; deadlines y fencing | Snapshot/run contract de 002 | HECHO (núcleo) — fencing, pendiente-latest, handoff durable, presupuesto y publicación idempotente por marcador; cancelación real del SDK y inventario del Gateway quedan como PENDIENTE-ACTIVACIÓN |
+| [003](003-review-adversarial-adaptativo.md) | Contexto dirigido + búsqueda de contraejemplos + verificador | 001, 002, 004 | HECHO (núcleo, flags OFF) — riesgo, prompt adversarial, archivos completos en head, verificador y segunda pasada; activación por entorno y ablación shadow pendientes |
+| [005](005-rendimiento-incremental.md) | Bajar trabajo repetido y elegir modelos por resultados | 001–004 | PARCIAL — U1 (dedupe config, prioridad determinista, ref explícito) hecha; incremental/cache y selección por ablación pendientes |
+
+**Flags de activación** (todos OFF por defecto; ver `.env.example`): `DONMERGE_ADVERSARIAL_PROMPT`, `DONMERGE_VERIFY_FINDINGS`, `DONMERGE_SECOND_PASS`, `DONMERGE_FILE_CONTEXT`, `REVIEW_TOTAL_BUDGET_MS`.
 
 001 puede empezar mientras se corrige 002. No escribir en paralelo sobre `code-review-workflow.ts`, `types.ts`, `processor-utils.ts` o `builder.ts`. Cada entrega admite commits pequeños; no convertir todo en una reescritura.
 

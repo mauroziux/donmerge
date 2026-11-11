@@ -1,6 +1,6 @@
 # 005 — Reducir trabajo repetido sin perder defectos
 
-**Estado:** TODO · **Prioridad:** P2 · **Base:** `8fd3eef` · **Esfuerzo:** M–L · **Depende de:** 001–004 para promover optimizaciones; U1 determinista puede adelantarse.
+**Estado:** PARCIAL — U1 hecha (config/skills una vez por snapshot vía DTO, prioridad determinista de contexto, ref explícito en contents). U3 (incremental/cache) y U4 (selección por ablación live): TODO.
 
 ## Objetivo
 

@@ -1,6 +1,6 @@
 # 003 — Investigar el cambio y tratar de refutar cada hallazgo
 
-**Estado:** TODO · **Prioridad:** P1 · **Base:** `8fd3eef` · **Esfuerzo:** L · **Depende de:** 001 (eval), 002 (snapshot/cobertura), 004 (presupuestos/fencing).
+**Estado:** HECHO (núcleo, flags OFF) — `review-risk.ts`, rúbrica adversarial + segunda pasada en `prompts/*`, `finding-verifier.ts`, contexto de archivos en head (`DONMERGE_FILE_CONTEXT`). Activación por entorno y ablación shadow: PENDIENTE-ACTIVACIÓN. Ejecución de repros del PR: no implementada (por diseño en esta fase).
 
 ## Objetivo
 

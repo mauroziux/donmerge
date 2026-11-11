@@ -1,6 +1,6 @@
 # 001 — Evaluación reproducible antes de optimizar el reviewer
 
-**Estado:** TODO · **Prioridad:** P1, prerrequisito de cambios de calidad · **Base:** `8fd3eef` · **Esfuerzo:** M inicial, más etiquetado.
+**Estado:** PARCIAL — U2/U4 offline hechos (`src/workflows/code-review/evaluation/`, `npm run eval:review`, `scripts/compare-eval-reports.mjs`); U1 requiere muestra real etiquetada (pendiente de autorización/datos); U3 telemetría de intentos hecha, usage/tokens pendiente (Flue no lo expone).
 
 ## Objetivo
 

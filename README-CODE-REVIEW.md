@@ -102,6 +102,11 @@ Settings → Secrets and variables → Actions → Variables
 | `CUSTOM_REVIEW_INSTRUCTIONS` | `""` | Domain-specific review guidance |
 | `REVIEW_TRIGGER` | `@donmerge` | Mention tag that triggers manual re-reviews on PR comments |
 | `LOG_LEVEL` | `info` | Logging verbosity |
+| `REVIEW_TOTAL_BUDGET_MS` | `2100000` | End-to-end model-chain budget (ms); prompts never start without enough budget left |
+| `DONMERGE_ADVERSARIAL_PROMPT` | `false` | Add the adversarial investigation rubric to the review prompt |
+| `DONMERGE_VERIFY_FINDINGS` | `false` | Only critical findings that survive an independent refutation pass may block |
+| `DONMERGE_SECOND_PASS` | `false` | High-risk changes that review clean get an independent second search |
+| `DONMERGE_FILE_CONTEXT` | `false` | Inject full reviewed files at the PR head as untrusted context |
 
 ### 3. Verify Setup
 
