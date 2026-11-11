@@ -658,6 +658,37 @@ describe('ReviewProcessor coordination — round-5 hardening', () => {
 
 
 describe('ReviewProcessor coordination — failed handoff recovery', () => {
+  it('an alarm during active A does not freeze deferred B before latest returns to A', async () => {
+    const { store, storage } = createMockStorage();
+    const active = { ...baseContext, headSha: 'a' };
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'a' });
+    store.set('reviewContext', active);
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'b' });
+    const create = vi.fn();
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create } } as never);
+    await processor.alarm();
+    expect(await storage.get('reviewHandoff')).toBeUndefined();
+    await processor.startReview(active);
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'a' });
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'a', headSha: 'a' });
+    expect(create).not.toHaveBeenCalled();
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
+  });
+
+  it('delivers C if B finishes after its create response was lost', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'a' });
+    store.set('reviewContext', { ...baseContext, headSha: 'a' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'b' });
+    const create = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValue(undefined);
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: { create } } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'a' });
+    const bRun = (await storage.get<StoredStatus>('reviewStatus'))!.runId!;
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'c' });
+    await processor.updateFromWorkflow({ state: 'complete', runId: bRun, headSha: 'b' });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(await storage.get('reviewContext')).toMatchObject({ headSha: 'c' });
+  });
   it('reconciles an ambiguous create before delivering the newer pending request', async () => {
     const { store, storage } = createMockStorage();
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'old' });

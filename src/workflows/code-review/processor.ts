@@ -337,16 +337,30 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     completedHeadSha?: string
   ): Promise<void> {
     const latest = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
-    const existingHandoff = await this.state.storage.get<{ fingerprint: string; runId: string; context?: ReviewContext }>(STATE_KEYS.handoff);
+    let existingHandoff = await this.state.storage.get<{ fingerprint: string; runId: string; context?: ReviewContext }>(STATE_KEYS.handoff);
+    const currentStatus = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    // A terminal handoff has finished even if create's response was lost.
+    // Clear its intent before considering the latest deferred request.
+    if (existingHandoff && currentStatus?.runId === existingHandoff.runId &&
+        (currentStatus.state === 'complete' || currentStatus.state === 'failed')) {
+      await this.state.storage.delete(STATE_KEYS.handoff);
+      existingHandoff = undefined;
+    }
     const pending = existingHandoff?.context ?? latest;
     if (!pending) return;
+    // An alarm while an unrelated run is active must not freeze an intent for
+    // a request that can still be superseded before that run completes.
+    if ((currentStatus?.state === 'pending' || currentStatus?.state === 'running') &&
+        (!existingHandoff || currentStatus.runId !== existingHandoff.runId)) {
+      await this.state.storage.setAlarm(Date.now() + 60_000);
+      return;
+    }
 
     // Serialization: never hand off while another run owns the DO and is
     // pending/running — its own terminal update (or a later alarm, once it
     // has finished) delivers the deferred request. Overcommitting now would
     // orphan a live owner. Exception: resuming OUR OWN committed handoff
     // (same deterministic token) after a crash between commit and create.
-    const currentStatus = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
     const fingerprint = requestFingerprint(pending);
     let handoff = existingHandoff;
     if (!handoff || handoff.fingerprint !== fingerprint) {
