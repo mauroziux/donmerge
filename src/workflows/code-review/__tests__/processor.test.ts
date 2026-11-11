@@ -694,7 +694,7 @@ describe('ReviewProcessor coordination — aged fenced pending', () => {
 });
 
 describe('ReviewProcessor coordination — failed handoff recovery', () => {
-  it('an old duplicate of A does not erase deferred B', async () => {
+  it('a latest A event replaces deferred B and avoids a redundant review after A completes', async () => {
     const { store, storage } = createMockStorage();
     const active = { ...baseContext, headSha: 'a' };
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'a' });
@@ -705,9 +705,9 @@ describe('ReviewProcessor coordination — failed handoff recovery', () => {
     await processor.alarm();
     expect(await storage.get('reviewHandoff')).toBeUndefined();
     await processor.startReview(active);
-    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'b' });
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'a' });
     await processor.updateFromWorkflow({ state: 'complete', runId: 'a', headSha: 'a' });
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
     expect(await storage.get('reviewPendingLatest')).toBeUndefined();
     expect(await storage.get('reviewHandoff')).toBeUndefined();
   });
@@ -748,7 +748,7 @@ describe('ReviewProcessor coordination — failed handoff recovery', () => {
 });
 
 describe('ReviewProcessor coordination — orphaned deferred cleanup', () => {
-  it('head-carrying duplicate of the ACTIVE head preserves a deferred DIFFERENT head', async () => {
+  it('head-carrying latest event replaces an older deferred head', async () => {
     const { store, storage } = createMockStorage();
     store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date(Date.now() - 60_000).toISOString(), runId: 'run-a' } as StoredStatus);
     store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
@@ -759,7 +759,7 @@ describe('ReviewProcessor coordination — orphaned deferred cleanup', () => {
     const result = await processor.startReview({ ...baseContext, headSha: 'aaa' });
 
     expect(result).toMatchObject({ started: false, reason: 'already_running' });
-    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' });
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'aaa' });
   });
 
   it('comment redelivery (no headSha) never drops a deferred push', async () => {

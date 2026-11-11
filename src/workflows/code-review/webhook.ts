@@ -273,11 +273,9 @@ export async function processGitHubCodeReviewWebhook(
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       if (errMsg.includes('already_exists')) {
-        // Same delivery retried after an errored create: restart OUR instance
-        // (same runId/params by construction).
-        const instance = await env.CODE_REVIEW_WORKFLOW.get(instanceId);
-        await instance.restart();
-        console.log('Restarted existing run-scoped workflow instance', { instanceId });
+        // The recovery alarm may already have created this run. Existing can
+        // be queued or running; restarting it risks duplicating its effects.
+        console.log('Run-scoped workflow already exists', { instanceId });
       } else {
         throw error;
       }

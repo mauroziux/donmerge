@@ -157,8 +157,13 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
           storedContext !== undefined &&
           requestFingerprint(storedContext) === requestFingerprint(context);
         if (sameRequest) {
-          // A duplicate delivery may arrive after a newer push; never allow it
-          // to overwrite the deferred request. The next run fetches the live PR.
+          // If a later head-bearing event returns to the active head, record
+          // the latest request; it must run if the current execution fails.
+          // Comment redeliveries without a head do not overwrite a push.
+          const pending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+          if (pending && context.headSha && pending.headSha !== context.headSha) {
+            await this.state.storage.put(STATE_KEYS.pendingLatest, context);
+          }
           console.log('Duplicate review delivery acknowledged without restarting', {
             state: existingStatus.state,
             ageMs,

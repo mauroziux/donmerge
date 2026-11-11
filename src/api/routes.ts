@@ -248,8 +248,8 @@ export const handlePushReview = withAuth(async (c, auth) => {
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       if (errMsg.includes('already_exists')) {
-        const instance = await c.env.CODE_REVIEW_WORKFLOW.get(instanceId);
-        await instance.restart();
+        // Recovery may already have created this run; never restart a live instance.
+        console.log('Run-scoped workflow already exists', { instanceId });
       } else {
         throw e;
       }

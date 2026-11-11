@@ -378,6 +378,16 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('does not restart an instance created by the recovery alarm', async () => {
+    const create = vi.fn().mockRejectedValue(new Error('already_exists'));
+    const get = vi.fn();
+    mockedGetReviewProcessor.mockReturnValue({ startReview: vi.fn().mockResolvedValue({ started: true, reason: 'started', runId: 'run-a' }) } as never);
+    const env = { ...mockEnv, CODE_REVIEW_WORKFLOW: { create, get } as never };
+    await processGitHubCodeReviewWebhook(env, baseContext);
+    expect(create).toHaveBeenCalledOnce();
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it('creates a Workflow when the processor accepts a fresh review', async () => {
     const create = vi.fn().mockResolvedValue(undefined);
     const startReview = vi.fn().mockResolvedValue({ started: true, reason: 'started' });
