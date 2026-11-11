@@ -21,6 +21,9 @@ import {
   parseReviewMarker,
   buildSupersededBody,
   supersedeBaseChangedReviews,
+  fetchReviewComments,
+  findDonmergeReviewComment,
+  fetchPreviousDonMergeComments,
 } from '../github-api';
 
 beforeEach(() => {
@@ -503,6 +506,73 @@ describe('supersedeBaseChangedReviews', () => {
     mockFetch.mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('boom') });
     const count = await supersedeBaseChangedReviews('owner', 'repo', 5, 'master', 'token');
     expect(count).toBe(0);
+  });
+});
+
+// ─── Review comment pagination and authenticated ID matching ────────
+
+describe('fetchReviewComments', () => {
+  it('fetches all pages and preserves author identity for trusted matching', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1, path: 'src/a.ts', line: index + 1, body: 'finding',
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    }));
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(firstPage) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([
+        { id: 101, path: 'src/a.ts', line: 101, body: '<!-- DONMERGE: {"fingerprint":"fp-1","version":1} -->\n\nfinding', user: { login: 'donmerge[bot]', type: 'Bot' } },
+      ]) });
+
+    const comments = await fetchReviewComments('owner', 'repo', 1, 'token');
+
+    expect(comments).toHaveLength(101);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][0]).toContain('?per_page=100&page=1');
+    expect(mockFetch.mock.calls[1][0]).toContain('?per_page=100&page=2');
+    expect(findDonmergeReviewComment(comments, 'src/a.ts', 'fp-1')?.id).toBe(101);
+  });
+  it('finds previous DonMerge comments beyond the first page', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1, path: 'src/other.ts', line: index + 1, body: 'human comment',
+      user: { login: 'developer', type: 'User' },
+    }));
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(firstPage) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([{
+        id: 101, path: 'src/a.ts', line: 7,
+        body: '<!-- DONMERGE: {"fingerprint":"fp-101","version":1} -->\\n\\n🔴 **Issue:** Finding',
+        user: { login: 'donmerge[bot]', type: 'Bot' },
+      }]) });
+
+    const comments = await fetchPreviousDonMergeComments('owner', 'repo', 1, 'token');
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].id).toBe(101);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('findDonmergeReviewComment', () => {
+  it('does not trust a copied fingerprint marker from a human comment', () => {
+    const comments = [{
+      id: 1, path: 'src/a.ts', line: 1, body: '<!-- DONMERGE: {"fingerprint":"fp-1","version":1} --> copied',
+      userLogin: 'contributor', userType: 'User',
+    }];
+    expect(findDonmergeReviewComment(comments, 'src/a.ts', 'fp-1')).toBeUndefined();
+  });
+
+  it('requires a DonMerge bot author and matching path/fingerprint', () => {
+    const comments = [{
+      id: 2, path: 'src/a.ts', line: 1,
+      body: '<!-- DONMERGE: {"fingerprint":"fp-1","version":1} --> finding',
+      userLogin: 'donmerge[bot]', userType: 'Bot',
+    }];
+    expect(findDonmergeReviewComment(comments, 'src/a.ts', 'fp-1')?.id).toBe(2);
+    expect(findDonmergeReviewComment(comments, 'src/a.ts', 'fp-')).toBeUndefined();
+    expect(findDonmergeReviewComment(comments, 'src/b.ts', 'fp-1')).toBeUndefined();
+    expect(findDonmergeReviewComment([
+      { ...comments[0], userLogin: 'other-donmerge[bot]' },
+    ], 'src/a.ts', 'fp-1')).toBeUndefined();
   });
 });
 

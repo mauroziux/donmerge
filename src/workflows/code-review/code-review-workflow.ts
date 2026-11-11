@@ -32,6 +32,7 @@ import {
   addCommentReaction,
   fetchPreviousDonMergeComments,
   fetchReviewComments,
+  findDonmergeReviewComment,
   fetchRepoContext,
   fetchRepoFile,
   resolveFixedComments,
@@ -70,6 +71,7 @@ import {
   withBlockingApproval,
 } from './processor-utils';
 import { recordReviewFindings } from './feedback-handler';
+import { buildReviewOutcomeInputs } from './review-outcomes';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
 import { AllModelsFailedError, runReviewModels } from './review-model-runner';
@@ -699,31 +701,6 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     }
     await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()));
 
-    // Record review outcomes in D1 memory (best-effort)
-    if (this.env.DB) {
-      try {
-        await recordReviewFindings(this.env.DB, {
-          owner,
-          repo,
-          prNumber,
-          headSha,
-          findings: currentIssues.map(ci => ({
-            fingerprint: ci.fingerprint,
-            logicalKey: ci.logicalKey,
-            ruleId: ci.payload.ruleId,
-            filePath: ci.payload.filePath,
-            line: ci.payload.line,
-            severity: ci.payload.severity,
-            body: ci.payload.body,
-            status: ci.payload.status,
-            githubCommentId: ci.payload.githubCommentId,
-          })),
-        });
-      } catch (error) {
-        console.warn('[memory] Failed to record review outcomes:', error);
-      }
-    }
-
     // Resolve fixed comments (if enabled)
     const postFixedReplies = this.env.DONMERGE_POST_FIXED_REPLIES === 'true';
     if (postFixedReplies && matchResult.resolvedIssues.length > 0) {
@@ -778,13 +755,42 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       prData.baseBranch
     );
 
+    // Fetch published inline comments once. D1 memory needs their GitHub IDs
+    // to authenticate replies later (the marker alone is user-forgeable).
+    let publishedComments: Awaited<ReturnType<typeof fetchReviewComments>> = [];
+    if (currentIssues.length > 0) {
+      try {
+        publishedComments = await fetchReviewComments(owner, repo, prNumber, githubToken);
+      } catch (error) {
+        // Failure to correlate IDs must not fail a review that already posted.
+        console.warn('[memory] Failed to fetch published review comments for outcome correlation:', error);
+      }
+    }
+
+    // Record outcomes only after publish so newly-created findings can be
+    // correlated to the GitHub comment IDs returned by the API.
+    if (this.env.DB) {
+      try {
+        await recordReviewFindings(this.env.DB, {
+          owner,
+          repo,
+          prNumber,
+          headSha,
+          findings: buildReviewOutcomeInputs(currentIssues, publishedComments),
+        });
+      } catch (error) {
+        console.warn('[memory] Failed to record review outcomes:', error);
+      }
+    }
+
     // Attach comment IDs to new issues
     if (matchResult.newIssues.length > 0) {
-      const comments = await fetchReviewComments(owner, repo, prNumber, githubToken);
       const updatedNewIssues = matchResult.newIssues.map((issue) => {
         if (issue.githubCommentId) return issue;
-        const matching = comments.find(
-          (comment) => comment.path === issue.filePath && comment.body.includes(issue.fingerprint)
+        const matching = findDonmergeReviewComment(
+          publishedComments,
+          issue.filePath,
+          issue.fingerprint
         );
         return matching ? { ...issue, githubCommentId: matching.id } : issue;
       });

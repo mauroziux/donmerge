@@ -115,6 +115,13 @@ describe('parseDonmergeCommand', () => {
     expect(parseDonmergeCommand('@otherbot dismiss abc')).toBeNull();
   });
 
+  it('parses command syntax; question intent is gated downstream by the classifier', () => {
+    // parseDonmergeCommand is pure syntax. Whether '@donmerge dismiss?' is a
+    // real directive or a question is decided by classifyCommandIntent in the
+    // webhook layer (LLM → CLEF → punctuation), not here.
+    expect(parseDonmergeCommand('@donmerge dismiss?')).toEqual({ type: 'dismiss' });
+  });
+
   it('returns null for incomplete commands; bare dismiss/accept are valid (reply-correlated)', () => {
     expect(parseDonmergeCommand('@donmerge')).toBeNull();
     expect(parseDonmergeCommand('@donmerge dismiss')).toEqual({ type: 'dismiss', fingerprint: undefined });
@@ -410,53 +417,144 @@ describe('handleReactionFeedback', () => {
 import { handleNaturalReply } from '../feedback-handler';
 
 describe('handleNaturalReply', () => {
-  it('learns dismiss from a "no aplica" reply and returns an ack', async () => {
+  it('learns dismiss from a "no aplica" reply and returns an ack (model verdict)', async () => {
     const mock = createMockDb();
-
-    const ack = await handleNaturalReply(mock.db, {}, {
-      owner: 'test',
-      repo: 'repo',
-      prNumber: 1,
-      githubUser: 'dev',
-      replyText: 'No aplica porque el null ya se valida arriba',
-      parentFingerprint: 'fp-abc',
-      parentBody: '<!-- DONMERGE: {"fingerprint":"fp-abc","version":1} -->\n\nPossible null dereference here',
-      filePath: 'src/index.ts',
+    const { vi } = await import('vitest');
+    const llmFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"type":"dismiss","reason":"No aplica porque el null ya se valida arriba","learning":null}' } }],
+      }),
     });
+    vi.stubGlobal('fetch', llmFetch);
+    try {
+      const ack = await handleNaturalReply(mock.db, { OPENAI_API_KEY: 'sk-x' }, {
+        owner: 'test',
+        repo: 'repo',
+        prNumber: 1,
+        githubUser: 'dev',
+        replyText: 'No aplica porque el null ya se valida arriba',
+        parentFingerprint: 'fp-abc',
+        parentBody: '<!-- DONMERGE: {"fingerprint":"fp-abc","version":1} -->\n\nPossible null dereference here',
+        filePath: 'src/index.ts',
+      });
 
-    expect(ack).not.toBeNull();
-    expect(ack!.classification.type).toBe('dismiss');
-    expect(ack!.ackBody).toContain('Learned');
-    expect(ack!.ackBody).toContain('null ya se valida');
-    // Feedback insert ran with source 'reply' and the parent fingerprint
-    const feedbackCall = mock.bind.mock.calls.find((call: unknown[]) =>
-      call.some((arg) => arg === 'reply' && call.includes('fp-abc'))
-    );
-    expect(feedbackCall).toBeDefined();
-    // Learning stored in the ignore category with the human's reason
-    const learningCall = mock.bind.mock.calls.find((call: unknown[]) =>
-      call.some((arg) => typeof arg === 'string' && arg.includes('null ya se valida'))
-    );
-    expect(learningCall).toBeDefined();
+      expect(ack).not.toBeNull();
+      expect(ack!.classification.type).toBe('dismiss');
+      expect(ack!.ackBody).toContain('Learned');
+      expect(ack!.ackBody).toContain('null ya se valida');
+      expect(ack!.ackBody).not.toContain('@donmerge');
+      // Feedback insert ran with source 'reply' and the parent fingerprint
+      const feedbackCall = mock.bind.mock.calls.find((call: unknown[]) =>
+        call.some((arg) => arg === 'reply' && call.includes('fp-abc'))
+      );
+      expect(feedbackCall).toBeDefined();
+      // Learning stored in the ignore category with the human's reason
+      const learningCall = mock.bind.mock.calls.find((call: unknown[]) =>
+        call.some((arg) => typeof arg === 'string' && arg.includes('null ya se valida'))
+      );
+      expect(learningCall).toBeDefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
-  it('learns accept from a "good catch" reply', async () => {
+  it('does not classify a question as a dismissal or store a learning', async () => {
     const mock = createMockDb();
-
     const ack = await handleNaturalReply(mock.db, {}, {
-      owner: 'test',
-      repo: 'repo',
-      prNumber: 1,
-      githubUser: 'dev',
-      replyText: 'good catch, lo arreglé en 1a2b3c4',
-      parentFingerprint: 'fp-def',
-      parentBody: '<!-- DONMERGE: {"fingerprint":"fp-def","version":1} -->\n\nMissing error handling',
-      filePath: 'src/api.ts',
+      owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
+      replyText: 'Is this a false positive?',
+      parentFingerprint: 'fp-q', parentBody: 'finding',
     });
+    expect(ack).toBeNull();
+    expect(mock.prepare).not.toHaveBeenCalled();
+  });
 
-    expect(ack).not.toBeNull();
-    expect(ack!.classification.type).toBe('accept');
-    expect(ack!.ackBody).toContain('Confirmed');
+  it('makes no writes and no ack when the model verdict is question', async () => {
+    const mock = createMockDb();
+    const { vi } = await import('vitest');
+    const llmFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"type":"question","reason":"asking whether it applies","learning":null}' } }],
+      }),
+    });
+    vi.stubGlobal('fetch', llmFetch);
+    try {
+      const ack = await handleNaturalReply(mock.db, { OPENAI_API_KEY: 'sk-x' }, {
+        owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
+        replyText: 'Does this apply here?',
+        parentFingerprint: 'fp-model-q', parentBody: 'finding',
+      });
+      expect(ack).toBeNull();
+      expect(mock.prepare).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('makes no writes and no ack when the model verdict is other', async () => {
+    const mock = createMockDb();
+    const { vi } = await import('vitest');
+    const llmFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"type":"other","reason":"chit chat","learning":null}' } }],
+      }),
+    });
+    vi.stubGlobal('fetch', llmFetch);
+    try {
+      const ack = await handleNaturalReply(mock.db, { OPENAI_API_KEY: 'sk-x' }, {
+        owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
+        replyText: 'hola, cómo vas?',
+        parentFingerprint: 'fp-model-o', parentBody: 'finding',
+      });
+      expect(ack).toBeNull();
+      expect(mock.prepare).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not write or acknowledge a punctuation-free Spanish command question', async () => {
+    const mock = createMockDb();
+    const ack = await handleNaturalReply(mock.db, {}, {
+      owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
+      replyText: 'Hola @donmerge preference por  qué no aplica',
+      parentFingerprint: 'fp-spanish-question', parentBody: 'finding',
+    });
+    expect(ack).toBeNull();
+    expect(mock.prepare).not.toHaveBeenCalled();
+  });
+
+  it('learns accept from a "good catch" reply (model verdict)', async () => {
+    const mock = createMockDb();
+    const { vi } = await import('vitest');
+    const llmFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"type":"accept","reason":"good catch, fixing now","learning":null}' } }],
+      }),
+    });
+    vi.stubGlobal('fetch', llmFetch);
+    try {
+      const ack = await handleNaturalReply(mock.db, { OPENAI_API_KEY: 'sk-x' }, {
+        owner: 'test',
+        repo: 'repo',
+        prNumber: 1,
+        githubUser: 'dev',
+        replyText: 'good catch, lo arreglé en 1a2b3c4',
+        parentFingerprint: 'fp-def',
+        parentBody: '<!-- DONMERGE: {"fingerprint":"fp-def","version":1} -->\n\nMissing error handling',
+        filePath: 'src/api.ts',
+      });
+
+      expect(ack).not.toBeNull();
+      expect(ack!.classification.type).toBe('accept');
+      expect(ack!.ackBody).toContain('Confirmed');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('uses the LLM learning text when provided', async () => {

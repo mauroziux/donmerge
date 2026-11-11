@@ -598,6 +598,14 @@ describe('pull_request_review_comment — natural reply detection', () => {
     expect(result.inReplyToId).toBe(100);
   });
 
+  it('does NOT trigger bot comments even when they contain the trigger tag', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: { body: '@donmerge review', id: 204, user: { login: 'donmerge[bot]', type: 'Bot' } },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    expect(result.shouldRun).toBe(false);
+  });
+
   it('does NOT flag a bot reply (donmerge acks must not re-enter)', () => {
     const payload = createReviewCommentPayload('', {
       comment: {
@@ -627,6 +635,54 @@ describe('pull_request_review_comment — natural reply detection', () => {
     expect(result.shouldRun).toBe(true);
     expect(result.naturalReply).toBeUndefined();
     expect(result.retrigger).toBe(true);
+  });
+
+  it('routes command questions to feedback where the intent gate decides (dismiss?)', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: '@donmerge dismiss?',
+        id: 205,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    // Routing no longer guesses intent from phrasing: the command reaches the
+    // feedback branch with its body, and classifyCommandIntent (LLM → CLEF →
+    // punctuation) decides directive vs question before any memory write.
+    expect(result.feedback).toEqual({ type: 'dismiss' });
+    expect(result.naturalReply).toBeUndefined();
+    expect(result.commentBody).toBe('@donmerge dismiss?');
+  });
+
+  it('routes preference questions to feedback with the body for the intent gate', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: '@donmerge preference should we ignore logging',
+        id: 206,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    expect(result.feedback).toEqual({ type: 'preference', text: 'should we ignore logging' });
+    expect(result.naturalReply).toBeUndefined();
+    expect(result.commentBody).toBe('@donmerge preference should we ignore logging');
+  });
+
+  it('routes punctuation-free Spanish command questions to feedback too', () => {
+    const payload = createReviewCommentPayload('', {
+      comment: {
+        body: '@donmerge preference por  qu\u00e9 no aplica',
+        id: 207,
+        in_reply_to_id: 100,
+        user: { login: 'developer', type: 'User' },
+      },
+    });
+    const result = parseTrigger('pull_request_review_comment', payload);
+    expect(result.feedback).toBeDefined();
+    expect(result.naturalReply).toBeUndefined();
+    expect(result.commentBody).toBe('@donmerge preference por  qu\u00e9 no aplica');
   });
 
   it('keeps command replies on the feedback path', () => {

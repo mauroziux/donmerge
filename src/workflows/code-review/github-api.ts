@@ -387,13 +387,13 @@ export async function fetchCommentById(
   commentId: number,
   token: string,
   commentType?: 'review' | 'issue'
-): Promise<{ body: string; id: number; in_reply_to_id: number | null; path?: string } | null> {
+): Promise<{ body: string; id: number; in_reply_to_id: number | null; path?: string; user?: { login?: string; type?: string } } | null> {
   try {
     const endpoint = commentType === 'issue'
       ? `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`
       : `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}`;
 
-    const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null; path?: string }>(
+    const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null; path?: string; user?: { login?: string; type?: string } }>(
       endpoint,
       token
     );
@@ -405,7 +405,7 @@ export async function fetchCommentById(
         ? `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}`
         : `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`;
 
-      const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null; path?: string }>(
+      const comment = await githubFetch<{ body: string; id: number; in_reply_to_id: number | null; path?: string; user?: { login?: string; type?: string } }>(
         fallbackEndpoint,
         token
       );
@@ -565,22 +565,65 @@ export async function publishReview(
   return droppedComments;
 }
 
+export interface FetchedReviewComment {
+  id: number;
+  path: string;
+  line: number;
+  body: string;
+  userLogin?: string;
+  userType?: string;
+}
+
+/**
+ * Fetch all review comments. GitHub paginates this endpoint at 30 by default;
+ * use 100/page and continue until the final partial page so ID correlation
+ * still works on busy PRs.
+ */
 export async function fetchReviewComments(
   owner: string,
   repo: string,
   prNumber: number,
   token: string
-): Promise<Array<{ id: number; path: string; line: number; body: string }>> {
-  const comments = await githubFetch<
-    Array<{ id: number; path: string; line: number; body: string; user?: { login: string } }>
-  >(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`, token);
+): Promise<FetchedReviewComment[]> {
+  const all: FetchedReviewComment[] = [];
+  let page = 1;
 
-  return comments.map((comment) => ({
-    id: comment.id,
-    path: comment.path,
-    line: comment.line,
-    body: comment.body,
-  }));
+  while (true) {
+    const comments = await githubFetch<
+      Array<{ id: number; path: string; line: number; body: string; user?: { login: string; type?: string } }>
+    >(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100&page=${page}`, token);
+
+    all.push(...comments.map((comment) => ({
+      id: comment.id,
+      path: comment.path,
+      line: comment.line,
+      body: comment.body,
+      userLogin: comment.user?.login,
+      userType: comment.user?.type,
+    })));
+
+    if (comments.length < 100) return all;
+    page += 1;
+  }
+}
+
+/** Verify the one GitHub App account that owns DonMerge review comments. */
+export function isDonmergeBotAuthor(user: { login?: string; type?: string } | null | undefined): boolean {
+  return user?.type === 'Bot' && user.login?.toLowerCase() === 'donmerge[bot]';
+}
+
+/** Find a matching DonMerge-authored inline comment, not a copied user marker. */
+export function findDonmergeReviewComment(
+  comments: FetchedReviewComment[],
+  path: string,
+  fingerprint: string
+): FetchedReviewComment | undefined {
+  return comments.find((comment) => {
+    const metadata = parseFingerprint(comment.body);
+    return comment.path === path &&
+      metadata?.fingerprint === fingerprint &&
+      isDonmergeBotAuthor({ login: comment.userLogin, type: comment.userType });
+  });
 }
 
 /**
@@ -728,20 +771,25 @@ export async function fetchPreviousDonMergeComments(
   token: string
 ): Promise<PreviousComment[]> {
   try {
-    // Fetch all review comments on the PR
-    const comments = await githubFetch<
-      Array<{
-        id: number;
-        path: string;
-        line: number;
-        body: string;
-        user: { login: string } | null;
-        in_reply_to_id?: number;
-      }>
-    >(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100`,
-      token
-    );
+    // Fetch every page: old DonMerge findings may be beyond GitHub's default page.
+    const comments: Array<{
+      id: number;
+      path: string;
+      line: number;
+      body: string;
+      user: { login: string; type?: string } | null;
+      in_reply_to_id?: number;
+    }> = [];
+    let page = 1;
+    while (true) {
+      const batch = await githubFetch<typeof comments>(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100&page=${page}`,
+        token
+      );
+      comments.push(...batch);
+      if (batch.length < 100) break;
+      page += 1;
+    }
 
     const donmergeComments = comments.filter(
       (c) =>

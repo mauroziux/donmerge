@@ -99,23 +99,28 @@ export async function handleCommentFeedback(
 
     // Also create a learning from dismiss — use the actual finding body so the
     // stored rule is actionable, not a generic "something was dismissed".
-    if (command.type === 'dismiss') {
+    if (command.type === 'dismiss' || command.type === 'accept') {
       const outcome = await db.prepare(`
         SELECT body, file_path FROM review_outcomes
         WHERE owner = ? AND repo = ? AND fingerprint = ?
         ORDER BY id DESC LIMIT 1
       `).bind(params.owner, params.repo, command.fingerprint).first<{ body: string; file_path: string }>();
 
-      const learningText = outcome?.body
-        ? `Don't flag findings like: ${stripHtmlComments(outcome.body).slice(0, 200)} (dismissed by ${params.githubUser})`
-        : `A finding in this codebase was dismissed — similar findings may be false positives`;
+      const finding = outcome?.body ? stripHtmlComments(outcome.body).slice(0, 200) : null;
+      const learningText = command.type === 'dismiss'
+        ? finding
+          ? `Don't flag findings like: ${finding} (dismissed by ${params.githubUser})`
+          : `A finding in this codebase was dismissed — similar findings may be false positives`
+        : finding
+          ? `Confirmed valid: ${finding}`
+          : `A finding in this codebase was accepted as valid`;
 
       await upsertLearning(db, {
         owner: params.owner,
         repo: params.repo,
         learning_text: learningText,
         source: 'feedback',
-        category: 'ignore',
+        category: command.type === 'dismiss' ? 'ignore' : 'focus',
         confidence: 60,
         sample_size: 1,
       });
@@ -157,9 +162,23 @@ export interface NaturalReplyAck {
 
 const ACK_MARKER = '<!-- DONMERGE:ACK -->';
 
+
 /** Remove HTML comments (fingerprint metadata, GitHub anchors) from a body. */
 function stripHtmlComments(body: string): string {
-  return body.replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').trim();
+  let result = '';
+  let cursor = 0;
+  while (cursor < body.length) {
+    const start = body.indexOf('<!--', cursor);
+    if (start < 0) {
+      result += body.slice(cursor);
+      break;
+    }
+    result += body.slice(cursor, start);
+    const end = body.indexOf('-->', start + 4);
+    if (end < 0) break;
+    cursor = end + 3;
+  }
+  return result.replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -244,7 +263,13 @@ export async function handleNaturalReply(
       ? '**Learned.** I will stop flagging this pattern in future reviews of this repo.'
       : '**Confirmed.** Findings like this are valid here — I will keep prioritizing them.';
 
-  const ackBody = `${ACK_MARKER}\n🤖 ${ackLine}\n\n> ${classification.reason}`;
+  // Do not let quoted user text trigger the review webhook or inject hidden
+  // metadata into our acknowledgment comment.
+  const safeReason = stripHtmlComments(classification.reason)
+    .replace(/@donmerge/gi, '@ donmerge')
+    .replace(/[\r\n]+/g, ' ')
+    .trim();
+  const ackBody = `${ACK_MARKER}\n🤖 ${ackLine}${safeReason ? `\n\n> ${safeReason}` : ''}`;
 
   return { classification, ackBody };
 }

@@ -16,6 +16,10 @@ export interface WorkerEnv {
   CF_AI_GATEWAY_URL?: string;
   CF_AI_GATEWAY_TOKEN?: string;
   CF_AI_GATEWAY_ROUTE?: string;
+  /** CLEF on Workers AI — cheap intent classifier (REST) for reply learning
+   *  when no chat LLM is available. Requires a token with Workers AI permission. */
+  CF_ACCOUNT_ID?: string;
+  CF_AI_API_TOKEN?: string;
   GITHUB_WEBHOOK_SECRET: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;

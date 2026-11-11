@@ -9,7 +9,8 @@ import type { WorkerEnv, WebhookPayload, FastValidationResult, WebhookContext } 
 import { verifyWebhookSignature, isRepoAllowed, resolveGitHubToken } from './github-auth';
 import { parseTrigger } from './triggers';
 import { getReviewProcessor } from './processor';
-import { fetchCommentById, addCommentReaction, postReplyComment } from './github-api';
+import { fetchCommentById, addCommentReaction, postReplyComment, isDonmergeBotAuthor } from './github-api';
+import { classifyCommandIntent } from './reply-classifier';
 import { parseFingerprint } from './fingerprint';
 import { buildReviewWorkflowInstanceId } from './workflow-id';
 
@@ -76,6 +77,7 @@ export async function validateWebhookFast(
           retrigger: false,
           commentId: trigger.commentId,
           commentType: trigger.commentType,
+          commentBody: trigger.commentBody,
           installationId: payload.installation?.id,
           feedback: trigger.feedback,
           githubUser: trigger.githubUser,
@@ -121,11 +123,32 @@ export async function validateWebhookFast(
       retrigger: trigger.retrigger,
       commentId: trigger.commentId,
       commentType: trigger.commentType,
+      commentBody: trigger.commentBody,
       installationId: payload.installation?.id,
       instruction: trigger.instruction,
       focusFiles: trigger.focusFiles,
     },
   };
+}
+
+/**
+ * Confirm a fetched parent comment belongs to a DonMerge finding recorded for
+ * this repo. A DONMERGE HTML marker alone is forgeable by any PR contributor.
+ */
+async function findRecordedDonmergeParent(
+  db: D1Database,
+  owner: string,
+  repo: string,
+  parent: { id: number; user?: { login?: string; type?: string } },
+  fingerprint: string
+): Promise<boolean> {
+  if (!isDonmergeBotAuthor(parent.user)) return false;
+  const row = await db.prepare(`
+    SELECT id FROM review_outcomes
+    WHERE owner = ? AND repo = ? AND github_comment_id = ? AND fingerprint = ?
+    LIMIT 1
+  `).bind(owner, repo, parent.id, fingerprint).first<{ id: number }>();
+  return Boolean(row);
 }
 
 /**
@@ -159,8 +182,18 @@ async function processNaturalReply(
       'review'
     );
     const meta = parent ? parseFingerprint(parent.body) : null;
-    if (!parent || !meta) {
-      // Not a DonMerge thread — nothing to learn.
+    if (
+      !parent ||
+      !meta ||
+      !(await findRecordedDonmergeParent(
+        env.DB,
+        context.owner,
+        context.repo,
+        parent,
+        meta.fingerprint
+      ))
+    ) {
+      // Not a recorded DonMerge finding — a copied marker is not sufficient.
       return;
     }
 
@@ -193,7 +226,7 @@ async function processNaturalReply(
       context.owner,
       context.repo,
       context.prNumber,
-      context.commentId,
+      context.inReplyToId,
       'review',
       ack.ackBody,
       token
@@ -231,54 +264,78 @@ export async function processGitHubCodeReviewWebhook(
     const { handleCommentFeedback, handleReactionFeedback } = await import('./feedback-handler');
 
     if (context.feedback.type === 'dismiss' || context.feedback.type === 'accept') {
-      if (context.feedback.fingerprint) {
-        // @donmerge command (dismiss/accept) — fingerprint already parsed from command
-        await handleCommentFeedback(env.DB, {
-          owner: context.owner,
-          repo: context.repo,
-          prNumber: context.prNumber,
-          githubUser: context.githubUser ?? 'unknown',
-          commentBody: `@donmerge ${context.feedback.type} ${context.feedback.fingerprint}`,
-          commentId: context.commentId ?? 0,
-          inReplyToId: context.inReplyToId,
-        });
-        // Close the loop visibly (best-effort).
-        if (context.commentId) {
-          try {
-            const token = await resolveGitHubToken(env, context.installationId);
-            await addCommentReaction(
-              context.owner,
-              context.repo,
-              context.commentId,
-              context.commentType ?? 'review',
-              token,
-              'thumbsup'
-            );
-          } catch (error) {
-            console.warn('Failed to acknowledge feedback command:', error);
-          }
-        }
-      } else if (context.inReplyToId) {
-        // Reply command without fingerprint ("@donmerge dismiss" as a thread reply):
-        // correlate the parent DonMerge comment to recover the fingerprint.
+      if (context.inReplyToId && context.commentId) {
+        // Commands are accepted only as replies to a recorded DonMerge finding.
+        // This applies equally to bare commands and explicit fingerprints.
         try {
           const token = await resolveGitHubToken(env, context.installationId);
-          const parent = await fetchCommentById(context.owner, context.repo, context.inReplyToId, token, 'review');
+          const parent = await fetchCommentById(
+            context.owner,
+            context.repo,
+            context.inReplyToId,
+            token,
+            'review'
+          );
           const meta = parent ? parseFingerprint(parent.body) : null;
-          if (meta) {
+          const trusted = Boolean(
+            parent &&
+            meta &&
+            (await findRecordedDonmergeParent(
+              env.DB,
+              context.owner,
+              context.repo,
+              parent,
+              meta.fingerprint
+            ))
+          );
+          const fingerprint = context.feedback.fingerprint ?? meta?.fingerprint;
+
+          if (trusted && fingerprint === meta!.fingerprint) {
+            // A question about a command ("@donmerge dismiss?") must not mutate
+            // memory — the model decides intent, not phrasing lists.
+            const intent = await classifyCommandIntent(
+              env,
+              context.commentBody ?? `@donmerge ${context.feedback.type}`
+            );
+            if (intent === 'question') {
+              console.log('Feedback command was a question — not executing', {
+                owner: context.owner,
+                repo: context.repo,
+                inReplyToId: context.inReplyToId,
+              });
+              return;
+            }
             await handleCommentFeedback(env.DB, {
               owner: context.owner,
               repo: context.repo,
               prNumber: context.prNumber,
               githubUser: context.githubUser ?? 'unknown',
-              commentBody: `@donmerge ${context.feedback.type} ${meta.fingerprint}`,
-              commentId: context.commentId ?? 0,
+              commentBody: `@donmerge ${context.feedback.type} ${fingerprint}`,
+              commentId: context.commentId,
               inReplyToId: context.inReplyToId,
             });
-            // Close the loop visibly: the teaching was registered.
-            await addCommentReaction(context.owner, context.repo, context.commentId ?? 0, 'review', token, 'thumbsup');
+            const ackBody = context.feedback.type === 'dismiss'
+              ? '🤖 **Learned.** I will stop flagging this finding pattern in future reviews.'
+              : '🤖 **Confirmed.** I will keep prioritizing findings like this.';
+            await addCommentReaction(
+              context.owner,
+              context.repo,
+              context.commentId,
+              'review',
+              token,
+              'thumbsup'
+            );
+            await postReplyComment(
+              context.owner,
+              context.repo,
+              context.prNumber,
+              context.inReplyToId,
+              'review',
+              ackBody,
+              token
+            );
           } else {
-            console.log('Feedback reply parent has no DonMerge marker — ignoring', {
+            console.log('Feedback command did not match a recorded DonMerge parent — ignoring', {
               owner: context.owner,
               repo: context.repo,
               inReplyToId: context.inReplyToId,
@@ -289,7 +346,7 @@ export async function processGitHubCodeReviewWebhook(
             error: error instanceof Error ? error.message : error,
           });
         }
-      } else if (context.commentId) {
+      } else if (context.commentId && !context.inReplyToId) {
         // Reaction event — need to fetch comment body to get the fingerprint
         try {
           const token = await resolveGitHubToken(env, context.installationId);
@@ -302,6 +359,17 @@ export async function processGitHubCodeReviewWebhook(
           );
           if (comment) {
             const metadata = parseFingerprint(comment.body);
+            const isRecordedFinding = Boolean(
+              metadata &&
+              (await findRecordedDonmergeParent(
+                env.DB,
+                context.owner,
+                context.repo,
+                comment,
+                metadata.fingerprint
+              ))
+            );
+            if (!isRecordedFinding) return;
             await handleReactionFeedback(env.DB, {
               owner: context.owner,
               repo: context.repo,
@@ -319,21 +387,131 @@ export async function processGitHubCodeReviewWebhook(
         }
       }
     } else if (context.feedback.type === 'override') {
-      // @donmerge override <fingerprint> <severity>
-      const feedbackText = context.feedback.fingerprint
-        ? `${context.feedback.fingerprint} ${context.feedback.newSeverity ?? ''}`
-        : '';
-      await handleCommentFeedback(env.DB, {
-        owner: context.owner,
-        repo: context.repo,
-        prNumber: context.prNumber,
-        githubUser: context.githubUser ?? 'unknown',
-        commentBody: `@donmerge override ${feedbackText}`.trim(),
-        commentId: context.commentId ?? 0,
-        inReplyToId: context.inReplyToId,
-      });
+      // Severity overrides also require a reply to the recorded finding whose
+      // fingerprint matches, rather than trusting user-supplied marker text.
+      if (!context.inReplyToId || !context.commentId || !context.feedback.fingerprint) return;
+      try {
+        const token = await resolveGitHubToken(env, context.installationId);
+        const parent = await fetchCommentById(
+          context.owner,
+          context.repo,
+          context.inReplyToId,
+          token,
+          'review'
+        );
+        const meta = parent ? parseFingerprint(parent.body) : null;
+        const trusted = Boolean(
+          parent &&
+          meta &&
+          meta.fingerprint === context.feedback.fingerprint &&
+          (await findRecordedDonmergeParent(
+            env.DB,
+            context.owner,
+            context.repo,
+            parent,
+            meta.fingerprint
+          ))
+        );
+        if (!trusted) return;
+
+        const overrideIntent = await classifyCommandIntent(
+          env,
+          context.commentBody ?? `@donmerge override ${context.feedback.fingerprint}`
+        );
+        if (overrideIntent === 'question') {
+          console.log('Severity override was a question — not executing', {
+            owner: context.owner,
+            repo: context.repo,
+            inReplyToId: context.inReplyToId,
+          });
+          return;
+        }
+
+        await handleCommentFeedback(env.DB, {
+          owner: context.owner,
+          repo: context.repo,
+          prNumber: context.prNumber,
+          githubUser: context.githubUser ?? 'unknown',
+          commentBody: `@donmerge override ${context.feedback.fingerprint} ${context.feedback.newSeverity ?? ''}`.trim(),
+          commentId: context.commentId,
+          inReplyToId: context.inReplyToId,
+        });
+        await addCommentReaction(
+          context.owner,
+          context.repo,
+          context.commentId,
+          'review',
+          token,
+          'thumbsup'
+        );
+        await postReplyComment(
+          context.owner,
+          context.repo,
+          context.prNumber,
+          context.inReplyToId,
+          'review',
+          '🤖 **Confirmed.** I will use this severity for the finding.',
+          token
+        );
+      } catch (error) {
+        console.error('Failed to validate severity override reply', {
+          error: error instanceof Error ? error.message : error,
+        });
+      }
     } else {
-      // preference/ignore/focus-as-learning
+      // Explicit repo preferences may be given as standalone @donmerge
+      // commands. But a reply in an inline thread is accepted only when that
+      // parent is a recorded DonMerge finding; unrelated threads are not a
+      // route for injecting repo-wide learnings.
+      // Preferences must be replies to a verified DonMerge finding; otherwise
+      // any PR comment could silently set repository-wide policy.
+      if (!context.inReplyToId || !context.commentId) return;
+      let token: string | undefined;
+      {
+        try {
+          token = await resolveGitHubToken(env, context.installationId);
+          const parent = await fetchCommentById(
+            context.owner,
+            context.repo,
+            context.inReplyToId,
+            token,
+            'review'
+          );
+          const meta = parent ? parseFingerprint(parent.body) : null;
+          const trusted = Boolean(
+            parent &&
+            meta &&
+            (await findRecordedDonmergeParent(
+              env.DB,
+              context.owner,
+              context.repo,
+              parent,
+              meta.fingerprint
+            ))
+          );
+          if (!trusted) return;
+        } catch (error) {
+          console.error('Failed to validate preference reply parent', {
+            error: error instanceof Error ? error.message : error,
+          });
+          return;
+        }
+      }
+
+      // A question about preferences must not become repository-wide policy.
+      const preferenceIntent = await classifyCommandIntent(
+        env,
+        context.commentBody ?? `@donmerge preference`
+      );
+      if (preferenceIntent === 'question') {
+        console.log('Preference command was a question — not executing', {
+          owner: context.owner,
+          repo: context.repo,
+          commentId: context.commentId,
+        });
+        return;
+      }
+
       const feedbackText = context.feedback.text ?? context.feedback.fingerprint ?? '';
       await handleCommentFeedback(env.DB, {
         owner: context.owner,
@@ -343,6 +521,31 @@ export async function processGitHubCodeReviewWebhook(
         commentBody: `@donmerge preference ${feedbackText}`,
         commentId: context.commentId ?? 0,
       });
+
+      if (context.commentId) {
+        try {
+          token ??= await resolveGitHubToken(env, context.installationId);
+          await addCommentReaction(
+            context.owner,
+            context.repo,
+            context.commentId,
+            context.commentType ?? 'review',
+            token,
+            'thumbsup'
+          );
+          await postReplyComment(
+            context.owner,
+            context.repo,
+            context.prNumber,
+            context.inReplyToId ?? context.commentId,
+            context.commentType ?? 'review',
+            '🤖 **Learned.** I will apply this preference to future reviews of this repo.',
+            token
+          );
+        } catch (error) {
+          console.warn('Failed to acknowledge preference learning:', error);
+        }
+      }
     }
     return;
   }
@@ -350,6 +553,22 @@ export async function processGitHubCodeReviewWebhook(
   const { owner, repo, prNumber, retrigger, commentId, commentType, installationId, instruction } =
     context;
   const focusFiles = context.focusFiles;
+
+  // Any comment addressed to @donmerge (focus, review, check, recheck…) must
+  // clear the model intent gate before starting a review run — a question
+  // ('@donmerge review src/auth.ts?') must not trigger work.
+  if (context.commentBody && /@donmerge\b/i.test(context.commentBody)) {
+    const intent = await classifyCommandIntent(env, context.commentBody);
+    if (intent === 'question') {
+      console.log('Command-shaped review trigger was a question — not starting review', {
+        owner,
+        repo,
+        prNumber,
+        commentId,
+      });
+      return;
+    }
+  }
 
   console.log('Starting review via ReviewProcessor + CodeReviewWorkflow', {
     owner,

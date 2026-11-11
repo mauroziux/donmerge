@@ -9,10 +9,12 @@
  *   - accept:  the finding is valid / being fixed → reinforcement learning
  *   - question / other: no actionable teaching → no learning, no ack
  *
- * Classification strategy: cheap regex heuristics first (free, instant, covers
- * the common phrasings); LLM via direct fetch (CF AI Gateway when configured,
- * no sandbox needed) for everything else. If the LLM fails, heuristics apply —
- * an unclassified reply is never silently treated as teaching.
+ * Classification strategy: teaching and command execution require a model
+ * decision — chat LLM via CF AI Gateway first (nuance, produces the learning
+ * text), then CLEF on Workers AI (cheap calibrated probabilities). Without a
+ * usable model verdict (nothing configured, outage, low confidence) the system
+ * fails closed: no learning is stored and commands are treated as questions
+ * (not executed). Regex phrasing never substitutes for intent.
  */
 
 import {
@@ -35,8 +37,8 @@ export interface ReplyClassification {
    * Only meaningful for dismiss/accept; null otherwise.
    */
   learning: string | null;
-  /** 'heuristic' or 'llm' — how the classification was produced. */
-  source: 'heuristic' | 'llm';
+  /** 'llm' or 'clef' — which model produced the classification. */
+  source: 'llm' | 'clef';
 }
 
 /** LLM configuration resolved once per invocation (gateway-first). */
@@ -52,82 +54,12 @@ export interface ReplyClassifierEnv {
   CF_AI_GATEWAY_TOKEN?: string;
   CF_AI_GATEWAY_ROUTE?: string;
   OPENAI_API_KEY?: string;
+  /** CLEF on Workers AI — cheap intent classifier used when no chat LLM is available. */
+  CF_ACCOUNT_ID?: string;
+  CF_AI_API_TOKEN?: string;
 }
 
-// ── Heuristic classification ─────────────────────────────────────────────────
-
-const DISMISS_PATTERNS: RegExp[] = [
-  /no\s+aplica/i,
-  /no\s+es\s+aplicable/i,
-  /not\s+applicable/i,
-  /doesn'?t\s+apply/i,
-  /does\s+not\s+apply/i,
-  /false\s+positive/i,
-  /falso\s+positivo/i,
-  /won'?t\s+fix/i,
-  /wontfix/i,
-  /by\s+design/i,
-  /as\s+designed/i,
-  /intencional/i,
-  /esperado/i,
-  /^n\/?a$/im,
-  /^ignora(?:r)?\b/im,
-  /^ignore\b/im,
-  /ya\s+se\s+valida/i,
-  /already\s+(?:validated|checked|handled|verified)/i,
-  /out\s+of\s+scope/i,
-  /fuera\s+de\s+(?:scope|alcance)/i,
-];
-
-const ACCEPT_PATTERNS: RegExp[] = [
-  /buen\s+punto/i,
-  /buena\s+observaci[oó]n/i,
-  /good\s+catch/i,
-  /valid\s+point/i,
-  /fair\s+point/i,
-  /tienes\s+raz[oó]n/i,
-  /you'?re\s+right/i,
-  /cierto/i,
-  /^ok\b/im,
-  /lo\s+arreglo/i,
-  /ya\s+lo\s+arregl[eé]/i,
-  /(?:will\s+fix|fixing|fixed|addressed|resuelto|resuelta)/i,
-  /aplicado/i,
-  /applied/i,
-];
-
-/**
- * Classify a reply with free regex heuristics. Returns null when no pattern
- * matches — the caller should then try the LLM classifier.
- */
-export function classifyReplyHeuristic(replyText: string): ReplyClassification | null {
-  const text = replyText.trim();
-  if (!text) return null;
-
-  for (const pattern of DISMISS_PATTERNS) {
-    if (pattern.test(text)) {
-      return {
-        type: 'dismiss',
-        reason: excerpt(text),
-        learning: null, // caller composes learning from finding context + reason
-        source: 'heuristic',
-      };
-    }
-  }
-
-  for (const pattern of ACCEPT_PATTERNS) {
-    if (pattern.test(text)) {
-      return {
-        type: 'accept',
-        reason: excerpt(text),
-        learning: null,
-        source: 'heuristic',
-      };
-    }
-  }
-
-  return null;
-}
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function excerpt(text: string, maxLength = 280): string {
   const cleaned = text.replace(/\s+/g, ' ').trim();
@@ -233,14 +165,38 @@ export async function classifyReplyWithLlm(
   }
 }
 
-/** Parse the LLM output, tolerating markdown fences and prose around JSON. */
+/**
+ * Strict teaching-verdict parse: the model's ENTIRE response (modulo a
+ * markdown fence) must be a JSON object with keys exactly among
+ * {type, reason, learning}, no duplicate keys (literal or escaped), type
+ * valid. Prose-wrapped or hedged responses are NOT usable verdicts.
+ */
 export function parseClassificationJson(content: string): ReplyClassification | null {
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
+  let text = content.trim();
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fence) text = fence[1].trim();
+
+  if (!text.startsWith('{') || !text.endsWith('}')) return null;
+
+  // JSON.parse collapses duplicate keys (including escaped forms) — scan and
+  // decode every raw key token first.
+  const keyTokens = text.match(/"(?:[^"\\]|\\.)*"\s*:/g) ?? [];
+  const decodedKeys = keyTokens.map((token) => {
+    try {
+      return JSON.parse(token.slice(0, token.lastIndexOf('"') + 1)) as string;
+    } catch {
+      return token;
+    }
+  });
+  const keySet = new Set(decodedKeys);
+  if (decodedKeys.length !== keySet.size) return null;
+  for (const key of decodedKeys) {
+    if (key !== 'type' && key !== 'reason' && key !== 'learning') return null;
+  }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(jsonMatch[0]);
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
@@ -257,38 +213,286 @@ export function parseClassificationJson(content: string): ReplyClassification | 
     return null;
   }
 
-  const reason = typeof obj.reason === 'string' && obj.reason.trim() ? obj.reason.trim() : '';
-  const learning = typeof obj.learning === 'string' && obj.learning.trim() ? obj.learning.trim() : null;
+  // The verdict must be the complete requested object: a non-empty string
+  // reason and a learning that is either null or a non-empty string. A bare
+  // {"type":"dismiss"} is a hedged/incomplete response, not a verdict.
+  if (!('reason' in obj) || typeof obj.reason !== 'string' || !obj.reason.trim()) return null;
+  if (
+    !('learning' in obj) ||
+    (obj.learning !== null &&
+      (typeof obj.learning !== 'string' || !obj.learning.trim()))
+  ) {
+    return null;
+  }
 
   return {
     type: obj.type,
-    reason: excerpt(reason),
-    learning,
+    reason: excerpt(obj.reason.trim()),
+    learning: obj.learning === null ? null : obj.learning.trim(),
     source: 'llm',
   };
 }
 
+// ── CLEF (Workers AI) — cheap calibrated intent decisions ───────────────────
+
+const CLEF_MODEL_ID = '@cf/cloudflare/clef';
+const CLEF_TIMEOUT_MS = 6_000;
+
+export interface ClefConfig {
+  accountId: string;
+  token: string;
+}
+
+export function resolveClefConfig(env: ReplyClassifierEnv): ClefConfig | null {
+  const accountId = env.CF_ACCOUNT_ID?.trim();
+  const token = env.CF_AI_API_TOKEN?.trim();
+  return accountId && token ? { accountId, token } : null;
+}
+
 /**
- * Full classification pipeline: heuristics → LLM → give up (null means
- * "no teaching detected", the caller must not record anything).
+ * Run CLEF typed questions against a text state via the Workers AI REST API.
+ * Returns the `answers` map or null; never throws.
+ */
+export async function clefRun(
+  config: ClefConfig,
+  state: string,
+  questions: Record<string, unknown>
+): Promise<Record<string, unknown> | null> {
+  try {
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/ai/run/${CLEF_MODEL_ID}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: 'clef', state: state.slice(0, 4000), questions }),
+        signal: AbortSignal.timeout(CLEF_TIMEOUT_MS),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn('[reply-classifier] CLEF HTTP error', { status: response.status });
+      return null;
+    }
+
+    const data = (await response.json()) as {
+      result?: { answers?: Record<string, unknown> };
+    };
+    return data.result?.answers ?? null;
+  } catch (error) {
+    console.warn('[reply-classifier] CLEF call failed:', {
+      error: error instanceof Error ? error.message : error,
+    });
+    return null;
+  }
+}
+
+// ── Command intent gate (question vs directive) ─────────────────────────
+
+export type CommandIntent = 'directive' | 'question';
+
+/** Classify intent with the chat LLM. Returns null on any failure. */
+async function classifyIntentWithLlm(
+  config: ReplyClassifierLlmConfig,
+  commentBody: string
+): Promise<CommandIntent | null> {
+  const system =
+    'You classify comments addressed to the @donmerge code-review bot. Decide if the comment ' +
+    'is a directive (a command to execute now, however politely phrased) or a question ' +
+    '(asking whether/what/how/why, requesting clarification or confirmation, in any language). ' +
+    'Respond with ONLY a JSON object: {"intent":"directive"} or {"intent":"question"}.\n' +
+    'Examples: "@donmerge dismiss" → directive. "@donmerge dismiss?" → question. ' +
+    '"@donmerge preference por qué no aplica esto?" → question. ' +
+    '"@donmerge preference ignora los logs" → directive. ' +
+    '"Could you dismiss this?" → question. "please dismiss this finding" → directive.';
+
+  try {
+    const response = await fetch(`${config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: commentBody.slice(0, 1200) },
+        ],
+        temperature: 0,
+        max_tokens: 60,
+      }),
+      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 8_000)),
+    });
+    if (!response.ok) return null;
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = data.choices?.[0]?.message?.content ?? '';
+    return parseIntentJson(content);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Strict intent parse: the model's ENTIRE response (modulo a markdown
+ * fence) must be the JSON object {"intent":"directive"|"question"}. JSON
+ * embedded in prose is NOT a usable verdict — the caller falls through
+ * (CLEF → fail-closed).
+ */
+function parseIntentJson(content: string): CommandIntent | null {
+  let text = content.trim();
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fence) text = fence[1].trim();
+
+  if (!text.startsWith('{') || !text.endsWith('}')) return null;
+
+  // JSON.parse collapses duplicate keys — including escaped ones
+  // ({"intent":"question","\u0069ntent":"directive"}). Scan every raw key
+  // token, JSON-decode it, and require exactly one key named "intent".
+  const keyTokens = text.match(/"(?:[^"\\]|\\.)*"\s*:/g) ?? [];
+  const decodedKeys = keyTokens.map((token) => {
+    try {
+      return JSON.parse(token.slice(0, token.lastIndexOf('"') + 1)) as string;
+    } catch {
+      return token;
+    }
+  });
+  if (decodedKeys.length !== 1 || decodedKeys[0] !== 'intent') return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  // The verdict must be EXACTLY {"intent": "directive"|"question"} — no
+  // hedging extras ("explanation", "confidence") attached.
+  const keys = Object.keys(parsed);
+  if (keys.length !== 1 || keys[0] !== 'intent') return null;
+  const intent = (parsed as { intent: unknown }).intent;
+  return intent === 'directive' || intent === 'question' ? intent : null;
+}
+
+/**
+ * Decide whether a `@donmerge <command>` comment is a real directive or a
+ * question about the command ("@donmerge dismiss?" must not mutate memory).
+ * Chat LLM first (nuance, any language), CLEF second (calibrated probability).
+ * Without a usable model verdict this always returns 'question' — a command
+ * we cannot verify is never executed.
+ */
+export async function classifyCommandIntent(
+  env: ReplyClassifierEnv,
+  commentBody: string
+): Promise<CommandIntent> {
+  const text = commentBody.trim();
+  // An empty body carries no directive: fail closed.
+  if (!text) return 'question';
+
+  const llm = resolveReplyClassifierLlm(env);
+  const clef = resolveClefConfig(env);
+  if (llm) {
+    const intent = await classifyIntentWithLlm(llm, text);
+    if (intent) return intent;
+  }
+
+  if (clef) {
+    const answers = await clefRun(
+      clef,
+      `GitHub PR comment addressed to the @donmerge code-review bot:\n${text}`,
+      {
+        is_question: {
+          type: 'noul',
+          instructions:
+            'Is the author asking a question or requesting clarification (in any language), ' +
+            'rather than giving a direct command to execute? Questions about whether to ' +
+            'dismiss/accept, or asking what a command does, count as questions. ' +
+            'Polite but imperative requests ("please dismiss this") are commands, not questions.',
+        },
+      }
+    );
+    const noul = answers?.is_question as { noul?: unknown } | undefined;
+    if (
+      noul &&
+      typeof noul.noul === 'number' &&
+      Number.isFinite(noul.noul) &&
+      noul.noul >= 0 &&
+      noul.noul <= 1
+    ) {
+      return noul.noul >= 0.5 ? 'question' : 'directive';
+    }
+  }
+
+  // No usable model verdict (outage, or nothing configured): fail closed —
+  // a command we cannot verify is a question must never mutate memory.
+  // The human can retry once a provider is reachable.
+  return 'question';
+}
+
+/**
+ * Full classification pipeline: chat LLM (nuance + learning text) → CLEF
+ * (calibrated choice). Without a usable model verdict there is no teaching.
+ * null means "no teaching detected" — the caller must not record anything.
  */
 export async function classifyReply(
   env: ReplyClassifierEnv,
   input: { findingBody: string; replyText: string; filePath?: string }
 ): Promise<ReplyClassification | null> {
-  const heuristic = classifyReplyHeuristic(input.replyText);
-  if (heuristic) return heuristic;
-
   const llmConfig = resolveReplyClassifierLlm(env);
-  if (!llmConfig) return null;
+  const clef = resolveClefConfig(env);
 
-  const llmResult = await classifyReplyWithLlm(llmConfig, input);
-  if (llmResult && (llmResult.type === 'dismiss' || llmResult.type === 'accept')) {
-    return llmResult;
+  if (llmConfig) {
+    const llmResult = await classifyReplyWithLlm(llmConfig, input);
+    if (llmResult) return llmResult; // includes question/other — the model owns nuance
   }
-  // question/other from the LLM: no teaching.
-  if (llmResult) return llmResult;
 
-  // LLM unavailable: treat only regex-obvious replies as teaching.
+  if (clef) {
+    const answers = await clefRun(
+      clef,
+      `AI code-review finding:\n${input.findingBody.slice(0, 2000)}\n\nHuman reply:\n${input.replyText.slice(0, 2000)}`,
+      {
+        reply_teaching: {
+          type: 'choice',
+          instructions: 'What does the human reply teach about the AI code-review finding?',
+          criteria: {
+            dismiss:
+              'The finding does not apply: false positive, out of scope, intentional, or already validated elsewhere',
+            accept: 'The finding is valid: acknowledged, being fixed, or already fixed',
+            question: 'The human is asking for clarification — no teaching yet',
+            other: 'No actionable teaching',
+          },
+        },
+      }
+    );
+    const choice = answers?.reply_teaching as { choice?: unknown; confidence?: unknown } | undefined;
+    if (
+      choice &&
+      typeof choice.confidence === 'number' &&
+      Number.isFinite(choice.confidence) &&
+      choice.confidence >= 0.5 &&
+      choice.confidence <= 1 &&
+      (choice.choice === 'dismiss' || choice.choice === 'accept' || choice.choice === 'question' || choice.choice === 'other')
+    ) {
+      // A confident model verdict is definitive — including "other": a
+      // model-designated non-teaching must not be overridden by phrase regexes.
+      if (choice.choice === 'other') return null;
+      return {
+        type: choice.choice,
+        reason: excerpt(input.replyText),
+        learning: null, // caller composes learning from finding context + reason
+        source: 'clef',
+      };
+    }
+  }
+
+  // Teaching requires a model decision. Without one (nothing configured, or a
+  // configured provider that could not decide), there is no teaching — regex
+  // phrasing never substitutes for intent.
   return null;
 }
