@@ -271,8 +271,11 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         await this.state.storage.put(STATE_KEYS.context, storedContext);
       }
       // Durable handoff: if a newer request was deferred while this run was
-      // active, start it now — in the DO, not in a memory-only callback.
-      await this.startPendingLatestIfAny();
+      // active, start it now — in the DO, not in a memory-only callback. The
+      // completed run's head suppresses a deferred request that points at the
+      // SAME content we just reviewed (e.g. duplicate re-delivery after a
+      // force-push dance) instead of burning a run the head guard would kill.
+      await this.startPendingLatestIfAny(storedContext?.headSha);
     }
   }
 
@@ -305,9 +308,21 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
    *     fingerprint, so retrying the same deferred request reuses the same
    *     instance (already_exists → restart) instead of spawning duplicates.
    */
-  private async startPendingLatestIfAny(): Promise<void> {
+  private async startPendingLatestIfAny(completedHeadSha?: string): Promise<void> {
     const pending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
     if (!pending) return;
+
+    // Superseded duplicate: the just-completed run already reviewed this exact
+    // head. Drop the deferred request instead of launching a run the snapshot
+    // guard would immediately kill as PR_HEAD_MOVED.
+    if (completedHeadSha && pending.headSha && completedHeadSha === pending.headSha) {
+      console.log('Deferred request matches the just-reviewed head — superseded, dropping', {
+        headSha: pending.headSha,
+      });
+      await this.state.storage.delete(STATE_KEYS.pendingLatest);
+      await this.state.storage.deleteAlarm();
+      return;
+    }
 
     if (!this.env.CODE_REVIEW_WORKFLOW) {
       console.warn('Deferred review cannot start: CODE_REVIEW_WORKFLOW binding missing', {
@@ -369,9 +384,19 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('already_exists')) {
         try {
+          // Same request handed off before (deterministic id). If an instance
+          // is ALREADY running this request, coalesce: restarting a live
+          // instance would duplicate the work.
           const instance = await this.env.CODE_REVIEW_WORKFLOW.get(instanceId);
-          await instance.restart();
-          console.log('Deferred review restarted existing instance', { instanceId });
+          const status = await (instance as unknown as {
+            status: () => Promise<string>;
+          }).status();
+          if (status === 'running') {
+            console.log('Deferred review already has a live instance — coalescing', { instanceId });
+          } else {
+            await instance.restart();
+            console.log('Deferred review restarted existing instance', { instanceId });
+          }
         } catch (restartError) {
           console.error('Deferred review restart failed; alarm will retry', {
             instanceId,
@@ -390,10 +415,22 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       }
     }
 
-    // Instance exists (created or restarted): consume the deferred request
-    // and clear the safety alarm.
-    await this.state.storage.delete(STATE_KEYS.pendingLatest);
-    await this.state.storage.deleteAlarm();
+    // Instance exists (created, restarted or coalesced). Consume the deferred
+    // request ONLY if a newer request did not replace it while we were
+    // awaiting the create: losing that newer intent would drop a push. When
+    // replaced, leave it stored and keep the alarm armed for its own handoff.
+    const currentPending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+    if (currentPending && requestFingerprint(currentPending) === requestFingerprint(pending)) {
+      await this.state.storage.delete(STATE_KEYS.pendingLatest);
+      await this.state.storage.deleteAlarm();
+    } else if (currentPending) {
+      console.log('Deferred request was replaced during handoff — newer request kept', {
+        instanceId,
+      });
+      await this.state.storage.setAlarm(Date.now() + 30_000);
+    } else {
+      await this.state.storage.deleteAlarm();
+    }
   }
 
   /**

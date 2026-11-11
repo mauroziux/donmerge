@@ -490,3 +490,28 @@ describe('fetchFileContentsAtRef', () => {
     expect(requested).toEqual(['a', 'b']);
   });
 });
+
+describe('publishReview — unresolved ambiguous failure never POSTs twice', () => {
+  it('a not-found poll after an ambiguous failure defers to the step retry (single POST total)', async () => {
+    let postAttempts = 0;
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/pulls/1/reviews') && method === 'POST') {
+        postAttempts += 1;
+        return Promise.reject(new TypeError('fetch failed: connection reset')); // transport-level loss
+      }
+      if (url.includes('/pulls/1/reviews?') && method === 'GET') {
+        return jsonResponse([]); // marker never becomes visible in the poll window
+      }
+      return jsonResponse({});
+    });
+
+    await expect(
+      publishReview(
+        'o', 'r', 1, 'abc', { ...cleanReviewResult(), approved: false, criticalIssues: ['x causes y'] },
+        't', undefined, undefined, 'main', 'run-1'
+      )
+    ).rejects.toThrow(/deferring to step retry/);
+    expect(postAttempts).toBe(1); // exactly one POST — absence of the marker is not proof of failure
+  });
+});

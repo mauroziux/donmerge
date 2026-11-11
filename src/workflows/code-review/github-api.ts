@@ -574,19 +574,26 @@ export async function publishReview(
       } catch (error) {
         // Any failure on the POST may be an accepted-but-lost request (transient
         // 422, dropped connection, transport rejection). Poll for the marker:
-        //   found    → reconcile (never a second POST)
-        //   not-found→ the POST genuinely failed → normal bounded retry
-        //   unknown  → we cannot prove absence (page-capped) → refuse a blind
-        //              retry: fail the step so the replay re-searches later
+        //   found      → reconcile (never a second POST)
+        //   not-found / poll error → the publication state is UNRESOLVED —
+        //                a temporary absence does not prove the POST failed,
+        //                so this call NEVER posts again: fail the step and let
+        //                the durable retry re-search with fresh eyes.
+        //   unknown    → page-capped scan → same refusal.
         if (runId) {
-          const lookup = await waitForPublishedReviewForRun(
-            owner,
-            repo,
-            prNumber,
-            runId,
-            headSha,
-            token
-          );
+          let lookup: PublicationLookup;
+          try {
+            lookup = await waitForPublishedReviewForRun(
+              owner,
+              repo,
+              prNumber,
+              runId,
+              headSha,
+              token
+            );
+          } catch {
+            lookup = 'unknown';
+          }
           if (lookup === 'found') {
             console.log('Ambiguous publication failure reconciled — review already posted', {
               owner,
@@ -596,11 +603,9 @@ export async function publishReview(
             });
             return { reconciled: true };
           }
-          if (lookup === 'unknown') {
-            throw new Error(
-              `publication state unknown for run ${runId} after ambiguous failure — refusing blind retry`
-            );
-          }
+          throw new Error(
+            `publication unresolved for run ${runId} after ambiguous failure — deferring to step retry, refusing a second POST`
+          );
         }
         throw error;
       }
@@ -611,7 +616,9 @@ export async function publishReview(
         !(
           isTransientGitHubError(err) ||
           (isTransportError(err) &&
-            !/refusing blind retry/.test(err instanceof Error ? err.message : String(err)))
+            !/publication unresolved|refusing POST|refusing blind retry/.test(
+              err instanceof Error ? err.message : String(err)
+            ))
         ),
       name: 'publishReview',
     }

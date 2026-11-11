@@ -467,10 +467,10 @@ describe('ReviewProcessor coordination', () => {
 
     const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
     await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
-    // simulate a crash-before-commit: pendingLatest restored manually, handoff re-runs
+    // simulate a crash-before-consume: pendingLatest restored manually, the
+    // alarm retries the handoff (no completed-head suppression on this path)
     store.set('reviewPendingLatest', pending);
-    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
-    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
+    await processor.alarm();
 
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
@@ -482,5 +482,90 @@ describe('ReviewProcessor coordination', () => {
 
     const processor = new ReviewProcessor(createMockState(storage), {} as never);
     expect(await processor.getRunId()).toBe('run-a');
+  });
+});
+
+describe('ReviewProcessor coordination — round-4 hardening', () => {
+  function alarmTrackingStorage(seedStore: Map<string, unknown>) {
+    const storage = {
+      async get<T>(key: string): Promise<T | undefined> {
+        return seedStore.get(key) as T | undefined;
+      },
+      async put<T>(key: string, value: T): Promise<void> {
+        seedStore.set(key, value);
+      },
+      async delete(key: string): Promise<boolean> {
+        return seedStore.delete(key);
+      },
+      async setAlarm(_t: number) { /* tracked via wrapper */ },
+      async deleteAlarm() { /* noop */ },
+    };
+    return storage;
+  }
+
+  it('drops a deferred request whose head matches the just-completed run (superseded duplicate)', async () => {
+    const store = new Map<string, unknown>();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, headSha: 'same-head' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'same-head' });
+    const storage = alarmTrackingStorage(store);
+    const created: string[] = [];
+    const binding = {
+      create: vi.fn(async (opts: { id: string }) => {
+        created.push(opts.id);
+      }),
+      get: vi.fn(),
+    };
+
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
+
+    expect(created).toHaveLength(0);            // no wasted run
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined(); // consumed as superseded
+  });
+
+  it('keeps a NEWER deferred request that replaced the one being handed off', async () => {
+    const store = new Map<string, unknown>();
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+    const storage = alarmTrackingStorage(store);
+    const binding = {
+      // Simulate a newer push arriving WHILE the handoff awaits create.
+      create: vi.fn(async () => {
+        store.set('reviewPendingLatest', { ...baseContext, headSha: 'ccc' });
+      }),
+      get: vi.fn(),
+    };
+
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
+
+    // The newer request (ccc) survived; the handed-off one (bbb) did not clobber it
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ headSha: 'ccc' });
+  });
+
+  it('coalesces when an instance for the same request is already running (no duplicate restart)', async () => {
+    const store = new Map<string, unknown>();
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+    const storage = alarmTrackingStorage(store);
+    const restart = vi.fn();
+    const binding = {
+      create: vi.fn(async () => {
+        throw new Error('already_exists');
+      }),
+      get: vi.fn(async () => ({
+        status: async () => 'running',
+        restart,
+      })),
+    };
+
+    const processor = new ReviewProcessor(createMockState(storage), { CODE_REVIEW_WORKFLOW: binding } as never);
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a' });
+
+    expect(restart).not.toHaveBeenCalled(); // live instance coalesced, not duplicated
+    expect(await storage.get('reviewPendingLatest')).toBeUndefined();
   });
 });
