@@ -229,6 +229,8 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     result?: ReviewResult;
     /** Fencing token from the calling workflow run (plan 004-U1). */
     runId?: string;
+    /** Head the terminating run actually reviewed (suppression signal). */
+    headSha?: string;
   }): Promise<void> {
     const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
     if (!status) return;
@@ -272,10 +274,13 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       }
       // Durable handoff: if a newer request was deferred while this run was
       // active, start it now — in the DO, not in a memory-only callback. The
-      // completed run's head suppresses a deferred request that points at the
-      // SAME content we just reviewed (e.g. duplicate re-delivery after a
-      // force-push dance) instead of burning a run the head guard would kill.
-      await this.startPendingLatestIfAny(storedContext?.headSha);
+      // completed run's identity (fingerprint, enriched with the terminal
+      // head when known) suppresses a deferred DUPLICATE of the very request
+      // we just ran — different intent on the same head still runs.
+      await this.startPendingLatestIfAny(
+        storedContext,
+        update.headSha ?? storedContext?.headSha
+      );
     }
   }
 
@@ -308,20 +313,48 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
    *     fingerprint, so retrying the same deferred request reuses the same
    *     instance (already_exists → restart) instead of spawning duplicates.
    */
-  private async startPendingLatestIfAny(completedHeadSha?: string): Promise<void> {
+  private async startPendingLatestIfAny(
+    completedContext?: ReviewContext,
+    completedHeadSha?: string
+  ): Promise<void> {
     const pending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
     if (!pending) return;
 
-    // Superseded duplicate: the just-completed run already reviewed this exact
-    // head. Drop the deferred request instead of launching a run the snapshot
-    // guard would immediately kill as PR_HEAD_MOVED.
-    if (completedHeadSha && pending.headSha && completedHeadSha === pending.headSha) {
-      console.log('Deferred request matches the just-reviewed head — superseded, dropping', {
-        headSha: pending.headSha,
+    // Serialization: never hand off while another run owns the DO and is
+    // pending/running — its own terminal update (or a later alarm, once it
+    // has finished) delivers the deferred request. Overcommitting now would
+    // orphan a live owner. Exception: resuming OUR OWN committed handoff
+    // (same deterministic token) after a crash between commit and create.
+    const currentStatus = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    const token = fnv1aHex(requestFingerprint(pending));
+    const runId = `auto-${token}`;
+    if (
+      currentStatus &&
+      (currentStatus.state === 'pending' || currentStatus.state === 'running') &&
+      currentStatus.runId !== runId
+    ) {
+      console.log('Handoff deferred: another run owns the DO — its terminal update will deliver', {
+        ownerRunId: currentStatus.runId,
+        state: currentStatus.state,
       });
-      await this.state.storage.delete(STATE_KEYS.pendingLatest);
-      await this.state.storage.deleteAlarm();
+      await this.state.storage.setAlarm(Date.now() + 60_000);
       return;
+    }
+
+    // Superseded duplicate: the just-completed run already ran THIS EXACT
+    // request (full identity — head, instruction, focus, model, limits), not
+    // merely the same head. A different intent on the same head still runs.
+    if (completedContext) {
+      const completedFingerprint = requestFingerprint({
+        ...completedContext,
+        headSha: completedHeadSha ?? completedContext.headSha,
+      });
+      if (completedFingerprint === requestFingerprint(pending)) {
+        console.log('Deferred request duplicates the just-completed run — superseded, dropping');
+        await this.state.storage.delete(STATE_KEYS.pendingLatest);
+        await this.state.storage.deleteAlarm();
+        return;
+      }
     }
 
     if (!this.env.CODE_REVIEW_WORKFLOW) {
@@ -333,8 +366,6 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
       return;
     }
 
-    const token = fnv1aHex(requestFingerprint(pending));
-    const runId = `auto-${token}`;
     const baseId = buildReviewWorkflowInstanceId(
       pending.owner,
       pending.repo,
@@ -386,12 +417,15 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
         try {
           // Same request handed off before (deterministic id). If an instance
           // is ALREADY running this request, coalesce: restarting a live
-          // instance would duplicate the work.
+          // instance would duplicate the work. NOTE: the SDK's status()
+          // resolves to { status }, not a bare string.
           const instance = await this.env.CODE_REVIEW_WORKFLOW.get(instanceId);
-          const status = await (instance as unknown as {
-            status: () => Promise<string>;
-          }).status();
-          if (status === 'running') {
+          const statusResult = await (
+            instance as unknown as { status: () => Promise<{ status?: string } | string> }
+          ).status();
+          const statusValue =
+            typeof statusResult === 'string' ? statusResult : statusResult?.status;
+          if (statusValue === 'running' || statusValue === 'queued') {
             console.log('Deferred review already has a live instance — coalescing', { instanceId });
           } else {
             await instance.restart();

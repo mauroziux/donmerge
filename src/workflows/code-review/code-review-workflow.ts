@@ -255,9 +255,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         return this.runLlmReview(preparedFiles);
       });
 
-      // Step 4: Publish review
+      // Step 4: Publish review — retried with a 30s delay so an unresolved
+      // ambiguous publication (marker not yet visible) re-searches well after
+      // GitHub's listing lag instead of re-POSTing immediately.
       await step.do('publish-review', {
-        retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
+        retries: { limit: 2, delay: '30 seconds', backoff: 'exponential' },
         timeout: '3 minutes',
       }, async () => {
         return this.publishReview(llmResult, processorStub, runId);
@@ -308,6 +310,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           error: `[${code}] ${detail}`,
           completedAt: new Date().toISOString(),
           runId,
+          headSha: prData?.headSha,
         });
       } catch (updateError) {
         console.error('Failed to update DO status on workflow error', { error: updateError });
@@ -1000,6 +1003,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       completedAt: new Date().toISOString(),
       result: gated.review,
       runId,
+      headSha,
     });
 
     console.log('Review completed successfully', {

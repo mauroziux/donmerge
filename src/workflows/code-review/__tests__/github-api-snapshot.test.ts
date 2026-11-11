@@ -509,7 +509,8 @@ describe('publishReview — unresolved ambiguous failure never POSTs twice', () 
     await expect(
       publishReview(
         'o', 'r', 1, 'abc', { ...cleanReviewResult(), approved: false, criticalIssues: ['x causes y'] },
-        't', undefined, undefined, 'main', 'run-1'
+        't', undefined, undefined, 'main', 'run-1',
+        { tries: 2, delayMs: 10 } // fast poll for the test; production default is 5×5s
       )
     ).rejects.toThrow(/deferring to step retry/);
     expect(postAttempts).toBe(1); // exactly one POST — absence of the marker is not proof of failure

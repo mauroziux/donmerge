@@ -569,3 +569,88 @@ describe('ReviewProcessor coordination — round-4 hardening', () => {
     expect(await storage.get('reviewPendingLatest')).toBeUndefined();
   });
 });
+
+describe('ReviewProcessor coordination — round-5 hardening', () => {
+  function baseStore() {
+    const store = new Map<string, unknown>();
+    store.set('reviewStatus', { state: 'running', attempts: 0, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    store.set('reviewContext', { ...baseContext, headSha: 'aaa' });
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'bbb' });
+    return store;
+  }
+
+  function storageFrom(store: Map<string, unknown>) {
+    return {
+      async get<T>(key: string): Promise<T | undefined> {
+        return store.get(key) as T | undefined;
+      },
+      async put<T>(key: string, value: T): Promise<void> {
+        store.set(key, value);
+      },
+      async delete(key: string): Promise<boolean> {
+        return store.delete(key);
+      },
+      async setAlarm(_t: number) { /* noop */ },
+      async deleteAlarm() { /* noop */ },
+    };
+  }
+
+  it('alarm does NOT hand off while another run still owns the DO (serialization)', async () => {
+    const store = baseStore();
+    // Status is RUNNING under run-a — an alarm-driven handoff must wait.
+    const binding = { create: vi.fn(), get: vi.fn() };
+    const processor = new ReviewProcessor(createMockState(storageFrom(store)), {
+      CODE_REVIEW_WORKFLOW: binding,
+    } as never);
+
+    await processor.alarm();
+
+    expect(binding.create).not.toHaveBeenCalled();
+    expect(store.get('reviewPendingLatest')).toMatchObject({ headSha: 'bbb' }); // preserved
+  });
+
+  it('reads the SDK status() OBJECT shape ({status}) for coalescing', async () => {
+    const store = baseStore();
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    const restart = vi.fn();
+    const binding = {
+      create: vi.fn(async () => {
+        throw new Error('already_exists');
+      }),
+      get: vi.fn(async () => ({
+        // Real SDK shape: resolves to an OBJECT, not a string.
+        status: async () => ({ status: 'running' }),
+        restart,
+      })),
+    };
+    const processor = new ReviewProcessor(createMockState(storageFrom(store)), {
+      CODE_REVIEW_WORKFLOW: binding,
+    } as never);
+
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a', headSha: 'aaa' });
+
+    expect(restart).not.toHaveBeenCalled(); // live instance coalesced via object shape
+  });
+
+  it('suppression uses FULL request identity: same head with different instruction still runs', async () => {
+    const store = baseStore();
+    store.set('reviewStatus', { state: 'complete', attempts: 1, startedAt: new Date().toISOString(), runId: 'run-a' } as StoredStatus);
+    // Completed context: head aaa, no instruction. Deferred: SAME head but a
+    // manual instruction — a different intent that must NOT be suppressed.
+    store.set('reviewPendingLatest', { ...baseContext, headSha: 'aaa', instruction: 'focus on auth' });
+    const created: string[] = [];
+    const binding = {
+      create: vi.fn(async (opts: { id: string }) => {
+        created.push(opts.id);
+      }),
+      get: vi.fn(),
+    };
+    const processor = new ReviewProcessor(createMockState(storageFrom(store)), {
+      CODE_REVIEW_WORKFLOW: binding,
+    } as never);
+
+    await processor.updateFromWorkflow({ state: 'complete', runId: 'run-a', headSha: 'aaa' });
+
+    expect(created).toHaveLength(1); // different identity → handed off
+  });
+});

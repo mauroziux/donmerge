@@ -421,7 +421,8 @@ export async function publishReview(
   previousComments?: PreviousComment[],
   filePatches?: FilePatch[],
   baseRef?: string,
-  runId?: string
+  runId?: string,
+  pollOptions: { tries?: number; delayMs?: number } = {}
 ): Promise<DroppedComment[]> {
   const existingFingerprints = new Set<string>();
   if (previousComments && previousComments.length > 0) {
@@ -589,7 +590,8 @@ export async function publishReview(
               prNumber,
               runId,
               headSha,
-              token
+              token,
+              pollOptions
             );
           } catch {
             lookup = 'unknown';
@@ -740,8 +742,11 @@ export async function waitForPublishedReviewForRun(
   token: string,
   options: { tries?: number; delayMs?: number } = {}
 ): Promise<PublicationLookup> {
-  const tries = options.tries ?? 3;
-  const delayMs = options.delayMs ?? 1_500;
+  // Wide window: GitHub's review listing can lag the write. The poll must
+  // comfortably outlast that lag before we declare the state unresolved,
+  // because the unresolved path refuses a second POST for the whole step.
+  const tries = options.tries ?? 5;
+  const delayMs = options.delayMs ?? 5_000;
   let last: PublicationLookup = 'not-found';
   for (let attempt = 0; attempt < tries; attempt += 1) {
     last = await findPublishedReviewForRun(owner, repo, prNumber, runId, headSha, token);
