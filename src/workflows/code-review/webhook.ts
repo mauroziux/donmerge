@@ -554,10 +554,9 @@ export async function processGitHubCodeReviewWebhook(
     context;
   const focusFiles = context.focusFiles;
 
-  // Any comment addressed to @donmerge (focus, review, check, recheck…) must
-  // clear the model intent gate before starting a review run — a question
-  // ('@donmerge review src/auth.ts?') must not trigger work.
-  if (context.commentBody && /@donmerge\b/i.test(context.commentBody)) {
+  // Every comment-based review trigger, including configured custom tags,
+  // must clear the intent gate before starting a review.
+  if (context.commentBody) {
     const intent = await classifyCommandIntent(env, context.commentBody);
     if (intent === 'question') {
       console.log('Command-shaped review trigger was a question — not starting review', {

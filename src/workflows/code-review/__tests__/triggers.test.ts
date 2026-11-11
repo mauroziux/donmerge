@@ -285,6 +285,14 @@ describe('parseTrigger', () => {
       expect(result.reason).toBe('feedback command');
     });
 
+    it('routes multiline focus with a file path to review, not learning', () => {
+      const payload = createIssueCommentPayload('@donmerge focus security\nsrc/a.ts');
+      const result = parseTrigger('issue_comment', payload);
+      expect(result.shouldRun).toBe(true);
+      expect(result.feedback).toBeUndefined();
+      expect(result.focusFiles).toContain('src/a.ts');
+    });
+
     it('@donmerge focus src/auth.ts → shouldRun:true, triggers review (has file path)', () => {
       const payload = createIssueCommentPayload('@donmerge focus src/auth.ts');
       const result = parseTrigger('issue_comment', payload);
@@ -542,7 +550,7 @@ describe('extractInstruction', () => {
   it('should handle multiline comments', () => {
     const body = '@donmerge focus on the auth module\n\nSpecifically check JWT handling';
     const result = extractInstruction(body, '@donmerge');
-    expect(result).toBe('focus on the auth module');
+    expect(result).toBe('focus on the auth module\n\nSpecifically check JWT handling');
   });
 
   it('should handle special regex characters in trigger tag', () => {

@@ -391,9 +391,10 @@ export async function classifyCommandIntent(
   env: ReplyClassifierEnv,
   commentBody: string
 ): Promise<CommandIntent> {
-  const text = commentBody.trim();
-  // An empty body carries no directive: fail closed.
-  if (!text) return 'question';
+  // Never decide from a truncated command: a qualifier after the limit could
+  // reverse its intent. Preserve the original body for both model paths.
+  if (!commentBody.trim() || commentBody.length > 1200) return 'question';
+  const text = commentBody;
 
   const llm = resolveReplyClassifierLlm(env);
   const clef = resolveClefConfig(env);
@@ -444,6 +445,8 @@ export async function classifyReply(
   env: ReplyClassifierEnv,
   input: { findingBody: string; replyText: string; filePath?: string }
 ): Promise<ReplyClassification | null> {
+  // A truncated human reply can reverse its meaning; skip it entirely.
+  if (input.replyText.length > 1200) return null;
   const llmConfig = resolveReplyClassifierLlm(env);
   const clef = resolveClefConfig(env);
 

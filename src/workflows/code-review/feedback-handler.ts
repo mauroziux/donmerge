@@ -17,25 +17,28 @@ export interface ParsedCommand {
 }
 
 export function parseDonmergeCommand(text: string): ParsedCommand | null {
-  // NOTE: match against the original text — fingerprints are case-sensitive
-  // base64url; only the command keyword matching is case-insensitive.
+  // Parse the first mention only; a later quoted command is part of its text.
+  const mention = text.search(/@donmerge\b/i);
+  if (mention < 0) return null;
+  text = text.slice(mention);
+  // Fingerprints are case-sensitive; only command matching is case-insensitive.
 
   // @donmerge dismiss [fingerprint]
   // The fingerprint is optional: bare replies ("@donmerge dismiss") are
   // correlated with the parent DonMerge comment by the webhook layer.
-  const dismissMatch = text.match(/@donmerge\s+dismiss(?:\s+([a-zA-Z0-9_-]+))?\b/i);
+  const dismissMatch = text.match(/^@donmerge\s+dismiss(?:\s+([a-zA-Z0-9_-]+))?\b/i);
   if (dismissMatch) {
     return { type: 'dismiss', fingerprint: dismissMatch[1] };
   }
 
   // @donmerge accept [fingerprint]
-  const acceptMatch = text.match(/@donmerge\s+accept(?:\s+([a-zA-Z0-9_-]+))?\b/i);
+  const acceptMatch = text.match(/^@donmerge\s+accept(?:\s+([a-zA-Z0-9_-]+))?\b/i);
   if (acceptMatch) {
     return { type: 'accept', fingerprint: acceptMatch[1] };
   }
 
   // @donmerge override <fingerprint> <severity>
-  const overrideMatch = text.match(/@donmerge\s+override\s+([a-zA-Z0-9_-]+)\s+(critical|suggestion|low)/i);
+  const overrideMatch = text.match(/^@donmerge\s+override\s+([a-zA-Z0-9_-]+)\s+(critical|suggestion|low)/i);
   if (overrideMatch) {
     return {
       type: 'override',
@@ -45,19 +48,19 @@ export function parseDonmergeCommand(text: string): ParsedCommand | null {
   }
 
   // @donmerge preference <text>
-  const prefMatch = text.match(/@donmerge\s+preference\s+(.+)/i);
+  const prefMatch = text.match(/^@donmerge\s+preference\s+([\s\S]+)/i);
   if (prefMatch) {
     return { type: 'preference', text: prefMatch[1].trim() };
   }
 
   // @donmerge ignore <pattern description>
-  const ignoreMatch = text.match(/@donmerge\s+ignore\s+(.+)/i);
+  const ignoreMatch = text.match(/^@donmerge\s+ignore\s+([\s\S]+)/i);
   if (ignoreMatch) {
     return { type: 'preference', text: `Don't comment on: ${ignoreMatch[1].trim()}` };
   }
 
   // @donmerge focus <area description>
-  const focusMatch = text.match(/@donmerge\s+focus\s+(.+)/i);
+  const focusMatch = text.match(/^@donmerge\s+focus\s+([\s\S]+)/i);
   if (focusMatch) {
     return { type: 'preference', text: `Focus on: ${focusMatch[1].trim()}` };
   }

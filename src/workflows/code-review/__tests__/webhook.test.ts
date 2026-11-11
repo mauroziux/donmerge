@@ -457,6 +457,19 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('gates a custom-tag review trigger before starting a review', async () => {
+    const startReview = vi.fn();
+    mockedGetReviewProcessor.mockReturnValue({ startReview } as never);
+    vi.mocked(classifyCommandIntent).mockResolvedValue('question');
+    const body = '@mybot review ' + 'x'.repeat(1200) + ' is that correct?';
+    await processGitHubCodeReviewWebhook({ ...mockEnv, REVIEW_TRIGGER: '@mybot' }, {
+      ...baseContext, retrigger: true, commentId: 99, commentType: 'issue', commentBody: body,
+    });
+    expect(vi.mocked(classifyCommandIntent)).toHaveBeenCalledWith(expect.anything(), body);
+    expect(startReview).not.toHaveBeenCalled();
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+  });
+
   it('starts the review when a command-shaped trigger reads as a directive', async () => {
     const create = vi.fn().mockResolvedValue(undefined);
     const startReview = vi.fn().mockResolvedValue({ started: true, reason: 'started' });
