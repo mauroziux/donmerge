@@ -19,6 +19,15 @@ vi.mock('../github-api', () => ({
   githubFetch: vi.fn(),
   createCheckRun: vi.fn(),
   fetchCommentById: vi.fn(),
+  addCommentReaction: vi.fn(),
+  postReplyComment: vi.fn(),
+  isDonmergeBotAuthor: vi.fn((user?: { login?: string; type?: string } | null) =>
+    user?.type === 'Bot' && user.login?.toLowerCase() === 'donmerge[bot]'),
+}));
+
+vi.mock('../reply-classifier', () => ({
+  classifyCommandIntent: vi.fn().mockResolvedValue('directive'),
+  classifyReply: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../processor', () => ({
@@ -32,6 +41,7 @@ vi.mock('../fingerprint', () => ({
 vi.mock('../feedback-handler', () => ({
   handleCommentFeedback: vi.fn(),
   handleReactionFeedback: vi.fn(),
+  handleNaturalReply: vi.fn(),
 }));
 
 import { validateWebhookFast, processGitHubCodeReviewWebhook } from '../webhook';
@@ -42,11 +52,13 @@ import {
 } from '../github-auth';
 import { parseTrigger } from '../triggers';
 import { getReviewProcessor } from '../processor';
-import { fetchCommentById } from '../github-api';
+import { fetchCommentById, addCommentReaction, postReplyComment } from '../github-api';
+import { classifyCommandIntent } from '../reply-classifier';
 import { parseFingerprint } from '../fingerprint';
 import {
   handleCommentFeedback,
   handleReactionFeedback,
+  handleNaturalReply,
 } from '../feedback-handler';
 import type { WorkerEnv, WebhookContext } from '../types';
 
@@ -267,6 +279,34 @@ describe('validateWebhookFast feedback path', () => {
     comment: { body: '@donmerge dismiss abc123', id: 99, user: { login: 'dev' } },
   });
 
+  it('propagates the original command body to the feedback context for the intent gate', async () => {
+    mockedVerify.mockResolvedValue(true);
+    mockedIsAllowed.mockReturnValue(true);
+    mockedParseTrigger.mockReturnValue({
+      shouldRun: false,
+      prNumber: 42,
+      retrigger: false,
+      feedback: { type: 'dismiss' },
+      commentId: 99,
+      commentType: 'review',
+      commentBody: '@donmerge dismiss?',
+      githubUser: 'dev',
+      inReplyToId: 88,
+      reason: 'feedback command',
+    });
+
+    const result = await validateWebhookFast(
+      { ...baseEnv },
+      'pull_request_review_comment',
+      'sha256=abc',
+      feedbackPayload
+    );
+
+    // The gate must classify the human's actual words ('@donmerge dismiss?'),
+    // never a reconstructed directive.
+    expect(result.context?.commentBody).toBe('@donmerge dismiss?');
+  });
+
   it('should return shouldProcess: true, status: 202 with feedback when parseTrigger has feedback', async () => {
     mockedVerify.mockResolvedValue(true);
     mockedIsAllowed.mockReturnValue(true);
@@ -344,7 +384,11 @@ describe('validateWebhookFast feedback path', () => {
 // ── MAJOR 3: processGitHubCodeReviewWebhook feedback branch ───────────────────
 
 describe('processGitHubCodeReviewWebhook feedback branch', () => {
-  const mockDb = {} as D1Database;
+  const mockDbFirst = vi.fn().mockResolvedValue({ id: 1 });
+  const mockDbBind = vi.fn().mockReturnValue({ first: mockDbFirst });
+  const mockDb = {
+    prepare: vi.fn().mockReturnValue({ bind: mockDbBind }),
+  } as unknown as D1Database;
   const mockEnv: EnvWithReviewProcessor = {
     OPENAI_API_KEY: 'test-key',
     GITHUB_WEBHOOK_SECRET: 'secret123',
@@ -364,6 +408,10 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps stale mockResolvedValue implementations: restore the
+    // default directive verdict so per-test overrides start from a clean state.
+    vi.mocked(classifyCommandIntent).mockReset();
+    vi.mocked(classifyCommandIntent).mockResolvedValue('directive');
   });
 
   it('should acknowledge an active duplicate without creating a Workflow', async () => {
@@ -388,6 +436,71 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
+  it('does not start a review when a command-shaped focus trigger is a question', async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const startReview = vi.fn().mockResolvedValue({ started: true, reason: 'started' });
+    mockedGetReviewProcessor.mockReturnValue({ startReview } as never);
+    const env = { ...mockEnv, CODE_REVIEW_WORKFLOW: { create } as never };
+    vi.mocked(classifyCommandIntent).mockResolvedValue('question');
+
+    for (const body of [
+      '@donmerge focus src/auth.ts?',
+      '@donmerge review src/auth.ts?',
+      '@donmerge check src/auth.ts?',
+      '@donmerge recheck src/auth.ts?',
+    ]) {
+      await processGitHubCodeReviewWebhook(env, {
+        ...baseContext,
+        retrigger: true,
+        commentId: 99,
+        commentType: 'issue',
+        commentBody: body,
+      });
+    }
+
+    expect(vi.mocked(classifyCommandIntent)).toHaveBeenCalledWith(
+      expect.anything(),
+      '@donmerge focus src/auth.ts?'
+    );
+    expect(vi.mocked(classifyCommandIntent)).toHaveBeenCalledTimes(4);
+    expect(startReview).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('gates a custom-tag review trigger before starting a review', async () => {
+    const startReview = vi.fn();
+    mockedGetReviewProcessor.mockReturnValue({ startReview } as never);
+    vi.mocked(classifyCommandIntent).mockResolvedValue('question');
+    const body = '@mybot review ' + 'x'.repeat(1200) + ' is that correct?';
+    await processGitHubCodeReviewWebhook({ ...mockEnv, REVIEW_TRIGGER: '@mybot' }, {
+      ...baseContext, retrigger: true, commentId: 99, commentType: 'issue', commentBody: body,
+    });
+    expect(vi.mocked(classifyCommandIntent)).toHaveBeenCalledWith(expect.anything(), body);
+    expect(startReview).not.toHaveBeenCalled();
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+  });
+
+  it('starts the review when a command-shaped trigger reads as a directive', async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const startReview = vi.fn().mockResolvedValue({ started: true, reason: 'started' });
+    mockedGetReviewProcessor.mockReturnValue({ startReview } as never);
+    const env = { ...mockEnv, CODE_REVIEW_WORKFLOW: { create } as never };
+
+    await processGitHubCodeReviewWebhook(env, {
+      ...baseContext,
+      retrigger: true,
+      commentId: 99,
+      commentType: 'issue',
+      commentBody: '@donmerge review src/auth.ts',
+    });
+
+    expect(vi.mocked(classifyCommandIntent)).toHaveBeenCalledWith(
+      expect.anything(),
+      '@donmerge review src/auth.ts'
+    );
+    expect(startReview).toHaveBeenCalled();
+  });
+
   it('creates a Workflow when the processor accepts a fresh review', async () => {
     const create = vi.fn().mockResolvedValue(undefined);
     const startReview = vi.fn().mockResolvedValue({ started: true, reason: 'started' });
@@ -402,14 +515,23 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
     }));
   });
 
-  it('should call handleCommentFeedback for dismiss with fingerprint', async () => {
+  it('correlates explicit-fingerprint dismiss commands to recorded parents and acks in-thread', async () => {
     mockedHandleCommentFeedback.mockResolvedValue(true);
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88,
+      body: 'review finding',
+      in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'abc123', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
 
     await processGitHubCodeReviewWebhook(mockEnv, {
       ...baseContext,
       feedback: { type: 'dismiss', fingerprint: 'abc123' },
       commentId: 99,
-      commentType: 'issue',
+      commentType: 'review',
       githubUser: 'dev',
       inReplyToId: 88,
     });
@@ -424,10 +546,89 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       inReplyToId: 88,
     });
     expect(mockedHandleReactionFeedback).not.toHaveBeenCalled();
+    expect(mockDbBind).toHaveBeenCalledWith('tableoltd', 'test-repo', 88, 'abc123');
+    expect(vi.mocked(addCommentReaction)).toHaveBeenCalledWith(
+      'tableoltd', 'test-repo', 99, 'review', 'ghp_test_token', 'thumbsup'
+    );
+    expect(vi.mocked(postReplyComment)).toHaveBeenCalledWith(
+      'tableoltd', 'test-repo', 42, 88, 'review', expect.stringContaining('Learned'), 'ghp_test_token'
+    );
+  });
+
+  it('correlates a bare dismiss reply to its recorded parent and posts both acks', async () => {
+    mockedHandleCommentFeedback.mockResolvedValue(true);
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({ id: 88, body: 'review finding', in_reply_to_id: null, user: { login: 'donmerge[bot]', type: 'Bot' } });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-parent', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'dismiss' },
+      commentId: 99,
+      commentType: 'review',
+      githubUser: 'dev',
+      inReplyToId: 88,
+    });
+
+    expect(mockedHandleCommentFeedback).toHaveBeenCalledWith(mockDb, expect.objectContaining({
+      commentBody: '@donmerge dismiss fp-parent',
+      inReplyToId: 88,
+    }));
+    expect(vi.mocked(addCommentReaction)).toHaveBeenCalled();
+    expect(vi.mocked(postReplyComment)).toHaveBeenCalledWith(
+      'tableoltd', 'test-repo', 42, 88, 'review', expect.stringContaining('Learned'), 'ghp_test_token'
+    );
+  });
+
+  it('rejects explicit fingerprints that do not match the recorded parent', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'review finding', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'actual-fp', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'dismiss', fingerprint: 'forged-fp' },
+      commentId: 99,
+      commentType: 'review',
+      inReplyToId: 88,
+    });
+
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+    expect(vi.mocked(addCommentReaction)).not.toHaveBeenCalled();
+  });
+
+  it('rejects copied DonMerge markers not backed by a recorded finding', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'copied marker', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'abc123', version: 1 });
+    mockDbFirst.mockResolvedValue(null);
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'dismiss' },
+      commentId: 99,
+      commentType: 'review',
+      inReplyToId: 88,
+    });
+
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+    expect(vi.mocked(addCommentReaction)).not.toHaveBeenCalled();
   });
 
   it('should call handleCommentFeedback for accept with fingerprint', async () => {
     mockedHandleCommentFeedback.mockResolvedValue(true);
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({ id: 44, body: 'parent', in_reply_to_id: null, user: { login: 'donmerge[bot]', type: 'Bot' } });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'xyz789', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
 
     await processGitHubCodeReviewWebhook(mockEnv, {
       ...baseContext,
@@ -435,6 +636,7 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       commentId: 55,
       commentType: 'review',
       githubUser: 'reviewer',
+      inReplyToId: 44,
     });
 
     expect(mockedHandleCommentFeedback).toHaveBeenCalledWith(mockDb, {
@@ -444,17 +646,42 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       githubUser: 'reviewer',
       commentBody: '@donmerge accept xyz789',
       commentId: 55,
-      inReplyToId: undefined,
+      inReplyToId: 44,
     });
   });
 
-  it('should call handleCommentFeedback for preference with text', async () => {
+  it('does not store preference commands replying to unrecorded comments', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({ id: 88, body: 'unrelated comment', in_reply_to_id: null });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'copied', version: 1 });
+    mockDbFirst.mockResolvedValue(null);
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'preference', text: "Don't comment on logging" },
+      commentId: 99,
+      commentType: 'review',
+      inReplyToId: 88,
+    });
+
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+  });
+
+  it('stores a preference only when it replies to a verified DonMerge finding', async () => {
     mockedHandleCommentFeedback.mockResolvedValue(true);
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'review finding', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-preference', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
 
     await processGitHubCodeReviewWebhook(mockEnv, {
       ...baseContext,
       feedback: { type: 'preference', text: 'Focus on: src/auth.ts' },
       commentId: 77,
+      inReplyToId: 88,
       githubUser: 'contributor',
     });
 
@@ -466,6 +693,125 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       commentBody: '@donmerge preference Focus on: src/auth.ts',
       commentId: 77,
     });
+  });
+
+  it('does not execute a verified dismiss command when the classifier reads it as a question', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'review finding', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'abc123', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
+    vi.mocked(classifyCommandIntent).mockResolvedValue('question');
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'dismiss', fingerprint: 'abc123' },
+      commentId: 99,
+      commentType: 'review',
+      commentBody: '@donmerge dismiss?',
+      githubUser: 'dev',
+      inReplyToId: 88,
+    });
+
+    expect(vi.mocked(classifyCommandIntent)).toHaveBeenCalledWith(
+      expect.objectContaining({ OPENAI_API_KEY: 'test-key' }),
+      '@donmerge dismiss?'
+    );
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+    expect(vi.mocked(addCommentReaction)).not.toHaveBeenCalled();
+    expect(vi.mocked(postReplyComment)).not.toHaveBeenCalled();
+  });
+
+  it('does not store a preference learning when the classifier reads it as a question', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'review finding', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-pref', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
+    vi.mocked(classifyCommandIntent).mockResolvedValue('question');
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'preference', text: 'should we ignore logging' },
+      commentId: 99,
+      commentType: 'review',
+      commentBody: '@donmerge preference should we ignore logging',
+      githubUser: 'dev',
+      inReplyToId: 88,
+    });
+
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+    expect(vi.mocked(addCommentReaction)).not.toHaveBeenCalled();
+  });
+
+  it('executes a verified severity override when the intent gate reads a directive', async () => {
+    mockedHandleCommentFeedback.mockResolvedValue(true);
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'review finding', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-ovr', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'override', fingerprint: 'fp-ovr', newSeverity: 'suggestion' },
+      commentId: 99,
+      commentType: 'review',
+      commentBody: '@donmerge override fp-ovr suggestion',
+      githubUser: 'dev',
+      inReplyToId: 88,
+    });
+
+    expect(mockedHandleCommentFeedback).toHaveBeenCalledWith(mockDb, expect.objectContaining({
+      commentBody: '@donmerge override fp-ovr suggestion',
+    }));
+    expect(vi.mocked(addCommentReaction)).toHaveBeenCalled();
+  });
+
+  it('does not execute a verified override when the intent gate reads a question', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'review finding', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-ovr', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
+    vi.mocked(classifyCommandIntent).mockResolvedValue('question');
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'override', fingerprint: 'fp-ovr', newSeverity: 'suggestion' },
+      commentId: 99,
+      commentType: 'review',
+      commentBody: '@donmerge override fp-ovr suggestion?',
+      githubUser: 'dev',
+      inReplyToId: 88,
+    });
+
+    expect(vi.mocked(classifyCommandIntent)).toHaveBeenCalledWith(
+      expect.anything(),
+      '@donmerge override fp-ovr suggestion?'
+    );
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+    expect(vi.mocked(addCommentReaction)).not.toHaveBeenCalled();
+    expect(vi.mocked(postReplyComment)).not.toHaveBeenCalled();
+  });
+
+  it('rejects standalone repository-wide preference commands without a verified parent', async () => {
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'preference', text: 'Focus on security' },
+      commentId: 77,
+      githubUser: 'contributor',
+    });
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+    expect(mockedResolveToken).not.toHaveBeenCalled();
   });
 
   it('should warn and return when env.DB is undefined', async () => {
@@ -483,12 +829,79 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
     warnSpy.mockRestore();
   });
 
+  it('processes a natural reply only for a recorded DonMerge parent and acknowledges it', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88,
+      body: 'parent review comment',
+      in_reply_to_id: null,
+      path: 'src/example.ts',
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-natural', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 2 });
+    vi.mocked(handleNaturalReply).mockResolvedValue({
+      classification: { type: 'dismiss', reason: 'null checked above', learning: null, source: 'llm' },
+      ackBody: '🤖 Learned.',
+    } as never);
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      naturalReply: true,
+      commentId: 99,
+      commentType: 'review',
+      commentBody: 'No aplica, el null se valida arriba',
+      githubUser: 'dev',
+      inReplyToId: 88,
+    });
+
+    expect(handleNaturalReply).toHaveBeenCalledWith(mockDb, mockEnv, expect.objectContaining({
+      parentFingerprint: 'fp-natural',
+      parentBody: 'parent review comment',
+      replyText: 'No aplica, el null se valida arriba',
+    }));
+    expect(vi.mocked(addCommentReaction)).toHaveBeenCalledWith(
+      'tableoltd', 'test-repo', 99, 'review', 'ghp_test_token', 'thumbsup'
+    );
+    expect(vi.mocked(postReplyComment)).toHaveBeenCalledWith(
+      'tableoltd', 'test-repo', 42, 88, 'review', '🤖 Learned.', 'ghp_test_token'
+    );
+  });
+
+  it('does not trust legacy outcome IDs when the fetched parent author is not DonMerge', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedFetchComment.mockResolvedValue({
+      id: 88,
+      body: '<!-- DONMERGE: {"fingerprint":"fp-forged","version":1} --> copied marker',
+      in_reply_to_id: null,
+      user: { login: 'contributor', type: 'User' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-forged', version: 1 });
+    // Simulate a pre-existing row with this id/fingerprint: the runtime author check still rejects it.
+    mockDbFirst.mockResolvedValue({ id: 1 });
+
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      naturalReply: true,
+      commentId: 99,
+      commentBody: 'No aplica',
+      inReplyToId: 88,
+    });
+
+    expect(handleNaturalReply).not.toHaveBeenCalled();
+    expect(vi.mocked(addCommentReaction)).not.toHaveBeenCalled();
+    expect(vi.mocked(postReplyComment)).not.toHaveBeenCalled();
+  });
+
   it('should call handleReactionFeedback for reaction feedback (no fingerprint)', async () => {
     mockedResolveToken.mockResolvedValue('ghp_test_token');
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fingerprint_from_comment', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
     mockedFetchComment.mockResolvedValue({
       body: 'Some comment body <!-- DONMERGE_META: {"ruleId":"no-bug"} -->',
       id: 30,
       in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
     });
     mockedParseFingerprint.mockReturnValue({ fingerprint: 'fingerprint_from_comment' } as any);
     mockedHandleReactionFeedback.mockResolvedValue(true);
