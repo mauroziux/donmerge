@@ -12,6 +12,7 @@ import type {
   PreviousComment,
   PRSummary,
   PatternWeight,
+  TrackedIssue,
 } from './types';
 import { deriveIssueKey, extractIssueTerms, buildIssueIdentity } from './issue-key';
 import { getSeverityOverride } from './donmerge';
@@ -451,9 +452,9 @@ function findPersistingPreviousComment(
  * Updates githubCommentId on stored issues that match previous comments.
  */
 export function syncTrackedIssuesFromComments(
-  storedIssues: import('./types').TrackedIssue[],
+  storedIssues: TrackedIssue[],
   previousComments: PreviousComment[]
-): import('./types').TrackedIssue[] {
+): TrackedIssue[] {
   if (storedIssues.length === 0 || previousComments.length === 0) {
     return storedIssues;
   }
@@ -463,31 +464,10 @@ export function syncTrackedIssuesFromComments(
       return issue;
     }
 
-    const issueTerms = extractIssueTerms(issue.body);
-    const matching = previousComments.find((comment) => {
-      if (issue.filePath !== comment.path) {
-        return false;
-      }
-
-      if (
-        comment.ruleId &&
-        issue.ruleId === comment.ruleId &&
-        comment.symbolName &&
-        issue.symbolName === comment.symbolName
-      ) {
-        return true;
-      }
-
-      if (
-        comment.issueKey &&
-        (issue.ruleId === comment.issueKey || issue.logicalKey.startsWith(`${comment.issueKey}|`))
-      ) {
-        return true;
-      }
-
-      const commentTerms = extractIssueTerms(comment.body);
-      return hasStrongIssueTextOverlap(issueTerms, commentTerms);
-    });
+    // Fuzzy text and metadata matches cannot establish comment identity.
+    const matching = previousComments.find((comment) =>
+      issue.filePath === comment.path && comment.fingerprint === issue.fingerprint
+    );
 
     if (!matching) {
       return issue;

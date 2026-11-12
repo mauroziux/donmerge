@@ -531,6 +531,14 @@ describe('fetchReviewComments', () => {
     expect(mockFetch.mock.calls[1][0]).toContain('?per_page=100&page=2');
     expect(findDonmergeReviewComment(comments, 'src/a.ts', 'fp-1')?.id).toBe(101);
   });
+  it('ignores copied markers from humans and unrelated bots', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => [
+      { id: 1, path: 'src/a.ts', line: 1, body: 'finding', user: { login: 'fake-donmerge[bot]', type: 'Bot' } },
+      { id: 2, path: 'src/a.ts', line: 1, body: 'finding', user: { login: 'donmerge-user', type: 'User' } },
+    ] });
+    expect(await fetchPreviousDonMergeComments('owner', 'repo', 1, 'token')).toEqual([]);
+  });
+
   it('finds previous DonMerge comments beyond the first page', async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       id: index + 1, path: 'src/other.ts', line: index + 1, body: 'human comment',

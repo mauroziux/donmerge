@@ -12,6 +12,7 @@ export interface IssueMatchResult {
   persistingIssues: TrackedIssue[];
   resolvedIssues: TrackedIssue[];
   reintroducedIssues: TrackedIssue[];
+  matchedIssues: Map<CurrentIssue, TrackedIssue>;
 }
 
 export interface MatchOptions {
@@ -46,15 +47,26 @@ export function matchCurrentFindingsToStored(
   const reintroducedIssues: TrackedIssue[] = [];
 
   const matchedStoredIds = new Set<string>();
+  const matchedIssues = new Map<CurrentIssue, TrackedIssue>();
+
+  // Reserve exact matches before looser matching can consume their issue.
+  for (const finding of current) {
+    const exact = stored.find((issue) => issue.fingerprint === finding.fingerprint && !matchedStoredIds.has(issue.id));
+    if (exact) {
+      matchedStoredIds.add(exact.id);
+      matchedIssues.set(finding, exact);
+    }
+  }
 
   for (const finding of current) {
-    const existing = findBestMatch(finding, stored);
+    const existing = matchedIssues.get(finding) ?? findBestMatch(finding, stored.filter((issue) => !matchedStoredIds.has(issue.id)));
     if (!existing) {
       newIssues.push(finding.payload);
       continue;
     }
 
     matchedStoredIds.add(existing.id);
+    matchedIssues.set(finding, existing);
     if (existing.status === 'fixed') {
       reintroducedIssues.push(existing);
     } else {
@@ -81,10 +93,10 @@ export function matchCurrentFindingsToStored(
     }
   }
 
-  return { newIssues, persistingIssues, resolvedIssues, reintroducedIssues };
+  return { newIssues, persistingIssues, resolvedIssues, reintroducedIssues, matchedIssues };
 }
 
-function findBestMatch(current: CurrentIssue, stored: TrackedIssue[]): TrackedIssue | undefined {
+export function findBestMatch(current: CurrentIssue, stored: TrackedIssue[]): TrackedIssue | undefined {
   const exactFingerprint = stored.find((issue) => issue.fingerprint === current.fingerprint);
   if (exactFingerprint) return exactFingerprint;
 

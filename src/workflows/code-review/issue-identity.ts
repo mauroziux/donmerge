@@ -14,7 +14,7 @@ export interface IssueIdentityInput {
 
 export function normalizeCodeSnippet(snippet: string): string {
   return snippet
-    .replace(/`[^`]*`/g, ' ')
+    .replace(/`/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();

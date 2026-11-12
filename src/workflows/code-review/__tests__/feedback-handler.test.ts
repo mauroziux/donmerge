@@ -406,7 +406,9 @@ describe('handleReactionFeedback', () => {
     });
 
     expect(result).toBe(true);
-    // Should have called first() to look up the review_outcome body
+    // Body lookup must not select a same-fingerprint finding from another PR.
+    expect(mock.prepare).toHaveBeenCalledWith(expect.stringMatching(/pr_number = \? AND github_comment_id = \? AND fingerprint = \?/));
+    expect(mock.bind).toHaveBeenCalledWith('test', 'repo', 1, 100, 'fp-abc');
     expect(mock.first).toHaveBeenCalled();
   });
 
@@ -450,6 +452,7 @@ describe('handleNaturalReply', () => {
         githubUser: 'dev',
         replyText: 'No aplica porque el null ya se valida arriba',
         parentFingerprint: 'fp-abc',
+        parentCommentId: 123,
         parentBody: '<!-- DONMERGE: {"fingerprint":"fp-abc","version":1} -->\n\nPossible null dereference here',
         filePath: 'src/index.ts',
       });
@@ -464,6 +467,7 @@ describe('handleNaturalReply', () => {
         call.some((arg) => arg === 'reply' && call.includes('fp-abc'))
       );
       expect(feedbackCall).toBeDefined();
+      expect(mock.bind).toHaveBeenCalledWith('dismissed', 'reply', 'test', 'repo', 1, 123, 'fp-abc');
       // Learning stored in the ignore category with the human's reason
       const learningCall = mock.bind.mock.calls.find((call: unknown[]) =>
         call.some((arg) => typeof arg === 'string' && arg.includes('null ya se valida'))

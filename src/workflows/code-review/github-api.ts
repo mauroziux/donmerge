@@ -5,6 +5,8 @@
 import type { PreviousComment, RepoContext, ReviewResult, FilePatch, DroppedComment } from './types';
 import { ErrorCodeDescriptions, type ErrorCode } from './error-codes';
 import { attachFingerprint, computeFingerprint, parseFingerprint } from './fingerprint';
+import { computeFingerprint as computeIssueFingerprint } from './issue-identity';
+import { identityForReviewComment } from './issue-builder';
 import { normalizeEntityType, normalizeRuleId, normalizeSymbolName } from './issue-identity';
 import { deriveIssueKey } from './issue-key';
 import { filterCriticalIssuesByQuality, filterLineCommentsByQuality, hasBlockingFindings } from './processor-utils';
@@ -463,20 +465,18 @@ export async function publishReview(
   baseRef?: string,
   runId?: string,
   pollOptions: { tries?: number; delayMs?: number } = {},
-  reservePublication?: () => Promise<boolean>
+  reservePublication?: () => Promise<boolean>,
+  onExpectedComments?: (comments: Array<{ path: string; fingerprint: string }>) => void,
+  reintroducedFingerprints: ReadonlySet<string> = new Set()
 ): Promise<DroppedComment[]> {
   const existingFingerprints = new Set<string>();
+  const emittedFingerprints = new Set<string>();
   if (previousComments && previousComments.length > 0) {
     for (const comment of previousComments) {
       if (comment.resolved) {
         continue;
       }
-      if (comment.fingerprint) {
-        existingFingerprints.add(comment.fingerprint);
-        continue;
-      }
-      const fallback = await computeFingerprint({ path: comment.path, line: comment.line });
-      existingFingerprints.add(fallback);
+      if (comment.fingerprint) existingFingerprints.add(comment.fingerprint);
     }
   }
 
@@ -504,17 +504,12 @@ export async function publishReview(
   }> = [];
 
   for (const comment of candidateComments) {
-    const fingerprint = await computeFingerprint({
-      path: comment.path,
-      issueKey: comment.issueKey,
-      line: comment.line,
-      side: comment.side,
-      severity: comment.severity,
-    });
-
-    if (existingFingerprints.has(fingerprint)) {
+    const fingerprint = await computeIssueFingerprint(identityForReviewComment(comment));
+    if (emittedFingerprints.has(fingerprint) ||
+        (!reintroducedFingerprints.has(fingerprint) && existingFingerprints.has(fingerprint))) {
       continue;
     }
+    emittedFingerprints.add(fingerprint);
 
     existingFingerprints.add(fingerprint);
     const bodyWithMeta = attachCommentMeta(attachFingerprint(comment.body, fingerprint), {
@@ -533,6 +528,10 @@ export async function publishReview(
   }
 
   const comments = uniqueLineComments.slice(0, 40);
+  onExpectedComments?.(comments.map((comment) => ({
+    path: comment.path,
+    fingerprint: parseFingerprint(comment.body)!.fingerprint,
+  })));
 
   // Skip decision FIRST (on original intent): if there is nothing to post and
   // it would 422 (empty non-approve COMMENT), skip the POST entirely. An empty
@@ -1071,11 +1070,7 @@ export async function fetchPreviousDonMergeComments(
       page += 1;
     }
 
-    const donmergeComments = comments.filter(
-      (c) =>
-        c.user?.login &&
-        (c.user.login.includes('donmerge') || c.user.login.includes('DonMerge'))
-    );
+    const donmergeComments = comments.filter((comment) => isDonmergeBotAuthor(comment.user));
 
     const resolutionReplies = new Map<number, number>();
     for (const comment of donmergeComments) {

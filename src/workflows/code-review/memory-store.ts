@@ -26,7 +26,12 @@ export async function recordReviewOutcomes(
   if (outcomes.length === 0) return;
   const stmt = db.prepare(`
     INSERT INTO review_outcomes (owner, repo, pr_number, head_sha, fingerprint, logical_key, rule_id, file_path, line, severity, body, status, outcome, outcome_source, previous_severity, new_severity, github_comment_id, reviewer_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM review_outcomes
+      WHERE owner = ? AND repo = ? AND pr_number = ? AND head_sha = ?
+        AND fingerprint = ? AND github_comment_id IS ?
+    )
   `);
   const batch = outcomes.map(o => stmt.bind(
     o.owner, o.repo, o.pr_number, o.head_sha,
@@ -34,7 +39,8 @@ export async function recordReviewOutcomes(
     o.file_path, o.line, o.severity, o.body,
     o.status, o.outcome, o.outcome_source ?? null,
     o.previous_severity ?? null, o.new_severity ?? null,
-    o.github_comment_id ?? null, o.reviewer_type
+    o.github_comment_id ?? null, o.reviewer_type,
+    o.owner, o.repo, o.pr_number, o.head_sha, o.fingerprint, o.github_comment_id ?? null
   ));
   await db.batch(batch);
 }
