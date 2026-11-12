@@ -15,6 +15,7 @@ import type {
 } from './types';
 import { deriveIssueKey, extractIssueTerms, buildIssueIdentity } from './issue-key';
 import { getSeverityOverride } from './donmerge';
+import { parseReviewOutput } from './review-output-schema';
 
 const STYLE_NOISE_PATTERNS = [
   /\b(imports?|exports?)\b.{0,32}\b(alphabetical|alphabetic|sorted|order|ordering|organize)\b/i,
@@ -28,9 +29,9 @@ const STYLE_NOISE_PATTERNS = [
 
 const ADVISORY_WORD_PATTERN = /\b(ensure|verify|consider|test|confirm|double-check|double check|may|might|could)\b/i;
 
-const CRITICAL_DOMAIN_PATTERN = /\b(sql injection|sql query|sql|xss|csrf|ssrf|injection|auth(?:entication|orization)?|permission|access control|privilege|secret|token|password|credential|api key|data loss|corrupt(?:ion)?|truncate|delete|runtime error|exception|crash|null|undefined|race|deadlock|concurren(?:cy|t)|regression|broken logic|wrong result|incorrect result|n\+1|infinite loop|memory leak|timeout|critical performance)\b/i;
+const CRITICAL_DOMAIN_PATTERN = /\b(sql injection|sql query|sql|xss|csrf|ssrf|injection|auth(?:entication|orization)?|permission|access control|privilege|secret|token|password|credential|api key|data loss|data leak|leak|corrupt(?:ion)?|truncate|delete|runtime error|exception|crash|null|undefined|race|deadlock|concurren(?:cy|t)|regression|broken logic|wrong result|incorrect result|n\+1|infinite loop|memory leak|timeout|critical performance)\b/i;
 
-const CONCRETE_FAILURE_PATTERN = /\b(leads? to|leading to|causes?|causing|results? in|resulting in|allows?|allowing|enables?|enabling|permits?|permitting|exposes?|exposing|throws?|crashes?|fails?|breaks?|loses?|corrupts?|leaks?|bypasses?|rejects?|accepts?|dereferences?|overwrites?|drops?|deadlocks?|hangs?|times? out|panics?|raises?)\b/i;
+const CONCRETE_FAILURE_PATTERN = /\b(leads? to|leading to|causes?|causing|results? in|resulting in|allows?|allowing|enables?|enabling|permits?|permitting|exposes?|exposing|leaks?|leaking|reveals?|revealing|throws?|crashes?|fails?|breaks?|loses?|corrupts?|bypasses?|rejects?|accepts?|dereferences?|overwrites?|drops?|deadlocks?|hangs?|times? out|panics?|raises?)\b/i;
 const CONCRETE_FAILURE_STATE_PATTERN = /\b(runtime error|exception|crash|null dereference|null pointer|undefined property|data loss|data corruption|race condition|security bypass|authentication bypass|authorization bypass|privilege escalation|credential exposure|secret exposure|incorrect result|wrong result|deadlock|infinite loop|memory leak|timeout)\b/i;
 const CONCRETE_VULNERABILITY_MECHANISM_PATTERN = /\b(vulnerab(?:le|ility)|bypass(?:es|ed|ing)?|inject(?:s|ed|ing)?|directly concatenated|concatenat(?:es?|ed|ing)|user input|untrusted input|attacker-controlled|unsanitized|unescaped|unvalidated)\b/i;
 
@@ -47,40 +48,16 @@ export function normalizeCommentBody(body: string): string {
 
 /**
  * Validate required fields from LLM output.
+ *
+ * Delegates to the strict Valibot contract in review-output-schema.ts
+ * (plan 002-U3): a structurally incomplete output is INVALID here — it must
+ * go through format repair, never be normalized into an empty approval.
  */
 export function validateReviewResult(
   result: ReviewResult
 ): { valid: boolean; reason?: string } {
-  if (!result || typeof result !== 'object') {
-    return { valid: false, reason: 'result is not an object' };
-  }
-
-  if (!result.summary || typeof result.summary !== 'string' || !result.summary.trim()) {
-    return { valid: false, reason: 'missing summary' };
-  }
-
-  const prSummary = result.prSummary as PRSummary | undefined;
-  if (!prSummary || typeof prSummary !== 'object') {
-    return { valid: false, reason: 'missing prSummary' };
-  }
-
-  if (!prSummary.overview?.trim()) return { valid: false, reason: 'missing prSummary.overview' };
-  if (!Array.isArray(prSummary.keyChanges) || prSummary.keyChanges.length === 0) {
-    return { valid: false, reason: 'missing prSummary.keyChanges' };
-  }
-  if (!prSummary.codeQuality?.trim()) return { valid: false, reason: 'missing prSummary.codeQuality' };
-  if (!prSummary.testingNotes?.trim()) return { valid: false, reason: 'missing prSummary.testingNotes' };
-  if (!prSummary.riskAssessment?.trim()) return { valid: false, reason: 'missing prSummary.riskAssessment' };
-
-  const lineComments = Array.isArray(result.lineComments) ? result.lineComments : [];
-
-  for (const comment of lineComments) {
-    if (!deriveIssueKey(comment)) {
-      return { valid: false, reason: 'lineComment missing issueKey' };
-    }
-  }
-
-  return { valid: true };
+  const parsed = parseReviewOutput(result);
+  return parsed.ok ? { valid: true } : { valid: false, reason: parsed.reason };
 }
 
 /**

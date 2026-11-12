@@ -17,18 +17,20 @@ import type {
   TrackerConfig,
 } from './types';
 import { getReviewProcessor } from '../workflows/code-review/processor';
+import { fetchPrHeadSha } from '../workflows/code-review/github-api';
+import { buildRunScopedInstanceId } from '../workflows/code-review/workflow-id';
 import { getTriageProcessor } from '../workflows/triage/processor';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /** SHA-256 hash truncated to 16 hex chars — used as rate-limit storage key. */
-async function hashKey(apiKey: string): Promise<string> {
+async function hashKey(apiKey: string, length = 16): Promise<string> {
   const data = new TextEncoder().encode(apiKey);
   const buf = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
-    .substring(0, 16);
+    .substring(0, length);
 }
 
 async function checkRateLimit(
@@ -175,7 +177,16 @@ export const handlePushReview = withAuth(async (c, auth) => {
   // Compute the caller's key hash for authorization scoping on status queries
   const callerKeyHash = await hashKey(auth.apiKey);
 
-  // Start review with caller-provided token
+  // Start review with caller-provided token. Best-effort head resolution so
+  // the coordinator's request fingerprint distinguishes pushes: two API calls
+  // for different heads are different requests, never duplicate deliveries.
+  let headSha: string | undefined;
+  try {
+    headSha = await fetchPrHeadSha(body.owner, body.repo, body.pr_number, body.github_token);
+  } catch {
+    headSha = undefined; // best-effort: fingerprint falls back to null head
+  }
+
   // DurableObjectStub proxies methods as unknown — cast for type safety
   const startResult = await (processorStub.startReview as (ctx: {
     githubToken: string;
@@ -186,7 +197,10 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles?: number;
     retrigger: boolean;
     initiatorKeyHash?: string;
-  }) => Promise<{ started: boolean; reason: string }>)({
+    githubCredentialHash?: string;
+    requestNonce?: string;
+    headSha?: string;
+  }) => Promise<{ started: boolean; reason: string; runId?: string }>)({
     githubToken: body.github_token,
     owner: body.owner,
     repo: body.repo,
@@ -195,9 +209,15 @@ export const handlePushReview = withAuth(async (c, auth) => {
     maxFiles: body.max_files,
     retrigger: false,
     initiatorKeyHash: callerKeyHash,
+    githubCredentialHash: await hashKey(body.github_token, 64),
+    requestNonce: headSha ? undefined : crypto.randomUUID(),
+    headSha,
   });
 
   if (!startResult.started) {
+    if (startResult.reason === 'pending_conflict') {
+      return c.json({ error: 'Review queue busy', message: 'Another request is already pending; retry later.' }, 409);
+    }
     const jobId = buildReviewJobId(body.owner, body.repo, body.pr_number);
     return c.json({
       job_id: jobId,
@@ -206,11 +226,19 @@ export const handlePushReview = withAuth(async (c, auth) => {
     }, 202);
   }
 
-  // Create the workflow to handle execution
+  // Create the workflow to handle execution. Run-scoped instance id: THIS
+  // run gets its own instance; restart (same delivery retry) replays THESE
+  // params, never a previous run's stale ones (plan 004-U1).
   if (c.env.CODE_REVIEW_WORKFLOW) {
-    const instanceId = `review-${body.owner}-${body.repo}-${body.pr_number}`;
+    // Workflow instance IDs reject slashes (CF throws instance.invalid_id) — use dashes, NOT buildReviewJobId (slash-form is for the DO name above).
+    const instanceId = buildRunScopedInstanceId(
+      body.owner,
+      body.repo,
+      body.pr_number,
+      undefined,
+      startResult.runId
+    );
     try {
-      // Workflow instance IDs reject slashes (CF throws instance.invalid_id) — use dashes, NOT buildReviewJobId (slash-form is for the DO name at L212).
       await c.env.CODE_REVIEW_WORKFLOW.create({
         id: instanceId,
         params: {
@@ -221,13 +249,14 @@ export const handlePushReview = withAuth(async (c, auth) => {
           model: body.model,
           maxFiles: body.max_files,
           retrigger: false,
+          runId: startResult.runId,
         },
       });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       if (errMsg.includes('already_exists')) {
-        const instance = await c.env.CODE_REVIEW_WORKFLOW.get(instanceId);
-        await instance.restart();
+        // Recovery may already have created this run; never restart a live instance.
+        console.log('Run-scoped workflow already exists', { instanceId });
       } else {
         throw e;
       }

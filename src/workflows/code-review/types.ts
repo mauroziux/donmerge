@@ -29,6 +29,16 @@ export interface WorkerEnv {
   /** Fallback model used when the primary provider fails (e.g. "openai/gpt-4o"). */
   FALLBACK_MODEL?: string;
   MAX_REVIEW_FILES?: string;
+  /** End-to-end model-chain budget in ms (default 35 min, plan 004-U2). */
+  REVIEW_TOTAL_BUDGET_MS?: string;
+  /** 'true' → add the adversarial investigation rubric to the prompt (003-U2). */
+  DONMERGE_ADVERSARIAL_PROMPT?: string;
+  /** 'true' → verify critical findings with an independent refutation pass (003-U3). */
+  DONMERGE_VERIFY_FINDINGS?: string;
+  /** 'true' → second independent search when a high-risk change reviews clean (003-U4). */
+  DONMERGE_SECOND_PASS?: string;
+  /** 'true' → inject full reviewed files at head as untrusted context (003-U1). */
+  DONMERGE_FILE_CONTEXT?: string;
   REPO_CONFIGS?: string;     // "owner/repo:branch,owner/repo2:branch2" - branch is optional
   REVIEW_TRIGGER?: string;
   DONMERGE_POST_FIXED_REPLIES?: string;
@@ -133,6 +143,8 @@ export interface GitHubRepository {
 
 export interface PullRequestPayload {
   number: number;
+  /** Present on pull_request events: the head commit the review targets. */
+  head?: { sha?: string };
 }
 
 export interface CheckRunPayload {
@@ -261,6 +273,9 @@ export interface ReviewResult {
   suggestions: string[];
   resolvedComments?: number[];
   fileSummaries?: FileSummary[];
+  /** True when verification withheld criticals for insufficient evidence: a
+   * full-coverage run must report neutral, never a green clean (plan 003-U3). */
+  verificationPending?: boolean;
 }
 
 /**
@@ -287,6 +302,8 @@ export interface WebhookContext {
   feedback?: FeedbackCommand;
   githubUser?: string;
   inReplyToId?: number;
+  /** Head SHA when the triggering event carries it (pull_request events). */
+  headSha?: string;
   /** Natural-language reply to a review comment — candidate for reply learning. */
   naturalReply?: boolean;
   /** Reply/comment body as received in the webhook (queue consumers can't refetch it). */
@@ -312,6 +329,8 @@ export interface TriggerResult {
   feedback?: FeedbackCommand;
   githubUser?: string;
   inReplyToId?: number;
+  /** Head SHA when the triggering event carries it (pull_request events). */
+  headSha?: string;
   /** True when this is a natural-language reply that may teach something (not a review trigger). */
   naturalReply?: boolean;
   commentBody?: string;

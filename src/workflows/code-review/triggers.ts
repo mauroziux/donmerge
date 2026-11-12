@@ -30,7 +30,12 @@ export function parseTrigger(
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'ignored pull_request action' };
     }
     const retrigger = payload.action === 'synchronize' || isBaseRetarget;
-    return { shouldRun: true, prNumber: payload.pull_request.number, retrigger };
+    return {
+      shouldRun: true,
+      prNumber: payload.pull_request.number,
+      retrigger,
+      headSha: payload.pull_request.head?.sha,
+    };
   }
 
   // Handle "Re-run" button in GitHub UI

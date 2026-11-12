@@ -12,7 +12,7 @@ import { getReviewProcessor } from './processor';
 import { fetchCommentById, addCommentReaction, postReplyComment, isDonmergeBotAuthor } from './github-api';
 import { classifyCommandIntent } from './reply-classifier';
 import { parseFingerprint } from './fingerprint';
-import { buildReviewWorkflowInstanceId } from './workflow-id';
+import { buildRunScopedInstanceId } from './workflow-id';
 
 interface EnvWithReviewProcessor extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
@@ -127,6 +127,7 @@ export async function validateWebhookFast(
       installationId: payload.installation?.id,
       instruction: trigger.instruction,
       focusFiles: trigger.focusFiles,
+      headSha: trigger.headSha,
     },
   };
 }
@@ -586,7 +587,8 @@ export async function processGitHubCodeReviewWebhook(
     owner: string; repo: string; prNumber: number; retrigger: boolean;
     commentId?: number; commentType?: 'issue' | 'review';
     installationId?: number; instruction?: string; focusFiles?: string[];
-  }): Promise<{ started: boolean; reason: string }> }).startReview({
+    headSha?: string;
+  }): Promise<{ started: boolean; reason: string; runId?: string }> }).startReview({
     owner,
     repo,
     prNumber,
@@ -596,9 +598,25 @@ export async function processGitHubCodeReviewWebhook(
     installationId,
     instruction,
     focusFiles,
+    headSha: context.headSha,
   });
 
   if (!startResult.started) {
+    if (startResult.reason === 'pending_conflict') {
+      // Let the queue retry rather than overwrite another caller's request.
+      throw new Error('Review pending slot occupied by another caller');
+    }
+    if (startResult.reason === 'deferred_new_push') {
+      // A newer push/intent arrived while a run is active. The DO stored it
+      // as the latest deferred request and will hand it off when the active
+      // run terminates — nothing else to do here (plan 004-U1).
+      console.log('Review deferred: active run owns the DO; latest request queued for handoff', {
+        owner,
+        repo,
+        prNumber,
+      });
+      return;
+    }
     console.log('Duplicate review delivery acknowledged without restarting', {
       owner,
       repo,
@@ -611,20 +629,36 @@ export async function processGitHubCodeReviewWebhook(
   // Comment-triggered re-reviews use a comment-specific ID so they run with
   // fresh webhook credentials/instructions rather than stale workflow params.
   if (env.CODE_REVIEW_WORKFLOW) {
-    await env.CODE_REVIEW_WORKFLOW.create({
-      id: buildReviewWorkflowInstanceId(owner, repo, prNumber, commentId),
-      params: {
-        owner,
-        repo,
-        prNumber,
-        retrigger,
-        commentId,
-        commentType,
-        installationId,
-        instruction,
-        focusFiles,
-      },
-    });
+    // Run-scoped instance id: THIS run gets its own instance; a restart (only
+    // possible for this very delivery) replays THESE params, never a previous
+    // run's stale ones (plan 004-U1).
+    const instanceId = buildRunScopedInstanceId(owner, repo, prNumber, commentId, startResult.runId);
+    try {
+      await env.CODE_REVIEW_WORKFLOW.create({
+        id: instanceId,
+        params: {
+          owner,
+          repo,
+          prNumber,
+          retrigger,
+          commentId,
+          commentType,
+          installationId,
+          instruction,
+          focusFiles,
+          runId: startResult.runId,
+        },
+      });
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (errMsg.includes('already_exists')) {
+        // The recovery alarm may already have created this run. Existing can
+        // be queued or running; restarting it risks duplicating its effects.
+        console.log('Run-scoped workflow already exists', { instanceId });
+      } else {
+        throw error;
+      }
+    }
   } else {
     console.warn('CODE_REVIEW_WORKFLOW not bound — review queued in DO but will not execute');
   }

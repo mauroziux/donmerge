@@ -20,6 +20,7 @@ import type {
   PreviousComment,
   RepoContext as RepoContextType,
   TrackedIssue,
+  DonmergeConfig,
   DonmergeResolved,
   MemoryContext,
   PatternWeight,
@@ -35,6 +36,9 @@ import {
   findDonmergeReviewComment,
   fetchRepoContext,
   fetchRepoFile,
+  fetchAllPrFiles,
+  fetchPrHeadSha,
+  fetchFileContentsAtRef,
   resolveFixedComments,
   publishReview,
   completeCheckRun,
@@ -69,12 +73,23 @@ import {
   filterCommentsByMatch,
   syncTrackedIssuesFromComments,
   withBlockingApproval,
+  hasBlockingFindings,
 } from './processor-utils';
 import { recordReviewFindings } from './feedback-handler';
 import { buildReviewOutcomeInputs } from './review-outcomes';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
-import { AllModelsFailedError, runReviewModels } from './review-model-runner';
+import { AllModelsFailedError, runReviewModels, DEFAULT_REVIEW_TOTAL_BUDGET_MS } from './review-model-runner';
+import { PrHeadChangedError } from './review-snapshot';
+import { ErrorCode } from './error-codes';
+import { assessPrRisk, shouldRunSecondPass } from './review-risk';
+import { mergeSecondPass, verifyReviewResult } from './finding-verifier';
+import {
+  DEFAULT_DIFF_CHAR_BUDGET,
+  buildCoverageManifest,
+  planReviewFiles,
+  type CoverageManifest,
+} from './review-coverage';
 
 // ── Workflow params (must be serializable — no functions, no DO stubs) ────────
 
@@ -91,9 +106,36 @@ export interface WorkflowParams {
   githubToken?: string; // Push API: caller-provided token
   model?: string;       // Push API: override LLM model
   maxFiles?: number;    // Push API: override max files
+  /** Run identity for fencing: assigned by the DO when this run was started.
+   * Carried in the workflow PARAMS so a restarted older instance keeps its
+   * own token instead of adopting the current owner's (plan 004-U1). */
+  runId?: string;
 }
 
 // ── Intermediate data passed between steps ───────────────────────────────────
+
+/** Serializable .donmerge resolution — Maps do not cross the step boundary. */
+interface DonmergeDto {
+  config: DonmergeConfig;
+  skills: Array<[string, string]>;
+  skillErrors: Array<[string, string]>;
+}
+
+function toDonmergeDto(resolved: DonmergeResolved): DonmergeDto {
+  return {
+    config: resolved.config,
+    skills: Array.from(resolved.skillsContent.entries()),
+    skillErrors: Array.from(resolved.skillsErrors.entries()),
+  };
+}
+
+function fromDonmergeDto(dto: DonmergeDto): DonmergeResolved {
+  return {
+    config: dto.config,
+    skillsContent: new Map(dto.skills),
+    skillsErrors: new Map(dto.skillErrors),
+  };
+}
 
 interface PrData {
   owner: string;
@@ -114,6 +156,12 @@ interface PrData {
   focusFiles?: string[];
   model?: string;
   maxFiles?: number;
+  /** PR base commit — anchors the snapshot alongside headSha. */
+  baseSha?: string;
+  /** PR-declared changed-file count — cross-checks discovery completeness. */
+  changedFilesCount?: number;
+  /** .donmerge config+skills resolved once in step 1 (serializable DTO). */
+  donmerge?: DonmergeDto;
 }
 
 interface PreparedFiles {
@@ -124,6 +172,8 @@ interface PreparedFiles {
   activePreviousComments: PreviousComment[];
   /** PR file patches captured in step 2, reused by step 4 for anchor validation. */
   filePatches: FilePatch[];
+  /** What this run actually reviewed (plan 002): drives honest verdicts. */
+  coverage: CoverageManifest;
 }
 
 interface LlmReviewResult {
@@ -145,8 +195,18 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const doName = `${params.owner}/${params.repo}/${params.prNumber}`;
     const processorStub = this.getProcessorStub(doName);
 
-    // Mark review as running
-    await (processorStub as any).updateFromWorkflow({ state: 'running' });
+    // Fencing token for THIS run: carried in params (not read from the DO at
+    // start) so a restarted older instance keeps its own identity and its
+    // late writes are rejected instead of adopted (plan 004-U1).
+    const runId: string | undefined = params.runId;
+
+    // A superseded or terminal run must stop before creating a check, fetching
+    // content or publishing anything. Rejection is explicit across the RPC.
+    const accepted: boolean = await (processorStub as any).updateFromWorkflow({ state: 'running', runId });
+    if (!accepted) {
+      console.warn('Review workflow no longer owns the processor', { doName, runId });
+      return;
+    }
 
     let prData: PrData | undefined;
 
@@ -181,6 +241,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         await (processorStub as any).updateFromWorkflow({
           state: 'complete',
           completedAt: new Date().toISOString(),
+          runId,
         });
         return;
       }
@@ -201,12 +262,23 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         return this.runLlmReview(preparedFiles);
       });
 
-      // Step 4: Publish review
+      // Step 4: Publish review — retried with a 30s delay so an unresolved
+      // ambiguous publication (marker not yet visible) gets a fresh marker
+      // search well after GitHub's listing lag. A STILL-unresolved ambiguity
+      // is terminal (manual verification): automated re-POST is disabled.
       await step.do('publish-review', {
-        retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
+        retries: { limit: 2, delay: '30 seconds', backoff: 'exponential' },
         timeout: '3 minutes',
       }, async () => {
-        return this.publishReview(llmResult, processorStub);
+        try {
+          return await this.publishReview(llmResult, processorStub, runId);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('publication unresolved')) {
+            // Never retry an unproven POST: stop the step cold.
+            throw new NonRetryableError(error.message);
+          }
+          throw error;
+        }
       });
     } catch (error) {
       const { code, detail } = classifyError(error);
@@ -219,14 +291,42 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       // Fail check run if we created one before the failure
       if (prData?.checkRunId) {
         try {
-          await failCheckRun(
-            prData.owner,
-            prData.repo,
-            prData.checkRunId,
-            code,
-            detail,
-            prData.githubToken
-          );
+          if (code === ErrorCode.PR_CHANGED) {
+            // The PR moved under us: a red X would blame the author's code for
+            // an infrastructure race. Report neutrally and let the latest push
+            // get its own run.
+            await completeCheckRunNeutral(
+              prData.owner,
+              prData.repo,
+              prData.checkRunId,
+              '🔀 PR updated during review',
+              `The PR received new commits while the review was running.`,
+              `DonMerge stopped this run instead of reporting on a stale version of the diff.\n\nThe latest push will be reviewed; you can also comment \`@donmerge\` to re-trigger immediately.`,
+              prData.githubToken
+            );
+          } else if (code === ErrorCode.PUBLISH_UNRESOLVED) {
+            // The review POST may or may not have reached GitHub. Automated
+            // re-posting is disabled (it could duplicate the review): surface
+            // a neutral, actionable check instead of a blind retry.
+            await completeCheckRunNeutral(
+              prData.owner,
+              prData.repo,
+              prData.checkRunId,
+              '🔍 Review publication pending verification',
+              `DonMerge could not confirm whether the review was posted to GitHub.`,
+              `The review request may have reached GitHub but the confirmation was lost. To avoid posting a duplicate, DonMerge will NOT retry automatically.\n\n**Action:** check the PR's conversation for the review. If it is missing, comment \`@donmerge\` to re-run it.`,
+              prData.githubToken
+            );
+          } else {
+            await failCheckRun(
+              prData.owner,
+              prData.repo,
+              prData.checkRunId,
+              code,
+              detail,
+              prData.githubToken
+            );
+          }
         } catch (checkRunError) {
           console.error('Failed to fail check run on workflow error', { error: checkRunError });
         }
@@ -238,6 +338,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           state: 'failed',
           error: `[${code}] ${detail}`,
           completedAt: new Date().toISOString(),
+          runId,
+          headSha: prData?.headSha,
         });
       } catch (updateError) {
         console.error('Failed to update DO status on workflow error', { error: updateError });
@@ -269,10 +371,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     // Fetch PR info
     const pr = await githubFetch<{
-      base: { ref: string };
+      base: { ref: string; sha: string };
       head: { sha: string };
       title?: string;
       body?: string | null;
+      changed_files?: number;
     }>(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, githubToken);
 
     // Check base branch
@@ -294,6 +397,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         prTitle: pr.title,
         prBody: pr.body,
         baseBranch: pr.base.ref,
+        baseSha: pr.base.sha,
+        changedFilesCount: pr.changed_files,
         willReview: false,
         retrigger: params.retrigger,
         commentId: params.commentId,
@@ -348,6 +453,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         prTitle: pr.title,
         prBody: pr.body,
         baseBranch: pr.base.ref,
+        baseSha: pr.base.sha,
+        changedFilesCount: pr.changed_files,
         willReview: false,
         retrigger: params.retrigger,
         commentId: params.commentId,
@@ -409,6 +516,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       prTitle: pr.title,
       prBody: pr.body,
       baseBranch: pr.base.ref,
+      baseSha: pr.base.sha,
+      changedFilesCount: pr.changed_files,
+      donmerge: donmergeResolved ? toDonmergeDto(donmergeResolved) : undefined,
       willReview: true,
       retrigger: params.retrigger,
       commentId: params.commentId,
@@ -428,88 +538,77 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
   private async prepareFiles(prData: PrData): Promise<PreparedFiles> {
     const { owner, repo, prNumber, githubToken } = prData;
 
-    // Fetch PR files
-    const filesResponse = await githubFetch<Array<{ filename: string; patch?: string }>>(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`,
-      githubToken
-    );
+    // Discover every file in the PR (all pages) for a versioned snapshot.
+    const declaredCount = prData.changedFilesCount ?? 0;
+    const discovery = await fetchAllPrFiles(owner, repo, prNumber, githubToken, declaredCount);
+
+    // The listing describes a mutable PR: if the head moved while paginating,
+    // this snapshot would mix two versions of the diff. Non-retryable — a step
+    // retry replays with the same cached PR data and would loop; the latest
+    // push gets its own run.
+    const currentHead = await fetchPrHeadSha(owner, repo, prNumber, githubToken);
+    if (currentHead !== prData.headSha) {
+      throw new NonRetryableError(
+        new PrHeadChangedError(prData.headSha, currentHead).message
+      );
+    }
 
     const maxFiles = prData.maxFiles ?? Number.parseInt(this.env.MAX_REVIEW_FILES ?? '50', 10);
-    let filesToReview = filesResponse.slice(0, maxFiles);
 
-    // Apply focus files filter
-    if (prData.focusFiles && prData.focusFiles.length > 0) {
-      const normalizedFocus = prData.focusFiles.map((file) => file.trim()).filter(Boolean);
-      const matched = filesToReview.filter((file) =>
-        normalizedFocus.some(
-          (focus) => file.filename === focus || file.filename.endsWith(`/${focus}`)
-        )
-      );
-      if (matched.length > 0) {
-        filesToReview = matched;
-      } else {
-        console.log('No focus file matches found, falling back to full diff', {
-          focusFiles: normalizedFocus,
-          fileCount: filesToReview.length,
-        });
-      }
-    }
+    // Reuse the .donmerge config+skills resolved in step 1 (plan 005-U1: no
+    // double fetch/re-resolve per run). Rehydrate the serializable DTO.
+    const donmergeResolved: DonmergeResolved | undefined = prData.donmerge
+      ? fromDonmergeDto(prData.donmerge)
+      : undefined;
 
-    // Apply .donmerge exclude/include filtering (best-effort)
-    // Note: donmerge config was fetched in step 1, but we don't pass it through the serializable
-    // boundary. Re-fetch here if needed. Actually, let's re-fetch it here.
-    let donmergeResolved: DonmergeResolved | undefined;
-    try {
-      const donmergeConfig = await fetchDonmergeConfig(owner, repo, githubToken, fetchRepoFile);
-      if (donmergeConfig) {
-        donmergeResolved = { config: donmergeConfig, skillsContent: new Map(), skillsErrors: new Map() };
-      }
-    } catch {
-      // Best-effort
-    }
-
-    if (donmergeResolved) {
-      try {
-        const excludePatterns = donmergeResolved.config.exclude ?? [];
-        const includePatterns = donmergeResolved.config.include ?? [];
-        if (excludePatterns.length > 0) {
-          const beforeCount = filesToReview.length;
-          filesToReview = filesToReview.filter(
-            (file) => !shouldExcludeFile(file.filename, excludePatterns, includePatterns)
-          );
-          if (filesToReview.length < beforeCount) {
-            console.log('[donmerge] Excluded files', {
-              before: beforeCount,
-              after: filesToReview.length,
-            });
-          }
+    // Plan which files actually reach the prompt (plan 002): focus scope
+    // first (explicit, never silently widened), then .donmerge policy, then
+    // file-count and diff-character budgets. Whole files only — no mid-hunk
+    // truncation, and every left-out file is recorded with a reason.
+    const plan = planReviewFiles({
+      discovered: discovery.files,
+      focusFiles: prData.focusFiles,
+      isExcluded: (path) => {
+        const excludePatterns = donmergeResolved?.config.exclude ?? [];
+        const includePatterns = donmergeResolved?.config.include ?? [];
+        if (excludePatterns.length === 0) return false;
+        try {
+          return shouldExcludeFile(path, excludePatterns, includePatterns);
+        } catch (error) {
+          console.warn('[donmerge] File filtering failed, treating file as included:', error);
+          return false;
         }
-      } catch (error) {
-        console.warn('[donmerge] File filtering failed, continuing:', error);
-      }
+      },
+      maxFiles,
+      diffCharBudget: DEFAULT_DIFF_CHAR_BUDGET,
+    });
+
+    const coverage = buildCoverageManifest(plan, {
+      headSha: prData.headSha,
+      changedFilesCount: declaredCount,
+      apiFileCapReached: discovery.apiFileCapReached,
+    });
+
+    if (!coverage.scopeComplete) {
+      console.log('[coverage] Review scope is partial', {
+        reviewed: coverage.reviewedCount,
+        discovered: coverage.discoveredCount,
+        declared: coverage.changedFilesCount,
+        pending: coverage.pendingCount,
+        focused: coverage.focused,
+        focusNoMatch: coverage.focusNoMatch,
+        diffTruncated: coverage.diffTruncated,
+        apiFileCapReached: coverage.apiFileCapReached,
+      });
     }
 
+    const filesToReview = plan.selected;
     const diffText = filesToReview
-      .map((file) => `FILE: ${file.filename}\n${file.patch ?? '[no patch available]'}\n`)
+      .map((file) => `FILE: ${file.filename}\n${file.patch}\n`)
       .join('\n');
 
-    // Fetch repo context
-    const repoContext = await fetchRepoContext(owner, repo, githubToken);
-
-    // Resolve .donmerge skills
-    if (donmergeResolved && donmergeResolved.config.skills && donmergeResolved.config.skills.length > 0) {
-      try {
-        donmergeResolved = await resolveDonmergeSkills(
-          donmergeResolved.config, owner, repo, githubToken, fetchRepoFile
-        );
-        console.log('[donmerge] Resolved skills', {
-          loaded: donmergeResolved.skillsContent.size,
-          errors: donmergeResolved.skillsErrors.size,
-        });
-      } catch (error) {
-        console.warn('[donmerge] Skill resolution failed, continuing without skills:', error);
-      }
-    }
+    // Fetch repo context at the reviewed head (plan 005-U1: explicit ref).
+    const repoContext = await fetchRepoContext(owner, repo, prData.headSha, githubToken);
 
     // Fetch previous comments if retrigger
     let activePreviousComments: PreviousComment[] = [];
@@ -526,12 +625,13 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       donmergeResolved,
       activePreviousComments,
       // Capture the reviewed file patches so step 4 can validate comment anchors
-      // without re-fetching listFiles. filesToReview is the filtered set the LLM
+      // without re-fetching listFiles. plan.selected is the filtered set the LLM
       // actually saw, so it is the correct anchor scope.
       filePatches: filesToReview.map((file) => ({
         filename: file.filename,
         patch: file.patch,
       })),
+      coverage,
     };
   }
 
@@ -599,6 +699,24 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         fallbackModel,
       });
 
+      // Optional host-side file context (plan 003-U1): full reviewed files at
+      // head as untrusted data, so the model can check guards/callers the
+      // diff hides. Budgeted; off by default (DONMERGE_FILE_CONTEXT).
+      let fileContents: Array<{ path: string; content: string }> | undefined;
+      if (this.env.DONMERGE_FILE_CONTEXT === 'true') {
+        fileContents = await fetchFileContentsAtRef(
+          prData.owner,
+          prData.repo,
+          preparedFiles.filePatches.map((f) => f.filename),
+          prData.headSha,
+          prData.githubToken,
+          { maxFiles: 8, maxCharsPerFile: 20_000, maxCharsTotal: 60_000 }
+        );
+        console.log('[file-context] loaded full files at head', {
+          count: fileContents.length,
+        });
+      }
+
       const prompt = buildReviewPrompt(
         {
           owner: prData.owner,
@@ -612,15 +730,31 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           diffText,
           repoContext,
         },
-        { donmergeResolved, memoryContext }
+        {
+          donmergeResolved,
+          memoryContext,
+          adversarial: this.env.DONMERGE_ADVERSARIAL_PROMPT === 'true',
+          fileContents,
+        }
       );
 
       const promptErrorHint =
         'Your previous response was invalid. Produce valid JSON matching the schema. ' +
         'Ensure `summary` is present and 1-2 sentences. Ensure `prSummary` includes overview, keyChanges (non-empty), codeQuality, testingNotes, riskAssessment. ' +
+        'The arrays `lineComments`, `criticalIssues` and `suggestions` MUST all be present (use [] when empty). ' +
+        'Each lineComment needs a positive integer `line`, side LEFT or RIGHT, severity critical/suggestion/low, and a non-empty path and body. ' +
         'Only use `lineComments` for concrete findings anchored to lines in the diff.';
 
-      const result = await runReviewModels({
+      // End-to-end model budget (plan 004-U2): once the run is out of budget,
+      // no new prompts start — the step fails honestly instead of running past
+      // its own timeout and getting killed mid-flight.
+      const budgetFromEnv = Number.parseInt(this.env.REVIEW_TOTAL_BUDGET_MS ?? '', 10);
+      const totalBudgetMs = Number.isFinite(budgetFromEnv) && budgetFromEnv > 0
+        ? budgetFromEnv
+        : DEFAULT_REVIEW_TOTAL_BUDGET_MS;
+      const deadlineMs = Date.now() + totalBudgetMs;
+
+      let result = await runReviewModels({
         flue,
         prompt,
         promptErrorHint,
@@ -628,7 +762,76 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         activePreviousComments,
         severityOverrides: donmergeResolved?.config.severity,
         patternWeights,
+        deadlineMs,
       });
+
+      // ── Adaptive depth (plan 003), feature-flagged OFF by default ──
+      const risk = assessPrRisk(preparedFiles.filePatches);
+      console.log('[risk] assessed', { level: risk.level, reasons: risk.reasons });
+
+      // High-risk + clean first pass → independent second search that has not
+      // seen the first pass's reasoning. Unknown risk never downgrades.
+      if (
+        this.env.DONMERGE_SECOND_PASS === 'true' &&
+        shouldRunSecondPass(risk, hasBlockingFindings(result))
+      ) {
+        console.log('[second-pass] high-risk change reviewed clean; running independent pass', {
+          reasons: risk.reasons,
+        });
+        const secondPrompt = buildReviewPrompt(
+          {
+            owner: prData.owner,
+            repo: prData.repo,
+            prNumber: prData.prNumber,
+            prTitle: prData.prTitle,
+            prBody: prData.prBody,
+            retrigger: prData.retrigger,
+            instruction: prData.instruction,
+            previousComments: activePreviousComments,
+            diffText,
+            repoContext,
+          },
+          {
+            donmergeResolved,
+            memoryContext,
+            secondPass: true,
+            adversarial: this.env.DONMERGE_ADVERSARIAL_PROMPT === 'true',
+            fileContents,
+          }
+        );
+        const second = await runReviewModels({
+          flue,
+          prompt: secondPrompt,
+          promptErrorHint,
+          models,
+          activePreviousComments,
+          severityOverrides: donmergeResolved?.config.severity,
+          patternWeights,
+          deadlineMs,
+        });
+        result = mergeSecondPass(result, second);
+      }
+
+      // Independent verification: attempt to REFUTE every critical finding.
+      // Only `supported` findings survive to publish; withheld ones are
+      // reported as unverified limitations, never silently dropped.
+      if (this.env.DONMERGE_VERIFY_FINDINGS === 'true') {
+        const verified = await verifyReviewResult({
+          promptFn: (p: string, opts: unknown) =>
+            flue.client.prompt(p, opts as never) as Promise<string>,
+          model: models[0],
+          repo: prData.repo,
+          diffText,
+          result,
+        });
+        if (verified.notes.length > 0) {
+          console.log('[verifier] withheld unconfirmed findings', {
+            count: verified.notes.length,
+          });
+        }
+        result = verified.result;
+      }
+
       return { preparedFiles, result };
     } catch (error) {
       if (error instanceof AllModelsFailedError) {
@@ -655,7 +858,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
    */
   private async publishReview(
     llmResult: LlmReviewResult,
-    processorStub: DurableObjectStub
+    processorStub: DurableObjectStub,
+    runId?: string
   ): Promise<void> {
     const { preparedFiles, result } = llmResult;
     const { prData, activePreviousComments } = preparedFiles;
@@ -666,6 +870,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       await (processorStub as any).updateFromWorkflow({
         state: 'complete',
         completedAt: new Date().toISOString(),
+        runId,
       });
       return;
     }
@@ -674,13 +879,19 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     let storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
     if (activePreviousComments.length > 0 && storedIssues.length > 0) {
       storedIssues = syncTrackedIssuesFromComments(storedIssues, activePreviousComments);
-      await (processorStub as any).saveTrackedIssuesRpc(storedIssues);
     }
 
-    // Build current issues + match
+    // Build current issues + match. A partial/focused run must not interpret
+    // "issue not observed" as "fixed" (plan 002-U4): only a full-scope run may
+    // auto-resolve unmatched open issues.
     const context: IssueBuilderContext = { repo, prNumber };
     const currentIssues = await buildCurrentIssues(context, headSha, result.lineComments);
-    const matchResult = matchCurrentFindingsToStored(currentIssues, storedIssues);
+    const matchResult = matchCurrentFindingsToStored(currentIssues, storedIssues, {
+      assumeMissingResolved: preparedFiles.coverage.scopeComplete,
+      // Only issues in files this run actually reviewed may auto-resolve; a
+      // policy-excluded file was never assessed (plan 002-U4 hardening).
+      reviewedPaths: new Set(preparedFiles.filePatches.map((f) => f.filename)),
+    });
 
     // Update tracked issues in DO via RPC
     const updatedIssues = new Map<string, TrackedIssue>();
@@ -699,11 +910,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     for (const issue of matchResult.newIssues) {
       updatedIssues.set(issue.id, transitionToNew(issue, headSha));
     }
-    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()));
 
     // Resolve fixed comments (if enabled)
     const postFixedReplies = this.env.DONMERGE_POST_FIXED_REPLIES === 'true';
-    if (postFixedReplies && matchResult.resolvedIssues.length > 0) {
+    if (postFixedReplies && runId && matchResult.resolvedIssues.length > 0) {
       await resolveFixedComments(
         owner,
         repo,
@@ -715,7 +925,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           body: issue.body,
           resolved: issue.status === 'fixed',
         })),
-        githubToken
+        githubToken,
+        (commentId) => (processorStub as any).reserveFixedReply(runId, commentId)
       );
     }
 
@@ -752,8 +963,14 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       githubToken,
       activePreviousComments,
       preparedFiles.filePatches,
-      prData.baseBranch
+      prData.baseBranch,
+      runId,
+      {},
+      runId ? () => (processorStub as any).reservePublication(runId) : undefined
     );
+
+    // Persist only after publication, retaining the run fence.
+    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()), runId);
 
     // Fetch published inline comments once. D1 memory needs their GitHub IDs
     // to authenticate replies later (the marker alone is user-forgeable).
@@ -799,20 +1016,31 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       const storedAfterSave = await (processorStub as any).loadTrackedIssuesRpc();
       const updatedById = new Map(updatedNewIssues.map((issue) => [issue.id, issue]));
       const merged = storedAfterSave.map((issue: TrackedIssue) => updatedById.get(issue.id) ?? issue);
-      await (processorStub as any).saveTrackedIssuesRpc(merged);
+      await (processorStub as any).saveTrackedIssuesRpc(merged, runId);
     }
 
-    // Complete check run (surfaces dropped comments when present)
-    await completeCheckRun(owner, repo, checkRunId, gated.review, githubToken, droppedComments);
+    // Complete check run (surfaces dropped comments when present; honest
+    // conclusion about scope — neutral, not green, for partial reviews)
+    await completeCheckRun(
+      owner,
+      repo,
+      checkRunId,
+      gated.review,
+      githubToken,
+      droppedComments,
+      preparedFiles.coverage
+    );
 
     // Update PR description
-    await updatePRDescription(owner, repo, prNumber, gated.review, githubToken);
+    await updatePRDescription(owner, repo, prNumber, gated.review, githubToken, preparedFiles.coverage);
 
     // Update DO status
     await (processorStub as any).updateFromWorkflow({
       state: 'complete',
       completedAt: new Date().toISOString(),
       result: gated.review,
+      runId,
+      headSha,
     });
 
     console.log('Review completed successfully', {

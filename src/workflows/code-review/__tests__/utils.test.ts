@@ -550,3 +550,23 @@ describe('withTimeout', () => {
     await expect(withTimeout(promise, 50, 'custom timeout')).rejects.toThrow('custom timeout');
   });
 });
+
+
+describe('classifyError — publication/coordinator codes', () => {
+  it('maps ambiguous publication failures to PUBLISH_UNRESOLVED (DM-E009)', () => {
+    const { code } = classifyError(
+      new Error('publication unresolved for run x after ambiguous failure — manual verification required, automated re-POST disabled')
+    );
+    expect(code).toBe('DM-E009');
+  });
+
+  it('maps budget exhaustion to BUDGET_EXCEEDED (DM-E008)', () => {
+    const { code } = classifyError(new Error('review budget exhausted before kimi/k3: only 10000ms left'));
+    expect(code).toBe('DM-E008');
+  });
+
+  it('maps PR head movement to PR_CHANGED (DM-E007)', () => {
+    const { code } = classifyError(new Error('PR head changed during review snapshot: expected a, now b'));
+    expect(code).toBe('DM-E007');
+  });
+});

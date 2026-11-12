@@ -56,6 +56,15 @@ export function isTransientGitHubError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * True iff the error is a transport-level failure (fetch rejected, connection
+ * dropped) rather than a GitHub response — the POST may or may not have been
+ * accepted upstream. Bounded-retry safe.
+ */
+export function isTransportError(err: unknown): boolean {
+  return err instanceof Error && !(err instanceof GitHubApiError);
+}
+
 export interface RetryOptions {
   /** Delays (ms) between retries. Total attempts = delays.length + 1. */
   delays: number[];

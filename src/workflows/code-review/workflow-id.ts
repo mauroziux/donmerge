@@ -23,3 +23,21 @@ export function buildReviewWorkflowInstanceId(
 
   return baseId;
 }
+
+/**
+ * Run-scoped workflow instance id (plan 004-U1): each started run gets its
+ * OWN instance, so a `restart` can never resurrect a previous run's stale
+ * params. The base id stays available for legacy instances created before
+ * run fencing existed.
+ */
+export function buildRunScopedInstanceId(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commentId: number | undefined,
+  runId: string | undefined
+): string {
+  const baseId = buildReviewWorkflowInstanceId(owner, repo, prNumber, commentId);
+  if (!runId) return baseId; // legacy: no run identity available
+  return `${baseId}-run-${runId.slice(0, 8)}`;
+}
