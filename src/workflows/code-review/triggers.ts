@@ -29,7 +29,7 @@ export function parseTrigger(
     if (!valid || !payload.pull_request) {
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'ignored pull_request action' };
     }
-    const retrigger = payload.action === 'synchronize' || isBaseRetarget;
+    const retrigger = payload.action === 'synchronize' || payload.action === 'reopened' || isBaseRetarget;
     return {
       shouldRun: true,
       prNumber: payload.pull_request.number,

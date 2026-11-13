@@ -1040,6 +1040,48 @@ export function formatDroppedCommentsNote(dropped: DroppedComment[]): string {
   );
 }
 
+interface ReviewThreadPage {
+  errors?: unknown[];
+  data?: { repository?: { pullRequest?: { reviewThreads?: {
+    nodes: Array<{ isResolved: boolean; comments: { nodes: Array<{ databaseId: number | null }> } }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  } } } };
+}
+
+/** Read actual GitHub thread state; never treat a reply as proof of resolution. */
+async function fetchResolvedReviewCommentIds(owner: string, repo: string, prNumber: number, token: string): Promise<Set<number>> {
+  const resolved = new Set<number>();
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const response: ReviewThreadPage = await githubFetch('https://api.github.com/graphql', token, 'POST', {
+      query: `query($owner:String!, $repo:String!, $number:Int!, $cursor:String) {
+        repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
+          reviewThreads(first:100, after:$cursor) {
+            nodes { isResolved comments(first:1) { nodes { databaseId } } }
+            pageInfo { hasNextPage endCursor }
+          }
+        } }
+      }`,
+      variables: { owner, repo, number: prNumber, cursor },
+    });
+    const page = response.data?.repository?.pullRequest?.reviewThreads;
+    if (response.errors?.length || !page || !Array.isArray(page.nodes) || !page.pageInfo || typeof page.pageInfo.hasNextPage !== 'boolean') {
+      throw new Error('Invalid GitHub review thread response');
+    }
+    for (const thread of page.nodes) {
+      const id = thread.comments?.nodes?.[0]?.databaseId;
+      if (thread.isResolved === true && typeof id === 'number') resolved.add(id);
+    }
+    if (page.pageInfo.hasNextPage && (!page.pageInfo.endCursor || seenCursors.has(page.pageInfo.endCursor))) {
+      throw new Error('Invalid GitHub review thread cursor');
+    }
+    cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
+  return resolved;
+}
+
 /**
  * Fetch previous DonMerge review comments from the PR.
  */
@@ -1080,9 +1122,15 @@ export async function fetchPreviousDonMergeComments(
       resolutionReplies.set(comment.in_reply_to_id, comment.id);
     }
 
-    const originalComments = donmergeComments.filter(
-      (comment) => !comment.in_reply_to_id && !comment.body.includes(RESOLVED_REPLY_MARKER)
-    );
+    const originalComments = donmergeComments.filter((comment) => !comment.in_reply_to_id);
+    let resolvedIds = new Set<number>();
+    if (originalComments.length > 0) {
+      try {
+        resolvedIds = await fetchResolvedReviewCommentIds(owner, repo, prNumber, token);
+      } catch (error) {
+        console.warn('Failed to fetch review thread state; keeping threads unresolved', { owner, repo, prNumber });
+      }
+    }
 
     const mapped = await Promise.all(
       originalComments.map(async (comment) => {
@@ -1104,7 +1152,7 @@ export async function fetchPreviousDonMergeComments(
           entityType: meta?.entityType as PreviousComment['entityType'],
           symbolName: meta?.symbolName,
           codeSnippet: meta?.codeSnippet,
-          resolved: resolutionReplyId !== undefined,
+          resolved: resolvedIds.has(comment.id),
           resolutionReplyId,
         };
       })
@@ -1118,7 +1166,7 @@ export async function fetchPreviousDonMergeComments(
       prNumber,
       error: error instanceof Error ? error.message : error,
     });
-    return [];
+    throw error;
   }
 }
 

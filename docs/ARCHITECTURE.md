@@ -154,9 +154,9 @@ sequenceDiagram
         WF->>DO: loadTrackedIssuesRpc()
         DO-->>WF: stored issues
         WF->>WF: Build current issues + match to stored
-        WF->>WF: Transition issues (new/open/fixed/reintroduced)
+        WF->>WF: Transition observed issues (new/open/reintroduced)
+        Note over WF: Absence alone does not establish a fix
         WF->>DO: saveTrackedIssuesRpc(updated issues)
-        WF->>GA: Resolve fixed comments (if enabled)
         WF->>GA: Filter comments (only new + reintroduced)
         WF->>GA: Publish review (summary + line comments)
         WF->>GA: Attach comment IDs to new issues
@@ -272,7 +272,7 @@ The quality gate uses three categories of regex patterns:
 
 ## Issue Tracking Lifecycle
 
-DonMerge tracks findings across re-runs using deterministic fingerprints. Each issue has a stable identity that survives code changes, comment rewording, and line number shifts.
+DonMerge tracks findings across re-runs using occurrence fingerprints and logical keys. Matching uses exact fingerprints first, then logical and anchor keys; missing findings are not evidence of a fix.
 
 ### State Machine
 
@@ -284,13 +284,9 @@ stateDiagram-v2
 
     open --> open: Persisting<br/>(still present)
 
-    open --> fixed: Not found<br/>in current diff
-
     fixed --> reintroduced: Reappears<br/>in new code
 
     reintroduced --> open: Persisting<br/>again
-
-    new --> fixed: Never persisted<br/>(matched to existing fixed)
 
     dismissed --> [*]: Manual<br/>dismissal
 
@@ -301,9 +297,9 @@ stateDiagram-v2
     end note
 
     note right of fixed
-        fixedCommit recorded.
-        Resolved comment posted
-        (if enabled).
+        Legacy state; current workflow
+        does not infer a fix from absence
+        or post an automatic Fixed reply.
     end note
 
     note right of reintroduced
@@ -463,7 +459,7 @@ Cloudflare Workflow step outputs are inspectable through the Workflows API and C
 | `MAX_REVIEW_FILES` | No | Maximum files per PR review (default: `50`) |
 | `REPO_CONFIGS` | No | Per-repo base branch config: `owner/repo:branch,...` |
 | `REVIEW_TRIGGER` | No | Comment trigger tag (default: `@donmerge`) |
-| `DONMERGE_POST_FIXED_REPLIES` | No | Post ✅ replies on fixed issues (`true`/`false`) |
+| `DONMERGE_POST_FIXED_REPLIES` | No | Legacy setting; fixed replies are disabled until a fix can be verified explicitly. |
 | `DONMERGE_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
 | `SENTRY_WEBHOOK_SECRET` | Sentry | HMAC secrets for Sentry webhook verification |
 | `SENTRY_REPO_MAP` | Sentry | Maps Sentry org slugs to GitHub repos |

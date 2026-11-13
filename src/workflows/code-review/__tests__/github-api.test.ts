@@ -539,6 +539,48 @@ describe('fetchReviewComments', () => {
     expect(await fetchPreviousDonMergeComments('owner', 'repo', 1, 'token')).toEqual([]);
   });
 
+  it('does not treat an unavailable comments listing as an empty review', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('GitHub unavailable'));
+    await expect(fetchPreviousDonMergeComments('owner', 'repo', 1, 'token')).rejects.toThrow('GitHub unavailable');
+  });
+
+  it('uses actual GitHub thread state rather than the bot reply marker', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [
+      { id: 1, path: 'a.ts', line: 1, body: 'first', user: { login: 'donmerge[bot]', type: 'Bot' } },
+      { id: 2, path: 'a.ts', line: 2, body: 'second mentions ✅ **Fixed!** as text', user: { login: 'donmerge[bot]', type: 'Bot' } },
+      { id: 3, in_reply_to_id: 2, path: 'a.ts', line: 2, body: '✅ **Fixed!**', user: { login: 'donmerge[bot]', type: 'Bot' } },
+    ] }).mockResolvedValueOnce({ ok: true, json: async () => ({ data: { repository: { pullRequest: { reviewThreads: {
+      nodes: [
+        { isResolved: true, comments: { nodes: [{ databaseId: 1 }] } },
+        { isResolved: false, comments: { nodes: [{ databaseId: 2 }] } },
+      ], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } }) });
+    const comments = await fetchPreviousDonMergeComments('owner', 'repo', 1, 'token');
+    expect(comments.map((comment) => [comment.id, comment.resolved])).toEqual([[1, true], [2, false]]);
+  });
+
+  it('reads thread state beyond the first GraphQL page', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [
+      { id: 1, path: 'a.ts', line: 1, body: 'finding', user: { login: 'donmerge[bot]', type: 'Bot' } },
+    ] }).mockResolvedValueOnce({ ok: true, json: async () => ({ data: { repository: { pullRequest: { reviewThreads: {
+      nodes: [], pageInfo: { hasNextPage: true, endCursor: 'next' },
+    } } } } }) }).mockResolvedValueOnce({ ok: true, json: async () => ({ data: { repository: { pullRequest: { reviewThreads: {
+      nodes: [{ isResolved: true, comments: { nodes: [{ databaseId: 1 }] } }], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } }) });
+    const comments = await fetchPreviousDonMergeComments('owner', 'repo', 1, 'token');
+    expect(comments[0].resolved).toBe(true);
+    expect(JSON.parse(mockFetch.mock.calls[2][1].body).variables.cursor).toBe('next');
+  });
+
+  it('keeps a thread unresolved if GitHub thread lookup fails', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [
+      { id: 1, path: 'a.ts', line: 1, body: 'finding', user: { login: 'donmerge[bot]', type: 'Bot' } },
+      { id: 2, in_reply_to_id: 1, path: 'a.ts', line: 1, body: '✅ **Fixed!**', user: { login: 'donmerge[bot]', type: 'Bot' } },
+    ] }).mockResolvedValueOnce({ ok: true, json: async () => ({ errors: [{ message: 'unavailable' }] }) });
+    const comments = await fetchPreviousDonMergeComments('owner', 'repo', 1, 'token');
+    expect(comments[0].resolved).toBe(false);
+  });
+
   it('finds previous DonMerge comments beyond the first page', async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       id: index + 1, path: 'src/other.ts', line: index + 1, body: 'human comment',
@@ -550,13 +592,15 @@ describe('fetchReviewComments', () => {
         id: 101, path: 'src/a.ts', line: 7,
         body: '<!-- DONMERGE: {"fingerprint":"fp-101","version":1} -->\\n\\n🔴 **Issue:** Finding',
         user: { login: 'donmerge[bot]', type: 'Bot' },
-      }]) });
+      }]) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }) });
 
     const comments = await fetchPreviousDonMergeComments('owner', 'repo', 1, 'token');
 
     expect(comments).toHaveLength(1);
     expect(comments[0].id).toBe(101);
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(comments[0].resolved).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 });
 
