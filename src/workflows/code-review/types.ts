@@ -172,7 +172,7 @@ export interface WebhookPayload {
   };
   check_run?: CheckRunPayload;
   reaction?: { content: string };
-  sender?: { login: string };
+  sender?: { login: string; type?: string };
 }
 
 export interface ReviewComment {

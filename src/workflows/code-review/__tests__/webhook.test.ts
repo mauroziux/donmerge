@@ -546,7 +546,7 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       inReplyToId: 88,
     });
     expect(mockedHandleReactionFeedback).not.toHaveBeenCalled();
-    expect(mockDbBind).toHaveBeenCalledWith('tableoltd', 'test-repo', 88, 'abc123');
+    expect(mockDbBind).toHaveBeenCalledWith('tableoltd', 'test-repo', 88, 'abc123', 42);
     expect(vi.mocked(addCommentReaction)).toHaveBeenCalledWith(
       'tableoltd', 'test-repo', 99, 'review', 'ghp_test_token', 'thumbsup'
     );

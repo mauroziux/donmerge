@@ -448,6 +448,14 @@ describe('parseTrigger', () => {
   // ─── Reaction routing ─────────────────────────────────────────────
 
   describe('reaction event', () => {
+    it('ignores bot and unverifiable reaction senders', () => {
+      for (const sender of [{ login: 'donmerge[bot]', type: 'Bot' }, { login: 'unknown' }, undefined]) {
+        const result = parseTrigger('reaction', createReactionPayload('thumbsup', { sender }));
+        expect(result.feedback).toBeUndefined();
+        expect(result.reason).toBe('non-human reaction');
+      }
+    });
+
     it('thumbsdown → shouldRun:false, routes to feedback (dismiss)', () => {
       const payload = createReactionPayload('thumbsdown');
       const result = parseTrigger('reaction', payload);

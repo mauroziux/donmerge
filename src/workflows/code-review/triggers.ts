@@ -236,6 +236,9 @@ export function parseTrigger(
     if (payload.action !== 'created' || !payload.comment?.id || !payload.issue?.pull_request) {
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'ignored reaction' };
     }
+    if (payload.sender?.type !== 'User' || isBotUser(payload.sender)) {
+      return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'non-human reaction' };
+    }
     const reactionContent = payload.reaction?.content;
     if (reactionContent !== 'thumbsup' && reactionContent !== 'thumbsdown') {
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'non-thumbs reaction' };

@@ -105,9 +105,9 @@ export async function handleCommentFeedback(
     if (command.type === 'dismiss' || command.type === 'accept') {
       const outcome = await db.prepare(`
         SELECT body, file_path FROM review_outcomes
-        WHERE owner = ? AND repo = ? AND fingerprint = ?
+        WHERE owner = ? AND repo = ? AND pr_number = ? AND github_comment_id = ? AND fingerprint = ?
         ORDER BY id DESC LIMIT 1
-      `).bind(params.owner, params.repo, command.fingerprint).first<{ body: string; file_path: string }>();
+      `).bind(params.owner, params.repo, params.prNumber, params.inReplyToId, command.fingerprint).first<{ body: string; file_path: string }>();
 
       const finding = outcome?.body ? stripHtmlComments(outcome.body).slice(0, 200) : null;
       const learningText = command.type === 'dismiss'
@@ -203,6 +203,7 @@ export async function handleNaturalReply(
     githubUser: string;
     replyText: string;
     parentFingerprint: string;
+    parentCommentId?: number;
     parentBody: string;
     filePath?: string;
   }
@@ -249,9 +250,11 @@ export async function handleNaturalReply(
 
   // Update the finding outcome (best-effort — rows may not exist for old findings).
   try {
-    await updateOutcomeFromTransition(db, {
+    if (params.parentCommentId) await updateOutcomeFromTransition(db, {
       owner: params.owner,
       repo: params.repo,
+      prNumber: params.prNumber,
+      commentId: params.parentCommentId,
       fingerprint: params.parentFingerprint,
       newStatus: classification.type === 'dismiss' ? 'dismissed' : 'open',
       outcomeSource: 'reply',
@@ -313,9 +316,9 @@ export async function handleReactionFeedback(
   if (feedbackType === 'dismiss') {
     const outcome = await db.prepare(`
       SELECT body FROM review_outcomes
-      WHERE owner = ? AND repo = ? AND fingerprint = ?
+      WHERE owner = ? AND repo = ? AND pr_number = ? AND github_comment_id = ? AND fingerprint = ?
       LIMIT 1
-    `).bind(params.owner, params.repo, params.commentFingerprint).first<{ body: string }>();
+    `).bind(params.owner, params.repo, params.prNumber, params.commentId, params.commentFingerprint).first<{ body: string }>();
 
     const learningText = outcome?.body
       ? `Finding dismissed: "${outcome.body.slice(0, 200)}"`
@@ -386,6 +389,8 @@ export async function updateOutcomeFromTransition(
     owner: string;
     repo: string;
     fingerprint: string;
+    prNumber: number;
+    commentId: number;
     newStatus: string;
     outcomeSource?: string;
   }
@@ -400,7 +405,7 @@ export async function updateOutcomeFromTransition(
   await db.prepare(`
     UPDATE review_outcomes
     SET outcome = ?, outcome_source = ?, updated_at = datetime('now')
-    WHERE owner = ? AND repo = ? AND fingerprint = ?
+    WHERE owner = ? AND repo = ? AND pr_number = ? AND github_comment_id = ? AND fingerprint = ?
     AND outcome = 'new'
-  `).bind(outcome, params.outcomeSource ?? 'implicit', params.owner, params.repo, params.fingerprint).run();
+  `).bind(outcome, params.outcomeSource ?? 'implicit', params.owner, params.repo, params.prNumber, params.commentId, params.fingerprint).run();
 }

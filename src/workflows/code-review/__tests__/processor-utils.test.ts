@@ -876,7 +876,7 @@ describe('syncTrackedIssuesFromComments', () => {
     expect(syncTrackedIssuesFromComments([], [createPreviousComment()])).toEqual([]);
   });
 
-  it('should attach githubCommentId when issue matches previous comment by ruleId+symbolName', () => {
+  it('does not attach an ID based only on ruleId and symbolName', () => {
     const issue = createTrackedIssue({
       filePath: 'src/auth.ts',
       ruleId: 'sql-injection',
@@ -893,7 +893,7 @@ describe('syncTrackedIssuesFromComments', () => {
     });
 
     const result = syncTrackedIssuesFromComments([issue], [previous]);
-    expect(result[0].githubCommentId).toBe(42);
+    expect(result[0].githubCommentId).toBeUndefined();
   });
 
   it('should not overwrite existing githubCommentId', () => {
@@ -913,7 +913,7 @@ describe('syncTrackedIssuesFromComments', () => {
     expect(result[0].githubCommentId).toBe(100);
   });
 
-  it('should match by issueKey prefix on logicalKey', () => {
+  it('does not attach an ID based only on issueKey', () => {
     const issue = createTrackedIssue({
       filePath: 'src/auth.ts',
       ruleId: 'sql-injection',
@@ -929,10 +929,10 @@ describe('syncTrackedIssuesFromComments', () => {
     });
 
     const result = syncTrackedIssuesFromComments([issue], [previous]);
-    expect(result[0].githubCommentId).toBe(42);
+    expect(result[0].githubCommentId).toBeUndefined();
   });
 
-  it('should match by strong text overlap as fallback', () => {
+  it('does not attach an ID based on text overlap', () => {
     const issue = createTrackedIssue({
       filePath: 'src/auth.ts',
       body: '🔴 **Issue:** SQL injection vulnerability in query builder',
@@ -946,8 +946,13 @@ describe('syncTrackedIssuesFromComments', () => {
     });
 
     const result = syncTrackedIssuesFromComments([issue], [previous]);
-    // Should match via text overlap (sql, injection, vulnerability, query, builder all overlap)
-    expect(result[0].githubCommentId).toBe(42);
+    expect(result[0].githubCommentId).toBeUndefined();
+  });
+
+  it('attaches the ID only for the same path and fingerprint', () => {
+    const issue = createTrackedIssue({ filePath: 'src/auth.ts', fingerprint: 'exact' });
+    const previous = createPreviousComment({ id: 42, path: 'src/auth.ts', fingerprint: 'exact' });
+    expect(syncTrackedIssuesFromComments([issue], [previous])[0].githubCommentId).toBe(42);
   });
 
   it('should not match issues from different files', () => {

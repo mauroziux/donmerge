@@ -36,6 +36,16 @@ describe('matchCurrentFindingsToStored', () => {
     expect(result.reintroducedIssues).toHaveLength(0);
   });
 
+  it('reserves exact matches before earlier logical-key candidates', () => {
+    const stored = createTrackedIssue({ fingerprint: 'exact', logicalKey: 'shared', status: 'fixed' });
+    const loose = makeCurrentIssue({ fingerprint: 'other', logicalKey: 'shared', anchorKey: 'other-anchor' });
+    const exact = makeCurrentIssue({ fingerprint: 'exact', logicalKey: 'shared' });
+    const result = matchCurrentFindingsToStored([loose, exact], [stored]);
+    expect(result.newIssues).toContain(loose.payload);
+    expect(result.matchedIssues.get(exact)).toBe(stored);
+    expect(result.matchedIssues.has(loose)).toBe(false);
+  });
+
   it('should match by exact fingerprint and classify as persisting', () => {
     const stored = createTrackedIssue({ status: 'open' });
     const current = makeCurrentIssue({

@@ -141,14 +141,15 @@ async function findRecordedDonmergeParent(
   owner: string,
   repo: string,
   parent: { id: number; user?: { login?: string; type?: string } },
-  fingerprint: string
+  fingerprint: string,
+  prNumber: number
 ): Promise<boolean> {
   if (!isDonmergeBotAuthor(parent.user)) return false;
   const row = await db.prepare(`
     SELECT id FROM review_outcomes
-    WHERE owner = ? AND repo = ? AND github_comment_id = ? AND fingerprint = ?
+    WHERE owner = ? AND repo = ? AND github_comment_id = ? AND fingerprint = ? AND pr_number = ?
     LIMIT 1
-  `).bind(owner, repo, parent.id, fingerprint).first<{ id: number }>();
+  `).bind(owner, repo, parent.id, fingerprint, prNumber).first<{ id: number }>();
   return Boolean(row);
 }
 
@@ -191,7 +192,8 @@ async function processNaturalReply(
         context.owner,
         context.repo,
         parent,
-        meta.fingerprint
+        meta.fingerprint,
+        context.prNumber
       ))
     ) {
       // Not a recorded DonMerge finding — a copied marker is not sufficient.
@@ -206,6 +208,7 @@ async function processNaturalReply(
       githubUser: context.githubUser ?? 'unknown',
       replyText: context.commentBody,
       parentFingerprint: meta.fingerprint,
+      parentCommentId: parent.id,
       parentBody: parent.body,
       filePath: parent.path,
     });
@@ -286,7 +289,8 @@ export async function processGitHubCodeReviewWebhook(
               context.owner,
               context.repo,
               parent,
-              meta.fingerprint
+              meta.fingerprint,
+              context.prNumber
             ))
           );
           const fingerprint = context.feedback.fingerprint ?? meta?.fingerprint;
@@ -367,7 +371,8 @@ export async function processGitHubCodeReviewWebhook(
                 context.owner,
                 context.repo,
                 comment,
-                metadata.fingerprint
+                metadata.fingerprint,
+                context.prNumber
               ))
             );
             if (!isRecordedFinding) return;
@@ -410,7 +415,8 @@ export async function processGitHubCodeReviewWebhook(
             context.owner,
             context.repo,
             parent,
-            meta.fingerprint
+            meta.fingerprint,
+            context.prNumber
           ))
         );
         if (!trusted) return;
@@ -487,7 +493,8 @@ export async function processGitHubCodeReviewWebhook(
               context.owner,
               context.repo,
               parent,
-              meta.fingerprint
+              meta.fingerprint,
+              context.prNumber
             ))
           );
           if (!trusted) return;

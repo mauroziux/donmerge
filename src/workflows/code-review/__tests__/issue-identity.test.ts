@@ -21,9 +21,8 @@ describe('normalizeCodeSnippet', () => {
   });
 
   it('should replace inline code backticks with spaces', () => {
-    // normalizeCodeSnippet replaces `...` with space, then collapses whitespace
     const result = normalizeCodeSnippet('const x = `hello` + "world"');
-    expect(result).toBe('const x = + "world"');
+    expect(result).toBe('const x = hello + "world"');
     expect(result).not.toContain('`');
   });
 

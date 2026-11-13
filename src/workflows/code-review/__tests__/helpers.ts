@@ -100,7 +100,7 @@ export function createReactionPayload(
     },
     comment: { id: 99 },
     reaction: { content: reaction },
-    sender: { login: 'dev' },
+    sender: { login: 'dev', type: 'User' },
     ...overrides,
   };
 }

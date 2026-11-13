@@ -25,6 +25,13 @@ export interface ReviewOutcomeInput {
   githubCommentId?: number;
 }
 
+export function newlyPublishedComments(
+  previousIds: ReadonlySet<number> | undefined,
+  comments: FetchedReviewComment[]
+): FetchedReviewComment[] {
+  return previousIds ? comments.filter((comment) => !previousIds.has(comment.id)) : [];
+}
+
 /**
  * Link findings to only their exact, DonMerge-authored inline comment.
  * Unmatched comments remain without an ID and cannot be used as trust anchors
@@ -35,13 +42,14 @@ export function buildReviewOutcomeInputs(
   publishedComments: FetchedReviewComment[]
 ): ReviewOutcomeInput[] {
   return findings.map((finding) => {
+    const fingerprint = finding.fingerprint;
     const comment = findDonmergeReviewComment(
       publishedComments,
       finding.payload.filePath,
-      finding.fingerprint
+      fingerprint
     );
     return {
-      fingerprint: finding.fingerprint,
+      fingerprint,
       logicalKey: finding.logicalKey,
       ruleId: finding.payload.ruleId,
       filePath: finding.payload.filePath,

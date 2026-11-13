@@ -33,7 +33,6 @@ import {
   addCommentReaction,
   fetchPreviousDonMergeComments,
   fetchReviewComments,
-  findDonmergeReviewComment,
   fetchRepoContext,
   fetchRepoFile,
   fetchAllPrFiles,
@@ -71,12 +70,11 @@ import {
 } from './donmerge';
 import {
   filterCommentsByMatch,
-  syncTrackedIssuesFromComments,
   withBlockingApproval,
   hasBlockingFindings,
 } from './processor-utils';
 import { recordReviewFindings } from './feedback-handler';
-import { buildReviewOutcomeInputs } from './review-outcomes';
+import { buildReviewOutcomeInputs, newlyPublishedComments } from './review-outcomes';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
 import { AllModelsFailedError, runReviewModels, DEFAULT_REVIEW_TOTAL_BUDGET_MS } from './review-model-runner';
@@ -262,6 +260,15 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         return this.runLlmReview(preparedFiles);
       });
 
+      // Persist the pre-publication snapshot across retries of the publication step.
+      const previousCommentIds = await step.do('snapshot-review-comment-ids', {
+        retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
+      }, async () => {
+        const { owner, repo, prNumber, githubToken } = llmResult.preparedFiles.prData;
+        const comments = await fetchReviewComments(owner, repo, prNumber, githubToken);
+        return comments.map((comment) => comment.id);
+      });
+
       // Step 4: Publish review — retried with a 30s delay so an unresolved
       // ambiguous publication (marker not yet visible) gets a fresh marker
       // search well after GitHub's listing lag. A STILL-unresolved ambiguity
@@ -271,7 +278,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         timeout: '3 minutes',
       }, async () => {
         try {
-          return await this.publishReview(llmResult, processorStub, runId);
+          return await this.publishReview(llmResult, processorStub, runId, previousCommentIds);
         } catch (error) {
           if (error instanceof Error && error.message.includes('publication unresolved')) {
             // Never retry an unproven POST: stop the step cold.
@@ -859,7 +866,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
   private async publishReview(
     llmResult: LlmReviewResult,
     processorStub: DurableObjectStub,
-    runId?: string
+    runId?: string,
+    previousCommentIds?: number[] | null
   ): Promise<void> {
     const { preparedFiles, result } = llmResult;
     const { prData, activePreviousComments } = preparedFiles;
@@ -876,10 +884,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     }
 
     // Load tracked issues from DO via RPC
-    let storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
-    if (activePreviousComments.length > 0 && storedIssues.length > 0) {
-      storedIssues = syncTrackedIssuesFromComments(storedIssues, activePreviousComments);
-    }
+    const storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
 
     // Build current issues + match. A partial/focused run must not interpret
     // "issue not observed" as "fixed" (plan 002-U4): only a full-scope run may
@@ -931,14 +936,15 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     }
 
     // Filter comments + blocking approval
+    const reintroduced = currentIssues.filter((issue) => matchResult.matchedIssues.get(issue)?.status === 'fixed');
     const filteredResult = withBlockingApproval({
       ...result,
       lineComments: filterCommentsByMatch(
         result.lineComments,
         currentIssues.map((ci) => ci.fingerprint),
         currentIssues.map((ci) => ci.logicalKey),
-        matchResult.newIssues.map((i) => i.fingerprint),
-        matchResult.reintroducedIssues.map((i) => i.logicalKey)
+        [...matchResult.newIssues.map((i) => i.fingerprint), ...reintroduced.map((issue) => issue.fingerprint)],
+        []
       ),
     });
 
@@ -954,6 +960,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     }
 
     // Publish review (validates anchors against threaded patches; returns dropped comments)
+    let expectedComments: Array<{ path: string; fingerprint: string }> = [];
     const droppedComments = await publishReview(
       owner,
       repo,
@@ -966,58 +973,84 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       prData.baseBranch,
       runId,
       {},
-      runId ? () => (processorStub as any).reservePublication(runId) : undefined
+      runId ? () => (processorStub as any).reservePublication(runId) : undefined,
+      (comments) => { expectedComments = comments; },
+      new Set(reintroduced.map((issue) => issue.fingerprint))
     );
-
-    // Persist only after publication, retaining the run fence.
-    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()), runId);
 
     // Fetch published inline comments once. D1 memory needs their GitHub IDs
     // to authenticate replies later (the marker alone is user-forgeable).
     let publishedComments: Awaited<ReturnType<typeof fetchReviewComments>> = [];
     if (currentIssues.length > 0) {
-      try {
-        publishedComments = await fetchReviewComments(owner, repo, prNumber, githubToken);
-      } catch (error) {
-        // Failure to correlate IDs must not fail a review that already posted.
-        console.warn('[memory] Failed to fetch published review comments for outcome correlation:', error);
-      }
+      publishedComments = await fetchReviewComments(owner, repo, prNumber, githubToken);
     }
 
-    // Record outcomes only after publish so newly-created findings can be
-    // correlated to the GitHub comment IDs returned by the API.
+    // Only comments absent from the complete pre-publication snapshot are new.
+    const outcomeInputs = buildReviewOutcomeInputs(
+      currentIssues,
+      newlyPublishedComments(previousCommentIds ? new Set(previousCommentIds) : undefined, publishedComments)
+    );
+
+    // GitHub listing can lag publication; never finalize a missing correlation.
+    for (const expected of expectedComments) {
+      if (!outcomeInputs.some((outcome) => outcome.filePath === expected.path && outcome.fingerprint === expected.fingerprint && outcome.githubCommentId)) {
+        throw new Error('Published review comment is not yet visible for memory correlation');
+      }
+    }
+    if (expectedComments.length > 0 && !this.env.DB) {
+      throw new Error('D1 is required to correlate published review comments');
+    }
     if (this.env.DB) {
-      try {
-        await recordReviewFindings(this.env.DB, {
-          owner,
-          repo,
-          prNumber,
-          headSha,
-          findings: buildReviewOutcomeInputs(currentIssues, publishedComments),
-        });
-      } catch (error) {
-        console.warn('[memory] Failed to record review outcomes:', error);
+      await recordReviewFindings(this.env.DB, {
+        owner,
+        repo,
+        prNumber,
+        headSha,
+        findings: outcomeInputs.filter((outcome) => outcome.githubCommentId),
+      });
+    }
+
+    // Unpublished findings must remain eligible on a later run (invalid
+    // anchors and the inline limit can prevent an otherwise valid finding).
+    for (const issue of matchResult.newIssues) {
+      if (!outcomeInputs.some((outcome) => outcome.fingerprint === issue.fingerprint && outcome.githubCommentId)) {
+        updatedIssues.delete(issue.id);
       }
     }
-
-    // Attach comment IDs to new issues
-    if (matchResult.newIssues.length > 0) {
-      const updatedNewIssues = matchResult.newIssues.map((issue) => {
-        if (issue.githubCommentId) return issue;
-        const matching = findDonmergeReviewComment(
-          publishedComments,
-          issue.filePath,
-          issue.fingerprint
-        );
-        return matching ? { ...issue, githubCommentId: matching.id } : issue;
-      });
-
-      // Merge back into stored issues
-      const storedAfterSave = await (processorStub as any).loadTrackedIssuesRpc();
-      const updatedById = new Map(updatedNewIssues.map((issue) => [issue.id, issue]));
-      const merged = storedAfterSave.map((issue: TrackedIssue) => updatedById.get(issue.id) ?? issue);
-      await (processorStub as any).saveTrackedIssuesRpc(merged, runId);
+    for (const issue of matchResult.reintroducedIssues) {
+      const wasPublished = currentIssues.some((current, index) =>
+        matchResult.matchedIssues.get(current)?.id === issue.id && outcomeInputs[index].githubCommentId
+      );
+      if (!wasPublished) updatedIssues.set(issue.id, issue);
     }
+
+    // Fingerprints identify semantic findings, not publication instances: a
+    // reintroduction with the same identity keeps its fingerprint but gets a
+    // fresh verified comment ID. Persist both with the transition in one RPC.
+    for (const [index, current] of currentIssues.entries()) {
+      const commentId = outcomeInputs[index].githubCommentId;
+      if (!commentId) continue;
+      const existing = matchResult.matchedIssues.get(current);
+      const issueId = existing?.id ?? current.payload.id;
+      const updated = updatedIssues.get(issueId);
+      if (updated) updatedIssues.set(issueId, {
+        ...updated,
+        fingerprint: current.fingerprint,
+        logicalKey: current.logicalKey,
+        anchorKey: current.anchorKey,
+        ruleId: current.payload.ruleId,
+        entityType: current.payload.entityType,
+        symbolName: current.payload.symbolName,
+        filePath: current.payload.filePath,
+        line: current.payload.line,
+        side: current.payload.side,
+        snippetHash: current.payload.snippetHash,
+        body: current.payload.body,
+        severity: current.payload.severity,
+        githubCommentId: commentId,
+      });
+    }
+    await (processorStub as any).saveTrackedIssuesRpc(Array.from(updatedIssues.values()), runId);
 
     // Complete check run (surfaces dropped comments when present; honest
     // conclusion about scope — neutral, not green, for partial reviews)
