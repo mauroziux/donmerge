@@ -7,7 +7,7 @@
  *   - clean review + PARTIAL coverage → check conclusion `neutral`,
  *     and unmatched open issues stay open (absence ≠ fixed)
  *   - blocking findings               → `failure` regardless of coverage
- *   - full coverage may auto-resolve unmatched open issues (historical behavior)
+ *   - even full coverage cannot establish a fix from a missing finding
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -456,14 +456,17 @@ describe('publishReview verdict matrix', () => {
     expect(stub.saveTrackedIssuesRpc).not.toHaveBeenCalled();
   });
 
-  it('clean review + full coverage → success, and auto-resolves unmatched open issues in REVIEWED files', async () => {
+  it('clean review + full coverage does not treat an absent finding as fixed', async () => {
     const calls = setupGitHubMock();
     const openIssue = createTrackedIssue({ filePath: 'a.ts', status: 'open' });
     const { stub, saved } = setupProcessorStub([openIssue]);
 
-    await (makeWorkflow() as unknown as {
-      publishReview: (r: unknown, s: unknown) => Promise<void>;
-    }).publishReview(llmResult(fullCoverage(), cleanReview()), stub);
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DONMERGE_POST_FIXED_REPLIES: 'true' } as never);
+    const fenced = Object.assign(stub, { reservePublication: vi.fn(async () => true) });
+    await (workflow as unknown as {
+      publishReview: (r: unknown, s: unknown, runId: string) => Promise<void>;
+    }).publishReview(llmResult(fullCoverage(), cleanReview()), fenced, 'run-omission');
+    expect(calls.some((call) => call.method === 'POST' && call.url.includes('/comments') && JSON.stringify(call.body).includes('Fixed!'))).toBe(false);
 
     const checkPatch = calls.find(
       (c) => c.url.includes('/check-runs/777') && c.method === 'PATCH'
@@ -472,7 +475,7 @@ describe('publishReview verdict matrix', () => {
 
     const lastSave = saved[saved.length - 1] ?? [];
     const storedOpen = lastSave.find((i) => i.id === openIssue.id);
-    expect(storedOpen?.status).toBe('fixed');
+    expect(storedOpen?.status).toBe('open');
   });
 
   it('full coverage does NOT auto-resolve issues in files outside the reviewed scope (policy-excluded)', async () => {

@@ -14,9 +14,8 @@
  *
  * The gate degrades, never blocks: it never throws, so a gating decision never
  * loses the valid new findings the run produced. Adapted from pullfrog's
- * `countOutstandingPullfrogThreads` (mcp/review.ts), rewritten for DonMerge's
- * REST-fetched PreviousComment shape (no GraphQL, no author-login re-check — the
- * fetch already filters by author).
+ * `countOutstandingPullfrogThreads` (mcp/review.ts), using DonMerge comments
+ * filtered by author and GitHub GraphQL thread resolution state.
  */
 
 import type { PreviousComment, ReviewResult } from './types';

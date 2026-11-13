@@ -40,13 +40,13 @@ describe('parseTrigger', () => {
       });
     });
 
-    it('should trigger on "reopened" action', () => {
+    it('should reload prior threads when a PR is reopened', () => {
       const payload = createPullRequestPayload({ action: 'reopened' });
       const result = parseTrigger('pull_request', payload);
       expect(result).toEqual({
         shouldRun: true,
         prNumber: 42,
-        retrigger: false,
+        retrigger: true,
       });
     });
 

@@ -38,7 +38,6 @@ import {
   fetchAllPrFiles,
   fetchPrHeadSha,
   fetchFileContentsAtRef,
-  resolveFixedComments,
   publishReview,
   completeCheckRun,
   completeCheckRunNeutral,
@@ -49,7 +48,7 @@ import {
 import { resolveGitHubToken } from './github-auth';
 import { buildCurrentIssues, type IssueBuilderContext } from './issue-builder';
 import { matchCurrentFindingsToStored } from './issue-matcher';
-import { transitionToFixed, transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
+import { transitionToNew, transitionToOpen, transitionToReintroduced } from './issue-lifecycle';
 import { applyApprovalGate } from './approval-gate';
 import { parseModelConfig, getRepoConfig, classifyError } from './utils';
 import { buildReviewPrompt } from './prompts';
@@ -886,16 +885,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     // Load tracked issues from DO via RPC
     const storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
 
-    // Build current issues + match. A partial/focused run must not interpret
-    // "issue not observed" as "fixed" (plan 002-U4): only a full-scope run may
-    // auto-resolve unmatched open issues.
+    // Absence from model output is never proof that a finding is fixed.
     const context: IssueBuilderContext = { repo, prNumber };
     const currentIssues = await buildCurrentIssues(context, headSha, result.lineComments);
     const matchResult = matchCurrentFindingsToStored(currentIssues, storedIssues, {
-      assumeMissingResolved: preparedFiles.coverage.scopeComplete,
-      // Only issues in files this run actually reviewed may auto-resolve; a
-      // policy-excluded file was never assessed (plan 002-U4 hardening).
-      reviewedPaths: new Set(preparedFiles.filePatches.map((f) => f.filename)),
+      assumeMissingResolved: false,
     });
 
     // Update tracked issues in DO via RPC
@@ -906,33 +900,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     for (const issue of matchResult.persistingIssues) {
       updatedIssues.set(issue.id, transitionToOpen(issue, headSha));
     }
-    for (const issue of matchResult.resolvedIssues) {
-      updatedIssues.set(issue.id, transitionToFixed(issue, headSha));
-    }
     for (const issue of matchResult.reintroducedIssues) {
       updatedIssues.set(issue.id, transitionToReintroduced(issue, headSha));
     }
     for (const issue of matchResult.newIssues) {
       updatedIssues.set(issue.id, transitionToNew(issue, headSha));
-    }
-
-    // Resolve fixed comments (if enabled)
-    const postFixedReplies = this.env.DONMERGE_POST_FIXED_REPLIES === 'true';
-    if (postFixedReplies && runId && matchResult.resolvedIssues.length > 0) {
-      await resolveFixedComments(
-        owner,
-        repo,
-        prNumber,
-        matchResult.resolvedIssues.filter((issue) => issue.githubCommentId).map((issue) => ({
-          id: issue.githubCommentId!,
-          path: issue.filePath,
-          line: issue.line,
-          body: issue.body,
-          resolved: issue.status === 'fixed',
-        })),
-        githubToken,
-        (commentId) => (processorStub as any).reserveFixedReply(runId, commentId)
-      );
     }
 
     // Filter comments + blocking approval
