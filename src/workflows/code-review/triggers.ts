@@ -240,14 +240,14 @@ export function parseTrigger(
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'non-human reaction' };
     }
     const reactionContent = payload.reaction?.content;
-    if (reactionContent !== 'thumbsup' && reactionContent !== 'thumbsdown') {
+    if (!['+1', '-1', 'thumbsup', 'thumbsdown'].includes(reactionContent ?? '')) {
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'non-thumbs reaction' };
     }
     return {
       shouldRun: false,
       prNumber: payload.issue.number,
       retrigger: false,
-      feedback: { type: reactionContent === 'thumbsdown' ? 'dismiss' : 'accept' },
+      feedback: { type: reactionContent === '-1' || reactionContent === 'thumbsdown' ? 'dismiss' : 'accept' },
       commentId: payload.comment.id,
       commentType: 'review',
       githubUser: payload.sender?.login,

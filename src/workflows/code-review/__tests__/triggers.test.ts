@@ -448,6 +448,13 @@ describe('parseTrigger', () => {
   // ─── Reaction routing ─────────────────────────────────────────────
 
   describe('reaction event', () => {
+    it.each([['+1', 'accept'], ['-1', 'dismiss']] as const)(
+      'maps GitHub content %s to %s', (content, type) => {
+        const result = parseTrigger('reaction', createReactionPayload(content));
+        expect(result.feedback).toEqual({ type });
+      }
+    );
+
     it('ignores bot and unverifiable reaction senders', () => {
       for (const sender of [{ login: 'donmerge[bot]', type: 'Bot' }, { login: 'unknown' }, undefined]) {
         const result = parseTrigger('reaction', createReactionPayload('thumbsup', { sender }));

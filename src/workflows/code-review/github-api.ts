@@ -355,7 +355,8 @@ export async function addCommentReaction(
       : `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}/reactions`;
 
   try {
-    await githubFetch(url, token, 'POST', { content });
+    const githubContent = content === 'thumbsup' ? '+1' : content === 'thumbsdown' ? '-1' : content === 'tada' ? 'hooray' : content;
+    await githubFetch(url, token, 'POST', { content: githubContent });
   } catch (error) {
     console.error('Failed to add reaction', {
       owner,
