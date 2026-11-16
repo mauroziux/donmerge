@@ -678,6 +678,14 @@ describe('postReplyComment', () => {
 });
 
 describe('addCommentReaction', () => {
+  it.each([['thumbsdown', '-1'], ['tada', 'hooray'], ['eyes', 'eyes']] as const)(
+    'maps %s to GitHub content %s', async (input, expected) => {
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ id: 1 }) });
+      await addCommentReaction('owner', 'repo', 200, 'review', 'tok', input);
+      expect(mockFetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ body: JSON.stringify({ content: expected }) }));
+    }
+  );
+
   it('supports configurable reaction content', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
@@ -690,7 +698,7 @@ describe('addCommentReaction', () => {
       'https://api.github.com/repos/owner/repo/pulls/comments/200/reactions',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ content: 'thumbsup' }),
+        body: JSON.stringify({ content: '+1' }),
       })
     );
   });
