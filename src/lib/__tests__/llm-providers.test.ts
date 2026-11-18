@@ -18,6 +18,9 @@ import {
   resolveOpenAIBaseURL,
   buildKimiProviderConfig,
   buildGlmProviderConfig,
+  buildAiGatewayProviderConfig,
+  THINKING_DISABLED,
+  isGatewayCompatUrl,
   buildOpencodeConfig,
   resolveFallbackModel,
   resolveReviewModels,
@@ -268,5 +271,32 @@ describe('AI Gateway integration', () => {
     );
     // falls back to provider URL when gateway is off
     expect(resolveDirectFetchBaseURL('kimi', {})).toBe(KIMI_BASE_URL);
+  });
+});
+
+// ─── Gateway thinking switch (BYOK cost control) ────────────────────────────
+
+describe('buildAiGatewayProviderConfig — thinking disabled', () => {
+  it('configures the route model with thinking disabled (reasoning is billed as output)', () => {
+    const config = buildAiGatewayProviderConfig(
+      'cf-token',
+      'https://gateway.ai.cloudflare.com/v1/acct/donmerge-production/compat',
+      'donmerge-text-fallback'
+    );
+    const models = config.models as Record<string, { name: string; options?: Record<string, unknown> }>;
+    const model = models['dynamic/donmerge-text-fallback'];
+    expect(model.options?.thinking).toEqual({ type: 'disabled' });
+  });
+});
+
+describe('THINKING_DISABLED / isGatewayCompatUrl', () => {
+  it('THINKING_DISABLED uses the current v2 value (disabled, not the v1 "disable")', () => {
+    expect(THINKING_DISABLED).toEqual({ type: 'disabled' });
+  });
+
+  it('isGatewayCompatUrl matches only the CF gateway host', () => {
+    expect(isGatewayCompatUrl('https://gateway.ai.cloudflare.com/v1/a/gw/compat')).toBe(true);
+    expect(isGatewayCompatUrl('https://api.openai.com/v1')).toBe(false);
+    expect(isGatewayCompatUrl('https://api.kimi.com/coding/v1')).toBe(false);
   });
 });

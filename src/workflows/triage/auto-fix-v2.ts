@@ -28,6 +28,8 @@ import {
   OPENAI_BASE_URL,
   resolveOpenAIBaseURL,
   resolveFallbackModel,
+  isGatewayCompatUrl,
+  THINKING_DISABLED,
   selectApiKey,
   aiGatewayEnabled,
   aiGatewayCompatUrl,
@@ -297,6 +299,7 @@ async function callOpenAI(
       messages,
       temperature: 0.2,
       max_tokens: 4096,
+      ...(isGatewayCompatUrl(baseURL) ? { thinking: THINKING_DISABLED } : {}),
     }),
   });
 

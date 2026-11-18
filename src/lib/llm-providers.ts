@@ -68,6 +68,26 @@ export function aiGatewayModelId(routeName: string): string {
 }
 
 /**
+ * Thinking/reasoning switch sent on every gateway request. DeepSeek's native
+ * API (deepseek-flash) enables reasoning BY DEFAULT — reasoning tokens are
+ * billed as output (the most expensive tier) and, with tight `max_tokens`,
+ * reasoning alone can consume the budget and leave `content` empty. Reviews
+ * are structured-JSON tasks: reasoning adds cost and latency with no quality
+ * gain, so it is explicitly disabled. The same `thinking` object is valid for
+ * the GLM (Z.AI) fallback hop in the gateway route.
+ */
+export const THINKING_DISABLED = { type: 'disabled' } as const;
+
+/**
+ * True when the base URL points at the CF AI Gateway compat endpoint (whose
+ * provider chain understands the `thinking` switch), as opposed to a direct
+ * provider API (OpenAI rejects unknown body fields).
+ */
+export function isGatewayCompatUrl(baseURL: string): boolean {
+  return baseURL.includes('gateway.ai.cloudflare.com');
+}
+
+/**
  * Build an OpenCode provider entry that routes through a CF AI Gateway route.
  * The CF token is sent as the standard `Authorization: Bearer` API key (the
  * gateway accepts it on the compat endpoint). The gateway applies its routing
@@ -89,6 +109,9 @@ export function buildAiGatewayProviderConfig(
     models: {
       [modelId]: {
         name: `DonMerge gateway route: ${routeName}`,
+        options: {
+          thinking: THINKING_DISABLED,
+        },
       },
     },
   };
