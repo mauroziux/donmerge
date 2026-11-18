@@ -81,6 +81,16 @@ DonMerge installs as a GitHub App and automatically reviews PRs in configured re
 - Repository allowlist configured in `wrangler.jsonc`
 - See [WEBHOOK_SETUP.md](./WEBHOOK_SETUP.md) for setup instructions
 
+#### Cost controls (automatic reviews)
+
+| Behavior | Default | Override |
+|----------|---------|----------|
+| **Push debounce** — a burst of pushes to an open PR produces ONE review: `synchronize` deliveries wait in the queue and superseded ones are dropped at consume time. `opened`, `reopened`, base retargets and comment triggers are never delayed. | 600s | `REVIEW_PUSH_DEBOUNCE_SECONDS` (`0` disables) |
+| **Incremental re-reviews** — after a fully-reviewed commit, a push reviews only the files changed since that SHA. Falls back to the full diff on force-push, base change, compare failure or if the previous review was partial. | on | `DONMERGE_INCREMENTAL_REVIEW=false` |
+| **Trivial skip** — PRs made only of docs/metadata/lockfiles complete a neutral check ("Trivial change — review skipped") without an LLM pass. Any high-risk signal (e.g. `.github/webhook-*.yml`) or explicit `@donmerge` request overrides the skip. | on | `DONMERGE_SKIP_TRIVIAL=false` |
+
+Incremental state lives in D1 (`review_state`, migration 0005) and records the last fully-reviewed SHA per PR; the check-run/PR-description coverage notes say explicitly when a review was incremental. Prompt sections above the diff are deterministic (stable ordering, tie-broken memory queries) so provider-side prompt caching stays effective.
+
 ### Push API
 
 Trigger reviews and Sentry triage from any CI/CD pipeline via HTTP POST calls.
@@ -208,6 +218,9 @@ Key variables:
 | `FALLBACK_MODEL` | No | Fallback model attempted if the primary provider fails (default: `openai/gpt-4o`) |
 | `ANTHROPIC_API_KEY` | No | Anthropic API key (enables Claude models for auto-fix V2) |
 | `DONMERGE_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
+| `REVIEW_PUSH_DEBOUNCE_SECONDS` | No | Push-debounce window in seconds for `synchronize` reviews (default `600`, `0` disables). See [Cost controls](#cost-controls-automatic-reviews). |
+| `DONMERGE_INCREMENTAL_REVIEW` | No | `false` disables incremental re-reviews (default on). See [Cost controls](#cost-controls-automatic-reviews). |
+| `DONMERGE_SKIP_TRIVIAL` | No | `false` reviews docs/lockfile-only PRs like any other (default: skip with a neutral check). See [Cost controls](#cost-controls-automatic-reviews). |
 | `GITHUB_WEBHOOK_SECRET` | Webhook mode | Webhook signature validation |
 | `GITHUB_APP_ID` | Webhook mode | GitHub App ID |
 | `GITHUB_APP_PRIVATE_KEY` | Webhook mode | GitHub App private key (PEM) |

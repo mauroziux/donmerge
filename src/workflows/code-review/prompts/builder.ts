@@ -40,6 +40,13 @@ export interface ReviewPromptContext {
   previousComments?: PreviousComment[];
   diffText: string;
   repoContext?: RepoContext;
+  /**
+   * Incremental re-review (cost control): the diff contains only the commits
+   * pushed since this previously fully-reviewed SHA. Rendered right above the
+   * diff so the stable prompt prefix (rubric → context → schema) stays
+   * byte-identical for provider-side prompt caching.
+   */
+  incrementalSince?: string;
 }
 
 /**
@@ -233,10 +240,32 @@ export class ReviewPromptBuilder {
       this.addFileContentsSection(this.options.fileContents);
     }
 
-    // 11. Diff to review
+    // 11. Diff to review (with incremental scope note when applicable)
+    if (this.context.incrementalSince) {
+      this.addIncrementalScopeSection();
+    }
     this.addDiffSection();
 
     return this.sections.join('\n\n');
+  }
+
+  /**
+   * Incremental-scope note: the diff below is NOT the whole PR — it is the
+   * commits pushed since the last fully-reviewed commit. Rendered immediately
+   * before the diff so every section above it (rubric, standards, schema)
+   * stays byte-identical across the PR's re-reviews.
+   */
+  private addIncrementalScopeSection(): void {
+    const shortSha = this.context!.incrementalSince!.slice(0, 12);
+    const lines = [
+      'INCREMENTAL REVIEW SCOPE:',
+      `This is a re-review of an updated PR. The DIFF below contains ONLY the commits pushed since`,
+      `the last fully reviewed commit (${shortSha}). Files changed in earlier commits were already`,
+      'reviewed in a previous full review of this PR and are intentionally not repeated here.',
+      'Do not treat the absence of earlier files from the diff as an error, and do not re-report',
+      'findings for code that is not part of this diff.',
+    ];
+    this.addSection(lines.join('\n'));
   }
 
   /**

@@ -280,3 +280,74 @@ describe('coverageReportText', () => {
     expect(text).toContain('nothing was reviewed');
   });
 });
+
+describe('incremental reviews (cost control)', () => {
+  const incrementalCtx = {
+    headSha: 'head-sha',
+    changedFilesCount: 9, // whole-PR declared count — not applicable incrementally
+    apiFileCapReached: false,
+    incrementalSince: 'abcdef1234567890abcdef',
+  };
+
+  it('scopeComplete ignores the whole-PR declared count on incremental runs', () => {
+    const plan = planReviewFiles({
+      discovered: [file('new.ts')],
+      isExcluded: NO_EXCLUDE,
+      ...BIG_BUDGET,
+    });
+    const manifest = buildCoverageManifest(plan, incrementalCtx);
+    expect(manifest.scopeComplete).toBe(true);
+    expect(manifest.incrementalSince).toBe('abcdef1234567890abcdef');
+  });
+
+  it('full-scope manifests keep requiring the declared-count match', () => {
+    const plan = planReviewFiles({
+      discovered: [file('a.ts')],
+      isExcluded: NO_EXCLUDE,
+      ...BIG_BUDGET,
+    });
+    const manifest = buildCoverageManifest(plan, {
+      headSha: 'head-sha',
+      changedFilesCount: 9,
+      apiFileCapReached: false,
+    });
+    expect(manifest.scopeComplete).toBe(false);
+    expect(manifest.incrementalSince).toBeUndefined();
+  });
+
+  it('budget-excluded files still break scopeComplete on incremental runs', () => {
+    const plan = planReviewFiles({
+      discovered: [file('new.ts'), file('new2.ts', 60_000)],
+      isExcluded: NO_EXCLUDE,
+      maxFiles: 50,
+      diffCharBudget: 5_000,
+    });
+    const manifest = buildCoverageManifest(plan, incrementalCtx);
+    expect(manifest.scopeComplete).toBe(false);
+  });
+
+  it('report text explains the incremental basis on a clean run', () => {
+    const plan = planReviewFiles({
+      discovered: [file('new.ts')],
+      isExcluded: NO_EXCLUDE,
+      ...BIG_BUDGET,
+    });
+    const text = coverageReportText(buildCoverageManifest(plan, incrementalCtx));
+    expect(text).toContain('Incremental review');
+    expect(text).toContain('abcdef123456');
+    expect(text).toContain("inherit that review's verdict");
+    expect(text).toContain('Coverage: full');
+  });
+
+  it('report text keeps the partial warning below the incremental note', () => {
+    const plan = planReviewFiles({
+      discovered: [file('new.ts'), file('new2.ts')],
+      isExcluded: NO_EXCLUDE,
+      maxFiles: 1,
+      diffCharBudget: DEFAULT_DIFF_CHAR_BUDGET,
+    });
+    const text = coverageReportText(buildCoverageManifest(plan, incrementalCtx));
+    expect(text.indexOf('Incremental review')).toBeLessThan(text.indexOf('Coverage: partial'));
+    expect(text).toContain('does not certify');
+  });
+});
