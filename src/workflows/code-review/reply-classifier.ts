@@ -22,6 +22,7 @@ import {
   aiGatewayModelId,
   aiGatewayCompatUrl,
   OPENAI_BASE_URL,
+  THINKING_DISABLED,
 } from '../../lib/llm-providers';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -138,6 +139,9 @@ export async function classifyReplyWithLlm(
         ],
         temperature: 0,
         max_tokens: 300,
+        // The gateway route serves native DeepSeek (reasoning ON by default):
+        // reasoning is billed as output and would eat the tight token budget.
+        thinking: THINKING_DISABLED,
       }),
       signal: AbortSignal.timeout(config.timeoutMs),
     });
@@ -323,6 +327,7 @@ async function classifyIntentWithLlm(
         ],
         temperature: 0,
         max_tokens: 60,
+        thinking: THINKING_DISABLED,
       }),
       signal: AbortSignal.timeout(Math.min(config.timeoutMs, 8_000)),
     });

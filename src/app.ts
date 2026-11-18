@@ -89,7 +89,7 @@ app.post('/api/v1/debug/providers', async (c) => {
     try {
       await sb.setEnvVars({ CF_AI_GATEWAY_TOKEN: (c.env as any).CF_AI_GATEWAY_TOKEN ?? '', CF_AI_GATEWAY_URL: (c.env as any).CF_AI_GATEWAY_URL ?? '' });
       const r = await sb.exec(
-        `curl -s -m 45 -o /tmp/p.json -w '%{http_code} %{time_total}s' "$CF_AI_GATEWAY_URL/compat/chat/completions" -H "Authorization: Bearer $CF_AI_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d '{"model":"${probeModel}","messages":[{"role":"user","content":"say OK"}],"max_tokens":8}'; head -c 250 /tmp/p.json`,
+        `curl -s -m 45 -o /tmp/p.json -w '%{http_code} %{time_total}s' "$CF_AI_GATEWAY_URL/compat/chat/completions" -H "Authorization: Bearer $CF_AI_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d '{"model":"${probeModel}","messages":[{"role":"user","content":"say OK"}],"max_tokens":8,"thinking":{"type":"disabled"}}'; head -c 250 /tmp/p.json`,
         { timeout: 60_000 }
       );
       return c.json({ model: probeModel, result: (r?.stdout ?? '').trim() });
@@ -120,7 +120,7 @@ app.post('/api/v1/debug/providers', async (c) => {
       tiny('https://api.kimi.com/coding/v1/chat/completions', '$KIMI_API_KEY', 'k3'),
       tiny('https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', '$GLM_API_KEY', 'glm-4.7'),
       tiny('https://api.openai.com/v1/chat/completions', '$OPENAI_API_KEY', 'gpt-4o'),
-      t(`printf '%s' '{"model":"dynamic/'"$CF_AI_GATEWAY_ROUTE"'","messages":[{"role":"user","content":"say OK"}],"max_tokens":5}' > /tmp/g.json; curl -s -m 30 -o /tmp/gr.json -w '%{http_code} %{time_total}s' "$CF_AI_GATEWAY_URL/compat/chat/completions" -H "Authorization: Bearer $CF_AI_GATEWAY_TOKEN" -H 'Content-Type: application/json' -H 'cf-aig-skip-cache: true' -d @/tmp/g.json; head -c 250 /tmp/gr.json`),
+      t(`printf '%s' '{"model":"dynamic/'"$CF_AI_GATEWAY_ROUTE"'","messages":[{"role":"user","content":"say OK"}],"max_tokens":5,"thinking":{"type":"disabled"}}' > /tmp/g.json; curl -s -m 30 -o /tmp/gr.json -w '%{http_code} %{time_total}s' "$CF_AI_GATEWAY_URL/compat/chat/completions" -H "Authorization: Bearer $CF_AI_GATEWAY_TOKEN" -H 'Content-Type: application/json' -H 'cf-aig-skip-cache: true' -d @/tmp/g.json; head -c 250 /tmp/gr.json`),
     ]);
     return c.json({ kimi: fmt(kimi), glm: fmt(glm), openai: fmt(openai), gateway: fmt(gateway) });
   } finally {
