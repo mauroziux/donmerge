@@ -208,6 +208,7 @@ describe('validateWebhookFast', () => {
       commentType: undefined,
       instruction: undefined,
       focusFiles: undefined,
+      triggerAction: 'opened',
     });
   });
 
@@ -935,5 +936,66 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       commentFingerprint: 'fingerprint_from_comment',
     });
     expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
+  });
+});
+
+describe('validateWebhookFast — triggerAction propagation (push debounce)', () => {
+  const prPayload = (action: string) =>
+    JSON.stringify({
+      action,
+      installation: { id: 123 },
+      repository: { owner: { login: 'tableoltd' }, name: 'test-repo' },
+      pull_request: { number: 42, head: { sha: 'head-sha' } },
+    });
+
+  function mockReviewTrigger() {
+    mockedVerify.mockResolvedValue(true);
+    mockedIsAllowed.mockReturnValue(true);
+    mockedParseTrigger.mockReturnValue({
+      shouldRun: true,
+      prNumber: 42,
+      retrigger: true,
+      headSha: 'head-sha',
+    });
+  }
+
+  it('propagates the synchronize action so the consumer can drop superseded pushes', async () => {
+    mockReviewTrigger();
+    const result = await validateWebhookFast(
+      { ...baseEnv },
+      'pull_request',
+      'sha256=abc',
+      prPayload('synchronize')
+    );
+    expect(result.shouldProcess).toBe(true);
+    expect(result.context?.triggerAction).toBe('synchronize');
+  });
+
+  it('propagates opened the same way (never debounced, but labeled)', async () => {
+    mockReviewTrigger();
+    const result = await validateWebhookFast(
+      { ...baseEnv },
+      'pull_request',
+      'sha256=abc',
+      prPayload('opened')
+    );
+    expect(result.context?.triggerAction).toBe('opened');
+  });
+
+  it('leaves triggerAction undefined on non-pull_request events', async () => {
+    mockedVerify.mockResolvedValue(true);
+    mockedIsAllowed.mockReturnValue(true);
+    mockedParseTrigger.mockReturnValue({
+      shouldRun: true,
+      prNumber: 42,
+      retrigger: true,
+    });
+    const result = await validateWebhookFast(
+      { ...baseEnv },
+      'check_run',
+      'sha256=abc',
+      JSON.stringify({ action: 'rerequested', repository: { owner: { login: 'tableoltd' }, name: 'test-repo' } })
+    );
+    expect(result.context?.triggerAction).toBeUndefined();
   });
 });

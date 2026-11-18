@@ -208,8 +208,14 @@ export interface CoverageManifest {
   /**
    * True only when the whole PR was covered: nothing pending, not focused,
    * discovery matched the PR's declared file count and no API cap was hit.
+   * On incremental runs (incrementalSince set) it means the whole compare
+   * range was covered; files unchanged since that commit inherit the previous
+   * full review's verdict.
    */
   scopeComplete: boolean;
+  /** Present on incremental re-reviews: files changed since this previously
+   * fully-reviewed commit were the run's scope. */
+  incrementalSince?: string;
   /** Pending entries (budget/no-patch), capped for display. */
   pending: Array<{ path: string; status: FileCoverageStatus; reason?: string }>;
 }
@@ -218,6 +224,13 @@ export interface BuildManifestContext {
   headSha: string;
   changedFilesCount: number;
   apiFileCapReached: boolean;
+  /**
+   * Set on incremental re-reviews: the manifest then describes only the files
+   * changed since this (previously fully-reviewed) commit, not the whole PR.
+   * The declared-count cross-check is skipped — the discovery basis is the
+   * compare range, not the PR's declared changed-file count.
+   */
+  incrementalSince?: string;
 }
 
 const MAX_PENDING_DISPLAY = 15;
@@ -234,18 +247,19 @@ export function buildCoverageManifest(
   const excluded = byStatus('excluded-policy');
   const discoveredCount = plan.entries.length;
 
-  // Strict whole-PR coverage: even policy-excluded files break `scopeComplete`
-  // — the check reports neutral with the exclusions listed, so a configured
-  // exclude can never produce a green "full" verdict the diff does not back
-  // (judge-hardened plan 002-U4). The exclusions remain visible and distinct
-  // from budget limitations.
+  // Strict whole-scope coverage: even policy-excluded files break
+  // `scopeComplete` — the check reports neutral with the exclusions listed, so
+  // a configured exclude can never produce a green "full" verdict the diff
+  // does not back (judge-hardened plan 002-U4). The exclusions remain visible
+  // and distinct from budget limitations. For incremental runs the scope is
+  // the compare range; the PR's declared changed-file count does not apply.
   const scopeComplete =
     !plan.focused &&
     !plan.focusNoMatch &&
     !plan.diffTruncated &&
     pending.length === 0 &&
     excluded.length === 0 &&
-    discoveredCount >= ctx.changedFilesCount &&
+    (ctx.incrementalSince !== undefined || discoveredCount >= ctx.changedFilesCount) &&
     !ctx.apiFileCapReached;
 
   return {
@@ -261,6 +275,7 @@ export function buildCoverageManifest(
     focusNoMatch: plan.focusNoMatch,
     diffTruncated: plan.diffTruncated,
     scopeComplete,
+    incrementalSince: ctx.incrementalSince,
     pending: pending
       .slice(0, MAX_PENDING_DISPLAY)
       .map(({ path, status, reason }) => ({ path, status, reason })),
@@ -288,11 +303,21 @@ export function checkConclusion(
 
 /** Human-readable coverage note for check-run output and PR description. */
 export function coverageReportText(manifest: CoverageManifest): string {
+  const incrementalNote = manifest.incrementalSince
+    ? `Incremental review: this run covers only the file(s) changed since the last fully reviewed commit \`${manifest.incrementalSince.slice(0, 12)}\`; files unchanged since then inherit that review's verdict.\n\n`
+    : '';
+
   if (manifest.scopeComplete) {
-    return `Coverage: full — ${manifest.reviewedCount} file(s) reviewed, ${manifest.excludedPolicyCount} excluded by repo policy.`;
+    return (
+      incrementalNote +
+      `Coverage: full — ${manifest.reviewedCount} file(s) reviewed, ${manifest.excludedPolicyCount} excluded by repo policy.`
+    );
   }
 
   const lines: string[] = [];
+  if (incrementalNote) {
+    lines.push(incrementalNote.trimEnd());
+  }
   lines.push(
     `Coverage: partial — ${manifest.reviewedCount} of ${manifest.discoveredCount} discovered file(s) reached the review.`
   );

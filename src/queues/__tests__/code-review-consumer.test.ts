@@ -18,11 +18,24 @@ vi.mock('../../workflows/code-review/webhook', () => ({
   processGitHubCodeReviewWebhook: vi.fn(),
 }));
 
+// Push-debounce supersession needs the GitHub head lookup — mocked so no network.
+vi.mock('../../workflows/code-review/github-api', () => ({
+  fetchPrHeadSha: vi.fn(),
+}));
+
+vi.mock('../../workflows/code-review/github-auth', () => ({
+  resolveGitHubToken: vi.fn(),
+}));
+
 import { handleCodeReviewQueue } from '../code-review-consumer';
 import { processGitHubCodeReviewWebhook } from '../../workflows/code-review/webhook';
+import { fetchPrHeadSha } from '../../workflows/code-review/github-api';
+import { resolveGitHubToken } from '../../workflows/code-review/github-auth';
 import type { WebhookContext } from '../../workflows/code-review/types';
 
 const mockedProcess = vi.mocked(processGitHubCodeReviewWebhook);
+const mockedFetchHead = vi.mocked(fetchPrHeadSha);
+const mockedResolveToken = vi.mocked(resolveGitHubToken);
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -229,6 +242,85 @@ describe('handleCodeReviewQueue', () => {
       expect(ack).not.toHaveBeenCalled();
       expect(retry).toHaveBeenCalledTimes(1);
       expect(retry).toHaveBeenCalledWith({ delaySeconds: 30 });
+    });
+  });
+
+  describe('push-debounce supersession', () => {
+    const syncBody: WebhookContext = {
+      owner: 'tableoltd',
+      repo: 'test-repo',
+      prNumber: 42,
+      retrigger: true,
+      triggerAction: 'synchronize',
+      headSha: 'old-head',
+      installationId: 123456,
+    };
+
+    beforeEach(() => {
+      // clearAllMocks (file-level) keeps implementations: earlier suites leave
+      // processGitHubCodeReviewWebhook rejecting. Reset to the happy path.
+      mockedProcess.mockResolvedValue(undefined);
+      mockedResolveToken.mockResolvedValue('gh-token');
+    });
+
+    it('drops a debounced push superseded by a newer head', async () => {
+      mockedFetchHead.mockResolvedValue('newer-head');
+      const ack = vi.fn();
+      const retry = vi.fn();
+      const msg = makeMessage(syncBody, { ack, retry });
+
+      await handleCodeReviewQueue(makeBatch([msg]) as never, baseEnv);
+
+      expect(mockedFetchHead).toHaveBeenCalledWith('tableoltd', 'test-repo', 42, 'gh-token');
+      expect(mockedProcess).not.toHaveBeenCalled();
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(retry).not.toHaveBeenCalled();
+    });
+
+    it('processes a debounced push that is still the PR head', async () => {
+      mockedFetchHead.mockResolvedValue('old-head');
+      const msg = makeMessage(syncBody);
+
+      await handleCodeReviewQueue(makeBatch([msg]) as never, baseEnv);
+
+      expect(mockedProcess).toHaveBeenCalledWith(baseEnv, syncBody);
+      expect(msg.ack).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries (never drops) when the head check fails', async () => {
+      mockedFetchHead.mockRejectedValue(new Error('GitHub 5xx'));
+      const ack = vi.fn();
+      const retry = vi.fn();
+      const msg = makeMessage(syncBody, { ack, retry });
+
+      await handleCodeReviewQueue(makeBatch([msg]) as never, baseEnv);
+
+      expect(mockedProcess).not.toHaveBeenCalled();
+      expect(ack).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalledWith({ delaySeconds: 30 });
+    });
+
+    it('skips the head check when debounce is disabled', async () => {
+      const envDisabled = {
+        ...(baseEnv as unknown as Record<string, unknown>),
+        REVIEW_PUSH_DEBOUNCE_SECONDS: '0',
+      } as never;
+      const msg = makeMessage(syncBody);
+
+      await handleCodeReviewQueue(makeBatch([msg]) as never, envDisabled);
+
+      expect(mockedFetchHead).not.toHaveBeenCalled();
+      expect(mockedProcess).toHaveBeenCalled();
+    });
+
+    it('skips the head check for non-debounced triggers (opened, comments)', async () => {
+      const opened = makeMessage({ ...syncBody, triggerAction: 'opened' });
+      const comment = makeMessage({ ...syncBody, triggerAction: undefined, commentId: 9 });
+
+      await handleCodeReviewQueue(makeBatch([opened, comment]) as never, baseEnv);
+
+      expect(mockedFetchHead).not.toHaveBeenCalled();
+      expect(mockedProcess).toHaveBeenCalledTimes(2);
     });
   });
 });

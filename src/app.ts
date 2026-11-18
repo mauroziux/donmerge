@@ -8,6 +8,7 @@ import { handlePushReview, handleTriage, handleJobStatus } from './api/routes';
 import { RateLimiter } from './api/rate-limit';
 import { handleSentryWebhook } from './webhooks/sentry';
 import { handleCodeReviewQueue } from './queues/code-review-consumer';
+import { debounceSendOptions } from './queues/push-debounce';
 
 // Extended env type that includes all DO bindings
 interface AppEnv extends WorkerEnv {
@@ -44,10 +45,22 @@ app.post('/webhook/github', async (c) => {
     return c.json(validation.body, validation.status);
   }
 
+  // Push-debounce (cost control): a burst of pushes to an open PR becomes ONE
+  // review. Synchronize deliveries wait DEBOUNCE seconds in the queue; the
+  // consumer then drops any message whose head SHA is no longer the PR's head
+  // (a newer push superseded it). opened/reopened/retarget and comment
+  // triggers are never delayed.
+  const sendOptions = debounceSendOptions(c.env, event, validation.context);
+
   // Enqueue to the code-review queue. The consumer (handleCodeReviewQueue)
   // runs the pipeline with a 15-minute wall-clock budget — vs the 30s
   // waitUntil cap that was cancelling Workflow.create() mid-flight.
-  await c.env.CODE_REVIEW_QUEUE.send(validation.context!);
+  // Without debounce the context is forwarded verbatim (single argument).
+  if (sendOptions) {
+    await c.env.CODE_REVIEW_QUEUE.send(validation.context!, sendOptions);
+  } else {
+    await c.env.CODE_REVIEW_QUEUE.send(validation.context!);
+  }
 
   // Return 202 Accepted immediately
   return c.json(

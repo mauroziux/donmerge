@@ -128,6 +128,7 @@ export async function validateWebhookFast(
       instruction: trigger.instruction,
       focusFiles: trigger.focusFiles,
       headSha: trigger.headSha,
+      triggerAction: event === 'pull_request' ? payload.action : undefined,
     },
   };
 }

@@ -560,3 +560,39 @@ describe('ReviewPromptBuilder — file contents section (003-U1)', () => {
     expect(prompt).not.toContain('FULL FILE CONTENTS');
   });
 });
+
+describe('ReviewPromptBuilder — incremental scope (cost control)', () => {
+  it('renders the incremental scope note right before the diff', () => {
+    const prompt = new ReviewPromptBuilder()
+      .withContext(createReviewPromptContext({ incrementalSince: 'abcdef1234567890' }))
+      .build();
+
+    expect(prompt).toContain('INCREMENTAL REVIEW SCOPE:');
+    expect(prompt).toContain('abcdef123456');
+    expect(prompt).toContain('ONLY the commits pushed since');
+    expect(prompt.indexOf('INCREMENTAL REVIEW SCOPE:')).toBeLessThan(prompt.indexOf('DIFF TO REVIEW:'));
+  });
+
+  it('omits the note for full reviews', () => {
+    const prompt = new ReviewPromptBuilder().withContext(createReviewPromptContext()).build();
+    expect(prompt).not.toContain('INCREMENTAL REVIEW SCOPE:');
+  });
+
+  it('keeps the stable prefix byte-identical when only the diff changes', () => {
+    // Cost control: provider-side prompt caching (DeepSeek context caching,
+    // gateway cache) hits only when everything before the volatile tail is
+    // deterministic. The diff is the tail; everything above it must not move.
+    const base = createReviewPromptContext();
+    const build = (diffText: string, incrementalSince?: string) =>
+      new ReviewPromptBuilder()
+        .withContext({ ...base, diffText, incrementalSince })
+        .build();
+
+    const prefixOf = (prompt: string) => prompt.split('DIFF TO REVIEW:')[0];
+    const fullAPrefix = prefixOf(build('DIFF A'));
+    const fullBPrefix = prefixOf(build('DIFF B'));
+
+    expect(fullAPrefix).toBe(fullBPrefix);
+    expect(fullAPrefix.length).toBeGreaterThan(0);
+  });
+});

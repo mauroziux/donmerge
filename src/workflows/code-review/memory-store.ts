@@ -114,7 +114,7 @@ export async function getLearnings(
     SELECT * FROM learnings
     WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
     AND confidence >= ?
-    ORDER BY confidence DESC
+    ORDER BY confidence DESC, learning_text ASC
   `).bind(owner, repo, minConfidence).all<Learning>();
   return results.results ?? [];
 }
@@ -201,7 +201,7 @@ export async function buildMemoryContext(
     SELECT learning_text FROM learnings
     WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
     AND category = 'ignore' AND confidence >= ?
-    ORDER BY confidence DESC LIMIT 10
+    ORDER BY confidence DESC, learning_text ASC LIMIT 10
   `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
 
   // Get focus learnings
@@ -209,7 +209,7 @@ export async function buildMemoryContext(
     SELECT learning_text FROM learnings
     WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
     AND category = 'focus' AND confidence >= ?
-    ORDER BY confidence DESC LIMIT 10
+    ORDER BY confidence DESC, learning_text ASC LIMIT 10
   `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
 
   // Get preference learnings
@@ -217,14 +217,14 @@ export async function buildMemoryContext(
     SELECT learning_text FROM learnings
     WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
     AND category = 'style' AND confidence >= ?
-    ORDER BY confidence DESC LIMIT 10
+    ORDER BY confidence DESC, learning_text ASC LIMIT 10
   `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
 
   // Get high-confidence patterns
   const patternsResult = await db.prepare(`
     SELECT rule_id, confidence FROM pattern_weights
     WHERE owner = ? AND repo = ? AND confidence > 0.7 AND total_findings >= 5
-    ORDER BY confidence DESC LIMIT 20
+    ORDER BY confidence DESC, rule_id ASC LIMIT 20
   `).bind(owner, repo).all<{ rule_id: string; confidence: number }>();
 
   return {

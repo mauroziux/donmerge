@@ -29,6 +29,16 @@ export interface WorkerEnv {
   /** Fallback model used when the primary provider fails (e.g. "openai/gpt-4o"). */
   FALLBACK_MODEL?: string;
   MAX_REVIEW_FILES?: string;
+  /** Debounce window (seconds) for `pull_request.synchronize` reviews: pushes
+   *  are enqueued with this delay and superseded ones are dropped at consume
+   *  time, so a burst of pushes produces one review. 0 disables (default 600). */
+  REVIEW_PUSH_DEBOUNCE_SECONDS?: string;
+  /** 'false' → never review incrementally (default: incremental re-reviews on
+   *  top of a fully-reviewed SHA, cost control). */
+  DONMERGE_INCREMENTAL_REVIEW?: string;
+  /** 'false' → review docs/lockfile-only PRs like any other (default: trivial
+   *  change sets complete a neutral check without an LLM pass). */
+  DONMERGE_SKIP_TRIVIAL?: string;
   /** End-to-end model-chain budget in ms (default 35 min, plan 004-U2). */
   REVIEW_TOTAL_BUDGET_MS?: string;
   /** 'true' → add the adversarial investigation rubric to the prompt (003-U2). */
@@ -304,6 +314,10 @@ export interface WebhookContext {
   inReplyToId?: number;
   /** Head SHA when the triggering event carries it (pull_request events). */
   headSha?: string;
+  /** GitHub `action` of the triggering event (e.g. opened/synchronize) — set
+   *  only for review triggers on pull_request events. The queue consumer uses
+   *  it to drop debounced pushes superseded by a newer head. */
+  triggerAction?: string;
   /** Natural-language reply to a review comment — candidate for reply learning. */
   naturalReply?: boolean;
   /** Reply/comment body as received in the webhook (queue consumers can't refetch it). */

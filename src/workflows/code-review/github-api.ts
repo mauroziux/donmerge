@@ -781,6 +781,60 @@ export async function fetchAllPrFiles(
   return { files, apiFileCapReached, pagesFetched: page };
 }
 
+export interface PrFilesBetween {
+  files: Array<{ filename: string; patch?: string }>;
+  /**
+   * False when the range cannot be trusted (force-push rewrote history, SHA
+   * unknown to the repo, API failure, or a truncating 300-file cap): the caller
+   * must fall back to the full PR diff instead of reviewing an unknown scope.
+   */
+  usable: boolean;
+}
+
+/**
+ * Files changed between two commits (incremental re-review, cost control).
+ *
+ * A retrigger that follows a fully-reviewed SHA only needs the commits since
+ * that SHA — not the whole accumulated PR diff. Fail-open: any doubt about the
+ * range's validity returns `usable: false` and the caller reviews the full PR.
+ */
+export async function fetchPrFilesBetween(
+  owner: string,
+  repo: string,
+  fromSha: string,
+  toSha: string,
+  token: string
+): Promise<PrFilesBetween> {
+  try {
+    const compare = await githubFetch<{ files?: Array<{ filename: string; patch?: string }> }>(
+      `https://api.github.com/repos/${owner}/${repo}/compare/${fromSha}...${toSha}?per_page=300`,
+      token
+    );
+    const files = compare.files ?? [];
+    // The compare API caps its file list at 300 entries: at exactly the cap the
+    // list may be truncated, so the incremental scope would be silently partial.
+    if (files.length >= 300) {
+      console.warn('Incremental compare hit the 300-file cap — falling back to full PR diff', {
+        owner,
+        repo,
+        fromSha,
+        toSha,
+      });
+      return { files: [], usable: false };
+    }
+    return { files, usable: true };
+  } catch (error) {
+    console.warn('Incremental compare failed — falling back to full PR diff', {
+      owner,
+      repo,
+      fromSha,
+      toSha,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { files: [], usable: false };
+  }
+}
+
 export type PublicationLookup = 'found' | 'not-found' | 'unknown';
 
 /** Safety ceiling for the marker scan. Beyond it the PR has an absurd

@@ -42,6 +42,7 @@ import {
   completeCheckRun,
   completeCheckRunNeutral,
   fetchInheritedCommitRefs,
+  fetchPrFilesBetween,
   supersedeBaseChangedReviews,
   updatePRDescription,
 } from './github-api';
@@ -81,6 +82,8 @@ import { PrHeadChangedError } from './review-snapshot';
 import { ErrorCode } from './error-codes';
 import { assessPrRisk, shouldRunSecondPass } from './review-risk';
 import { mergeSecondPass, verifyReviewResult } from './finding-verifier';
+import { getReviewState, recordReviewState } from './review-state';
+import { isTrivialChangeSet } from './trivial-pr';
 import {
   DEFAULT_DIFF_CHAR_BUDGET,
   buildCoverageManifest,
@@ -153,6 +156,12 @@ interface PrData {
   focusFiles?: string[];
   model?: string;
   maxFiles?: number;
+  /**
+   * True when a human/API explicitly asked for THIS review (comment trigger,
+   * focus files, instruction, Push-API token). Explicit requests are never
+   * debounced, never trivial-skipped and always reviewed in full.
+   */
+  explicitRequest: boolean;
   /** PR base commit — anchors the snapshot alongside headSha. */
   baseSha?: string;
   /** PR-declared changed-file count — cross-checks discovery completeness. */
@@ -171,6 +180,15 @@ interface PreparedFiles {
   filePatches: FilePatch[];
   /** What this run actually reviewed (plan 002): drives honest verdicts. */
   coverage: CoverageManifest;
+  /**
+   * Trivial change set (docs/lockfiles only, no high-risk signal): the run
+   * completes a neutral check without an LLM pass (cost control).
+   */
+  trivialSkip?: { fileCount: number };
+  /** Incremental re-review: no file changed since the last reviewed commit. */
+  noChangesSinceReview?: boolean;
+  /** Set on incremental re-reviews: diff covers commits since this SHA. */
+  incrementalSince?: string;
 }
 
 interface LlmReviewResult {
@@ -250,6 +268,38 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       }, async () => {
         return this.prepareFiles(activePrData);
       });
+
+      // Cost-control short-circuits (no LLM spend):
+      //   - trivial change set (docs/lockfiles only, no explicit request)
+      //   - incremental re-review with no file changes since the last review
+      // Both complete a NEUTRAL check (never a green success: nothing was
+      // verified by a model in this run) and record the DO as complete.
+      if (preparedFiles.trivialSkip || preparedFiles.noChangesSinceReview) {
+        const { owner, repo, headSha, checkRunId, githubToken } = preparedFiles.prData;
+        await step.do('complete-skip-neutral', {
+          retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
+          timeout: '1 minute',
+        }, async () => {
+          const title = preparedFiles.trivialSkip
+            ? '📄 Trivial change — review skipped'
+            : '📄 No file changes since last review';
+          const summary = preparedFiles.trivialSkip
+            ? `All ${preparedFiles.trivialSkip.fileCount} changed file(s) are docs/metadata/lockfiles — no code review needed.`
+            : 'No file changed since the last reviewed commit — the previous verdict still stands.';
+          const text = preparedFiles.trivialSkip
+            ? 'DonMerge skips LLM reviews for change sets made only of documentation, metadata and lockfiles. ' +
+              'Comment `@donmerge` to force a full review anyway.'
+            : 'This push changed no files relative to the last fully reviewed commit. ' +
+              'Comment `@donmerge` to force a full review anyway.';
+          await completeCheckRunNeutral(owner, repo, checkRunId, title, summary, text, githubToken);
+        });
+        await (processorStub as any).updateFromWorkflow({
+          state: 'complete',
+          completedAt: new Date().toISOString(),
+          runId,
+        });
+        return;
+      }
 
       // Step 3: Run LLM review
       const llmResult = await step.do('run-llm-review', {
@@ -369,6 +419,13 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
   private async fetchPrData(params: WorkflowParams): Promise<PrData> {
     const { owner, repo, prNumber } = params;
 
+    // Explicit human/API request? Never debounced, never trivial-skipped,
+    // always reviewed in full (comment trigger, focus files, instruction,
+    // Push-API call with caller token).
+    const explicitRequest = Boolean(
+      params.githubToken || params.commentId || params.instruction || params.focusFiles?.length
+    );
+
     // Resolve token
     let githubToken = params.githubToken;
     if (!githubToken) {
@@ -413,6 +470,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         focusFiles: params.focusFiles,
         model: params.model,
         maxFiles: params.maxFiles,
+        explicitRequest,
       };
     }
 
@@ -469,6 +527,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         focusFiles: params.focusFiles,
         model: params.model,
         maxFiles: params.maxFiles,
+        explicitRequest,
       };
     }
 
@@ -533,6 +592,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       focusFiles: params.focusFiles,
       model: params.model,
       maxFiles: params.maxFiles,
+      explicitRequest,
     };
 
     return prData;
@@ -540,6 +600,13 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
   /**
    * Step 2: Fetch PR files, apply filters, build diff, fetch repo context.
+   *
+   * Cost controls applied before any LLM spend:
+   *   - trivial change sets (docs/lockfiles only, no explicit request) end the
+   *     run here with a neutral check (handled by the caller via `trivialSkip`)
+   *   - retriggers after a fully-reviewed SHA review only the files changed
+   *     since that commit (`incrementalSince`), with full-diff fallback on any
+   *     doubt about the compare range.
    */
   private async prepareFiles(prData: PrData): Promise<PreparedFiles> {
     const { owner, repo, prNumber, githubToken } = prData;
@@ -567,12 +634,124 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       ? fromDonmergeDto(prData.donmerge)
       : undefined;
 
+    // ── Cost control: trivial change sets ──────────────────────────────────
+    // Docs/lockfile-only PRs get no LLM pass. Explicit human requests
+    // (comment/focus/instruction/Push API) always review.
+    if (
+      this.env.DONMERGE_SKIP_TRIVIAL !== 'false' &&
+      !prData.explicitRequest &&
+      isTrivialChangeSet({ files: discovery.files })
+    ) {
+      console.log('[trivial-skip] whole change set is trivial — no LLM review', {
+        files: discovery.files.length,
+      });
+      const plan = planReviewFiles({
+        discovered: discovery.files,
+        focusFiles: undefined,
+        isExcluded: () => false,
+        maxFiles,
+        diffCharBudget: DEFAULT_DIFF_CHAR_BUDGET,
+      });
+      return {
+        prData,
+        diffText: '',
+        repoContext: {},
+        activePreviousComments: [],
+        filePatches: [],
+        coverage: buildCoverageManifest(plan, {
+          headSha: prData.headSha,
+          changedFilesCount: declaredCount,
+          apiFileCapReached: discovery.apiFileCapReached,
+        }),
+        trivialSkip: { fileCount: discovery.files.length },
+      };
+    }
+
+    // ── Cost control: incremental re-review ────────────────────────────────
+    // A retrigger after a FULLY-reviewed commit only needs the files changed
+    // since that commit. Any doubt (no state, partial previous coverage, base
+    // changed, force-push, compare failure, 300-file cap) falls back to the
+    // full PR diff — an incomplete incremental scope is worse than a full run.
+    let discovered = discovery.files;
+    let incrementalSince: string | undefined;
+    let apiFileCapReached = discovery.apiFileCapReached;
+    if (
+      prData.retrigger &&
+      !prData.explicitRequest &&
+      this.env.DONMERGE_INCREMENTAL_REVIEW !== 'false' &&
+      this.env.DB
+    ) {
+      try {
+        const state = await getReviewState(this.env.DB, owner, repo, prNumber);
+        if (
+          state &&
+          state.fullCoverage &&
+          state.baseRef === (prData.baseBranch ?? '') &&
+          state.lastReviewedSha !== prData.headSha
+        ) {
+          const between = await fetchPrFilesBetween(
+            owner,
+            repo,
+            state.lastReviewedSha,
+            prData.headSha,
+            githubToken
+          );
+          if (between.usable && between.files.length === 0) {
+            console.log('[incremental] no file changes since last reviewed commit', {
+              sinceSha: state.lastReviewedSha,
+            });
+            return {
+              prData,
+              diffText: '',
+              repoContext: {},
+              activePreviousComments: [],
+              filePatches: [],
+              coverage: buildCoverageManifest(
+                {
+                  selected: [],
+                  entries: [],
+                  focusNoMatch: false,
+                  focused: false,
+                  diffTruncated: false,
+                },
+                {
+                  headSha: prData.headSha,
+                  changedFilesCount: 0,
+                  apiFileCapReached: false,
+                  incrementalSince: state.lastReviewedSha,
+                }
+              ),
+              incrementalSince: state.lastReviewedSha,
+              noChangesSinceReview: true,
+            };
+          }
+          if (between.usable && between.files.length > 0) {
+            discovered = between.files;
+            incrementalSince = state.lastReviewedSha;
+            apiFileCapReached = false;
+            console.log('[incremental] reviewing only commits since last reviewed SHA', {
+              sinceSha: state.lastReviewedSha,
+              incrementalFiles: between.files.length,
+              fullPrFiles: discovery.files.length,
+            });
+          }
+        }
+      } catch (error) {
+        console.warn('[incremental] state check failed — full review', {
+          owner,
+          repo,
+          prNumber,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     // Plan which files actually reach the prompt (plan 002): focus scope
     // first (explicit, never silently widened), then .donmerge policy, then
     // file-count and diff-character budgets. Whole files only — no mid-hunk
     // truncation, and every left-out file is recorded with a reason.
     const plan = planReviewFiles({
-      discovered: discovery.files,
+      discovered,
       focusFiles: prData.focusFiles,
       isExcluded: (path) => {
         const excludePatterns = donmergeResolved?.config.exclude ?? [];
@@ -592,7 +771,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const coverage = buildCoverageManifest(plan, {
       headSha: prData.headSha,
       changedFilesCount: declaredCount,
-      apiFileCapReached: discovery.apiFileCapReached,
+      apiFileCapReached,
+      incrementalSince,
     });
 
     if (!coverage.scopeComplete) {
@@ -605,6 +785,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         focusNoMatch: coverage.focusNoMatch,
         diffTruncated: coverage.diffTruncated,
         apiFileCapReached: coverage.apiFileCapReached,
+        incremental: incrementalSince ?? false,
       });
     }
 
@@ -638,6 +819,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         patch: file.patch,
       })),
       coverage,
+      incrementalSince,
     };
   }
 
@@ -735,6 +917,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           previousComments: activePreviousComments,
           diffText,
           repoContext,
+          incrementalSince: preparedFiles.incrementalSince,
         },
         {
           donmergeResolved,
@@ -1038,6 +1221,31 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     // Update PR description
     await updatePRDescription(owner, repo, prNumber, gated.review, githubToken, preparedFiles.coverage);
+
+    // Record review state (cost control): the next push can review only the
+    // commits since this SHA — but only when THIS run covered its whole scope.
+    // Partial runs record fullCoverage = 0 so a later push falls back to a
+    // full review instead of stacking an incomplete verdict. Best-effort: a
+    // D1 failure here only costs the next run its incremental shortcut.
+    if (this.env.DB) {
+      try {
+        await recordReviewState(this.env.DB, {
+          owner,
+          repo,
+          prNumber,
+          baseRef: prData.baseBranch,
+          headSha,
+          fullCoverage: preparedFiles.coverage.scopeComplete,
+        });
+      } catch (error) {
+        console.warn('[review-state] failed to record review state', {
+          owner,
+          repo,
+          prNumber,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     // Update DO status
     await (processorStub as any).updateFromWorkflow({
