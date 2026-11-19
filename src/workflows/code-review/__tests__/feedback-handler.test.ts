@@ -438,7 +438,7 @@ describe('handleNaturalReply', () => {
     const llmFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({
-        choices: [{ message: { content: '{"type":"dismiss","reason":"No aplica porque el null ya se valida arriba","learning":null}' } }],
+        choices: [{ message: { content: '{"type":"dismiss","reason":"No aplica porque el null ya se valida arriba <!-- hidden -->","learning":null}' } }],
       }),
     });
     vi.stubGlobal('fetch', llmFetch);
@@ -472,6 +472,11 @@ describe('handleNaturalReply', () => {
         call.some((arg) => typeof arg === 'string' && arg.includes('null ya se valida'))
       );
       expect(learningCall).toBeDefined();
+      const storedLearning = mock.bind.mock.calls.flat().find((arg: unknown) =>
+        typeof arg === 'string' && arg.startsWith("Don't flag findings like:")
+      ) as string;
+      expect(storedLearning).not.toContain('<!--');
+      expect(storedLearning).not.toContain('hidden');
     } finally {
       vi.unstubAllGlobals();
     }

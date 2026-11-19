@@ -223,8 +223,8 @@ export async function handleNaturalReply(
 
   const learningText =
     classification.type === 'dismiss'
-      ? classification.learning ??
-        `Don't flag findings like: ${findingBody.slice(0, 200)} — reason: ${classification.reason}`
+      ? stripHtmlComments(classification.learning ??
+        `Don't flag findings like: ${findingBody.slice(0, 200)} — reason: ${classification.reason}`)
       : `Reported review consideration: ${stripHtmlComments(classification.learning ?? findingBody.slice(0, 200))
         .replace(/^confirmed valid\s*:\s*/i, '')} (feedback summary: ${stripHtmlComments(classification.reason)})`;
 
