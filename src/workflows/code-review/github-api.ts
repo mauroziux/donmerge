@@ -806,11 +806,24 @@ export async function fetchPrFilesBetween(
   token: string
 ): Promise<PrFilesBetween> {
   try {
-    const compare = await githubFetch<{ files?: Array<{ filename: string; patch?: string }> }>(
+    const compare = await githubFetch<{
+      status?: string;
+      merge_base_commit?: { sha?: string };
+      files?: Array<{ filename: string; patch?: string }>;
+    }>(
       `https://api.github.com/repos/${owner}/${repo}/compare/${fromSha}...${toSha}?per_page=300`,
       token
     );
-    const files = compare.files ?? [];
+    if (
+      compare.status !== 'ahead' ||
+      compare.merge_base_commit?.sha !== fromSha ||
+      !Array.isArray(compare.files) ||
+      !compare.files.every((file) => file && typeof file.filename === 'string')
+    ) {
+      console.warn('[incremental] compare does not establish a linear history and complete file list');
+      return { files: [], usable: false };
+    }
+    const files = compare.files;
     // The compare API caps its file list at 300 entries: at exactly the cap the
     // list may be truncated, so the incremental scope would be silently partial.
     if (files.length >= 300) {
@@ -1348,6 +1361,30 @@ export async function fetchRepoFile(
   }
 }
 
+/** Reads policy files without treating authorization or network errors as absence. */
+export async function fetchPolicyFile(
+  owner: string,
+  repo: string,
+  path: string,
+  token: string,
+  ref?: string
+): Promise<string | null> {
+  try {
+    const refQuery = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+    const response = await githubFetch<{ content: string; encoding: string }>(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}${refQuery}`,
+      token
+    );
+    if (response.encoding !== 'base64' || typeof response.content !== 'string') {
+      throw new Error(`Invalid policy file response for ${path}`);
+    }
+    return new TextDecoder().decode(Uint8Array.from(atob(response.content), c => c.charCodeAt(0)));
+  } catch (error) {
+    if (error instanceof GitHubApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 /**
  * Files to fetch for repo context. `priority` breaks ties within a key:
  * when several paths map to the same key (e.g. ESLint variants), the
@@ -1386,15 +1423,18 @@ export async function fetchRepoContext(
   owner: string,
   repo: string,
   ref: string,
-  token: string
+  token: string,
+  policyRef: string = ref
 ): Promise<RepoContext> {
   const context: RepoContext = {};
 
   // Fetch all candidates in parallel, then select per key by declared priority.
   const results = await Promise.all(
-    REPO_CONTEXT_FILES.map(async ({ path }) => ({
+    REPO_CONTEXT_FILES.map(async ({ path, key }) => ({
       path,
-      content: await fetchRepoFile(owner, repo, path, token, ref),
+      content: ['agents', 'claude', 'cursorrules', 'contributing', 'development'].includes(key)
+        ? await fetchPolicyFile(owner, repo, path, token, policyRef)
+        : await fetchRepoFile(owner, repo, path, token, ref),
     }))
   );
 

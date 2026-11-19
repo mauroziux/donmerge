@@ -6,6 +6,7 @@ import { CodeReviewWorkflow } from './workflows/code-review/code-review-workflow
 import { TriageProcessor } from './workflows/triage/processor';
 import { handlePushReview, handleTriage, handleJobStatus } from './api/routes';
 import { RateLimiter } from './api/rate-limit';
+import { validateApiKey } from './api/auth';
 import { handleSentryWebhook } from './webhooks/sentry';
 import { handleCodeReviewQueue } from './queues/code-review-consumer';
 import { debounceSendOptions } from './queues/push-debounce';
@@ -15,7 +16,7 @@ interface AppEnv extends WorkerEnv {
   ReviewProcessor: DurableObjectNamespace;
   TriageProcessor: DurableObjectNamespace;
   RateLimiter: DurableObjectNamespace;
-  DONMERGE_API_KEYS?: string;
+  DONMERGE_PUSH_API_KEYS?: string;
   SENTRY_WEBHOOK_SECRET?: string;
   SENTRY_REPO_MAP?: string;
   SENTRY_GITHUB_TOKEN?: string;
@@ -82,8 +83,16 @@ app.get('/api/v1/status/*', handleJobStatus);
 // Debug: probe each configured LLM provider from inside a real sandbox.
 // Auth-gated. Used to diagnose provider/gateway outages (see rms#4002 incident).
 app.post('/api/v1/debug/providers', async (c) => {
+  if (!validateApiKey(c.req.header('Authorization'), c.env.DONMERGE_PUSH_API_KEYS)) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
   const probeModel = new URL(c.req.url).searchParams.get('model');
   if (probeModel) {
+    const allowedModels = [c.env.CODEX_MODEL, c.env.FALLBACK_MODEL,
+      c.env.CF_AI_GATEWAY_ROUTE ? `dynamic/${c.env.CF_AI_GATEWAY_ROUTE}` : undefined];
+    if (!/^[a-zA-Z0-9._/-]{1,100}$/.test(probeModel) || !allowedModels.includes(probeModel)) {
+      return c.json({ error: 'Invalid model' }, 400);
+    }
     const { getSandbox: gs } = await import('@cloudflare/sandbox');
     const sb = gs((c.env as any).Sandbox, `egress-debug-${Date.now()}`, { sleepAfter: '1m' });
     try {
@@ -97,9 +106,6 @@ app.post('/api/v1/debug/providers', async (c) => {
       await (sb.destroy?.() ?? Promise.resolve());
     }
   }
-  const key = (c.req.header('Authorization') ?? '').replace('Bearer ', '');
-  const valid = (c.env.DONMERGE_API_KEYS ?? '').split(',').map((k: string) => k.trim()).includes(key);
-  if (!valid) return c.json({ error: 'Unauthorized' }, 401);
   const { getSandbox } = await import('@cloudflare/sandbox');
   const sandbox = getSandbox((c.env as any).Sandbox, `egress-debug-${Date.now()}`, { sleepAfter: '1m' });
   try {

@@ -5,6 +5,18 @@ on:
     branches: [main, develop]
 
 jobs:
+  push-api-secrets:
+    name: Push API secrets must not be committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject API key variables in Wrangler configuration
+        run: |
+          if grep -Eq '"DONMERGE_(PUSH_)?API_KEYS"[[:space:]]*:' wrangler.jsonc; then
+            echo 'Push API keys must be configured as Worker secrets.' >&2
+            exit 1
+          fi
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest

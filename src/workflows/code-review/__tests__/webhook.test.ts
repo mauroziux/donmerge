@@ -52,7 +52,7 @@ import {
 } from '../github-auth';
 import { parseTrigger } from '../triggers';
 import { getReviewProcessor } from '../processor';
-import { fetchCommentById, addCommentReaction, postReplyComment } from '../github-api';
+import { fetchCommentById, addCommentReaction, postReplyComment, githubFetch } from '../github-api';
 import { classifyCommandIntent } from '../reply-classifier';
 import { parseFingerprint } from '../fingerprint';
 import {
@@ -76,6 +76,42 @@ const mockedFetchComment = vi.mocked(fetchCommentById);
 const mockedParseFingerprint = vi.mocked(parseFingerprint);
 const mockedHandleCommentFeedback = vi.mocked(handleCommentFeedback);
 const mockedHandleReactionFeedback = vi.mocked(handleReactionFeedback);
+
+describe('scoped memory authorization', () => {
+  it('does not change memory for a contributor without maintainer permissions', async () => {
+    vi.mocked(resolveGitHubToken).mockResolvedValue('token');
+    vi.mocked(githubFetch).mockResolvedValue({ permission: 'write' });
+    const prepare = vi.fn();
+    await processGitHubCodeReviewWebhook({
+      ...baseEnv,
+      DB: { prepare } as unknown as D1Database,
+      ReviewProcessor: {} as DurableObjectNamespace,
+    }, {
+      owner: 'tableoltd', repo: 'test-repo', prNumber: 42, retrigger: false,
+      commentId: 5, commentType: 'issue', githubUser: 'contributor',
+      feedback: { type: 'memory_approve', text: '3' },
+    });
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('allows a maintainer whose legacy permission is write to confirm an exception', async () => {
+    vi.mocked(resolveGitHubToken).mockResolvedValue('token');
+    vi.mocked(githubFetch).mockResolvedValue({ permission: 'write', role_name: 'maintain' });
+    const run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
+    const bind = vi.fn().mockReturnValue({ run });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    await processGitHubCodeReviewWebhook({
+      ...baseEnv,
+      DB: { prepare } as unknown as D1Database,
+      ReviewProcessor: {} as DurableObjectNamespace,
+    }, {
+      owner: 'tableoltd', repo: 'test-repo', prNumber: 42, retrigger: false,
+      commentId: 5, commentType: 'issue', githubUser: 'maintainer',
+      feedback: { type: 'memory_approve', text: '3' },
+    });
+    expect(bind).toHaveBeenCalledWith('active', 'active', 'maintainer', 'active', 'maintainer', 'tableoltd', 'test-repo', 3);
+  });
+});
 
 const baseEnv: WorkerEnv = {
   OPENAI_API_KEY: 'test-key',
@@ -552,7 +588,7 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       'tableoltd', 'test-repo', 99, 'review', 'ghp_test_token', 'thumbsup'
     );
     expect(vi.mocked(postReplyComment)).toHaveBeenCalledWith(
-      'tableoltd', 'test-repo', 42, 88, 'review', expect.stringContaining('Learned'), 'ghp_test_token'
+      'tableoltd', 'test-repo', 42, 88, 'review', expect.stringContaining('Recorded'), 'ghp_test_token'
     );
   });
 
@@ -578,7 +614,7 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
     }));
     expect(vi.mocked(addCommentReaction)).toHaveBeenCalled();
     expect(vi.mocked(postReplyComment)).toHaveBeenCalledWith(
-      'tableoltd', 'test-repo', 42, 88, 'review', expect.stringContaining('Learned'), 'ghp_test_token'
+      'tableoltd', 'test-repo', 42, 88, 'review', expect.stringContaining('Recorded'), 'ghp_test_token'
     );
   });
 

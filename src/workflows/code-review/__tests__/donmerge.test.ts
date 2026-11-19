@@ -458,7 +458,7 @@ skills:
   it('should pass correct arguments to fetchFile', async () => {
     mockFetchFile.mockResolvedValueOnce('version: "1"');
     await fetchDonmergeConfig('myOwner', 'myRepo', 'myToken', mockFetchFile);
-    expect(mockFetchFile).toHaveBeenCalledWith('myOwner', 'myRepo', '.donmerge', 'myToken');
+    expect(mockFetchFile).toHaveBeenCalledWith('myOwner', 'myRepo', '.donmerge', 'myToken', undefined);
   });
 });
 

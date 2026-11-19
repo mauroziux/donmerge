@@ -16,6 +16,7 @@ import {
   completeCheckRun,
   fetchAllPrFiles,
   fetchPrHeadSha,
+  fetchPrFilesBetween,
   fetchRepoContext,
   fetchRepoFile,
   resolveFixedComments,
@@ -33,6 +34,38 @@ function jsonResponse(body: unknown) {
 function fileEntry(filename: string, patch = '@@ -1 +1 @@\n+x') {
   return { filename, patch };
 }
+
+describe('incremental comparisons', () => {
+  it.each([
+    ['diverged', { status: 'diverged', merge_base_commit: { sha: 'older' }, files: [fileEntry('a.ts')] }],
+    ['rewound', { status: 'behind', merge_base_commit: { sha: 'head' }, files: [] }],
+    ['missing files', { status: 'ahead', merge_base_commit: { sha: 'base' } }],
+    ['missing ancestry', { status: 'ahead', files: [] }],
+    ['file limit', { status: 'ahead', merge_base_commit: { sha: 'base' }, files: Array.from({ length: 300 }, (_, i) => fileEntry(`f${i}`)) }],
+  ])('rejects %s', async (_name, response) => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(response));
+    expect((await fetchPrFilesBetween('owner', 'repo', 'base', 'head', 'token')).usable).toBe(false);
+  });
+
+  it('accepts a complete linear comparison', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ status: 'ahead', merge_base_commit: { sha: 'base' }, files: [fileEntry('a.ts')] }));
+    expect(await fetchPrFilesBetween('owner', 'repo', 'base', 'head', 'token')).toEqual({ files: [fileEntry('a.ts')], usable: true });
+  });
+});
+
+it('loads review policy from base and project metadata from head', async () => {
+  mockFetch.mockImplementation(async (url: string) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname.split('/').pop();
+    const ref = parsed.searchParams.get('ref');
+    return jsonResponse({ encoding: 'base64', content: btoa(`${path} at ${ref}`) });
+  });
+  const context = await fetchRepoContext('owner', 'repo', 'head', 'token', 'base');
+  expect(context.agents).toBe('AGENTS.md at base');
+  expect(context.claude).toBe('CLAUDE.md at base');
+  expect(context.packageJson).toBe('package.json at head');
+  expect(context.readme).toBe('README.md at head');
+});
 
 describe('fixed reply reservations', () => {
   it('never reposts after an ambiguous transport failure', async () => {

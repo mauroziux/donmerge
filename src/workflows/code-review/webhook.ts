@@ -9,7 +9,7 @@ import type { WorkerEnv, WebhookPayload, FastValidationResult, WebhookContext } 
 import { verifyWebhookSignature, isRepoAllowed, resolveGitHubToken } from './github-auth';
 import { parseTrigger } from './triggers';
 import { getReviewProcessor } from './processor';
-import { fetchCommentById, addCommentReaction, postReplyComment, isDonmergeBotAuthor } from './github-api';
+import { fetchCommentById, addCommentReaction, postReplyComment, isDonmergeBotAuthor, githubFetch } from './github-api';
 import { classifyCommandIntent } from './reply-classifier';
 import { parseFingerprint } from './fingerprint';
 import { buildRunScopedInstanceId } from './workflow-id';
@@ -210,6 +210,7 @@ async function processNaturalReply(
       replyText: context.commentBody,
       parentFingerprint: meta.fingerprint,
       parentCommentId: parent.id,
+      replyCommentId: context.commentId,
       parentBody: parent.body,
       filePath: parent.path,
     });
@@ -268,6 +269,79 @@ export async function processGitHubCodeReviewWebhook(
     }
     const { handleCommentFeedback, handleReactionFeedback } = await import('./feedback-handler');
 
+    if (context.feedback.type === 'memory_approve' || context.feedback.type === 'memory_revoke' ||
+        context.feedback.type === 'memory_list' || context.feedback.type === 'memory_scope') {
+      if (!context.commentId || !context.githubUser) return;
+      const token = await resolveGitHubToken(env, context.installationId);
+      const permission = await githubFetch<{ permission: string; role_name?: string }>(
+        `https://api.github.com/repos/${context.owner}/${context.repo}/collaborators/${encodeURIComponent(context.githubUser)}/permission`, token
+      );
+      if (permission.permission !== 'admin' && permission.role_name !== 'maintain') return;
+      if (context.feedback.type === 'memory_scope') {
+        const [id, scope, path = ''] = (context.feedback.text ?? '').split(' ');
+        if (!/^\d+$/.test(id) || !['file', 'directory', 'repo'].includes(scope) ||
+            (scope === 'repo' ? path !== '' : !path || path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..'))) return;
+        const result = await env.DB.prepare(`
+          UPDATE scoped_learnings SET scope_type = ?, scope_path = ?, updated_at = datetime('now')
+          WHERE owner = ? AND repo = ? AND id = ?
+        `).bind(scope, path, context.owner, context.repo, Number(id)).run();
+        if (result.meta?.changes) {
+          await postReplyComment(context.owner, context.repo, context.prNumber, context.commentId,
+            context.commentType ?? 'issue', `Memory #${id} scope is ${scope}${path ? ` ${path}` : ''}.`, token);
+        }
+        return;
+      }
+      if (context.feedback.type === 'memory_list') {
+        const rows = await env.DB.prepare(`
+          SELECT id, learning_text, scope_type, scope_path, state, source_pr, source_comment_id
+          FROM scoped_learnings WHERE owner = ? AND repo = ?
+          ORDER BY id DESC LIMIT 30
+        `).bind(context.owner, context.repo).all<{
+          id: number; learning_text: string; scope_type: string; scope_path: string;
+          state: string; source_pr: number; source_comment_id: number | null;
+        }>();
+        const lines = (rows.results ?? []).map(row => {
+          const text = row.learning_text.replace(/[\r\n]/g, ' ').replace(/@/g, '@\u200b').slice(0, 300);
+          const source = `https://github.com/${context.owner}/${context.repo}/pull/${row.source_pr}` +
+            (row.source_comment_id ? `#discussion_r${row.source_comment_id}` : '');
+          return `- #${row.id} [${row.state}] ${row.scope_type} ${row.scope_path}: ${text} ([source](${source}))`;
+        });
+        const used = await env.DB.prepare(`
+          SELECT head_sha, run_id, learning_id, learning_text, scope_type, scope_path, cited
+          FROM review_learning_snapshots
+          WHERE owner = ? AND repo = ? AND pr_number = ?
+          ORDER BY rowid DESC LIMIT 30
+        `).bind(context.owner, context.repo, context.prNumber).all<{
+          head_sha: string; run_id: string; learning_id: number; learning_text: string; scope_type: string; scope_path: string; cited: number;
+        }>();
+        const applied = (used.results ?? []).map(row =>
+          `- ${row.head_sha.slice(0, 12)} (run ${row.run_id}) #${row.learning_id} ${row.scope_type} ${row.scope_path}${row.cited ? ' (cited)' : ''}: ${row.learning_text.replace(/[\r\n]/g, ' ').replace(/@/g, '@\u200b').slice(0, 300)}`
+        );
+        const body = [
+          '## Scoped learnings', lines.length ? lines.join('\n') : 'No scoped learnings found.',
+          '## Sent to this PR', applied.length ? applied.join('\n') : 'No scoped learnings recorded.',
+        ].join('\n\n');
+        await postReplyComment(context.owner, context.repo, context.prNumber, context.commentId,
+          context.commentType ?? 'issue', body, token);
+        return;
+      }
+      if (!context.feedback.text || !/^\d+$/.test(context.feedback.text)) return;
+      const state = context.feedback.type === 'memory_approve' ? 'active' : 'revoked';
+      const result = await env.DB.prepare(`
+        UPDATE scoped_learnings SET state = ?,
+          confirmed_by = CASE WHEN ? = 'active' THEN ? ELSE confirmed_by END,
+          revoked_by = CASE WHEN ? = 'revoked' THEN ? ELSE NULL END,
+          updated_at = datetime('now')
+        WHERE owner = ? AND repo = ? AND id = ?
+      `).bind(state, state, context.githubUser, state, context.githubUser,
+        context.owner, context.repo, Number(context.feedback.text)).run();
+      if (result.meta?.changes) {
+        await postReplyComment(context.owner, context.repo, context.prNumber, context.commentId,
+          context.commentType ?? 'issue', `Memory #${context.feedback.text} is ${state}.`, token);
+      }
+      return;
+    }
+
     if (context.feedback.type === 'dismiss' || context.feedback.type === 'accept') {
       if (context.inReplyToId && context.commentId) {
         // Commands are accepted only as replies to a recorded DonMerge finding.
@@ -321,7 +395,7 @@ export async function processGitHubCodeReviewWebhook(
               inReplyToId: context.inReplyToId,
             });
             const ackBody = context.feedback.type === 'dismiss'
-              ? '🤖 **Learned.** I will stop flagging this finding pattern in future reviews.'
+              ? '🤖 **Recorded.** A maintainer can confirm this exception for future reviews.'
               : '🤖 **Confirmed.** I will keep prioritizing findings like this.';
             await addCommentReaction(
               context.owner,
@@ -499,6 +573,11 @@ export async function processGitHubCodeReviewWebhook(
             ))
           );
           if (!trusted) return;
+          const permission = await githubFetch<{ permission: string; role_name?: string }>(
+            `https://api.github.com/repos/${context.owner}/${context.repo}/collaborators/${encodeURIComponent(context.githubUser ?? '')}/permission`,
+            token
+          );
+          if (permission.permission !== 'admin' && permission.role_name !== 'maintain') return;
         } catch (error) {
           console.error('Failed to validate preference reply parent', {
             error: error instanceof Error ? error.message : error,

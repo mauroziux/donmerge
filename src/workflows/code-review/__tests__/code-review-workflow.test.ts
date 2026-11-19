@@ -72,10 +72,10 @@ type WorkflowPreparedFiles = {
   prData: WorkflowPrData;
   diffText: string;
   repoContext: Record<string, never>;
-  donmergeResolved?: {
+  donmerge?: {
     config: Record<string, unknown>;
-    skillsContent: Map<string, string>;
-    skillsErrors: Map<string, string>;
+    skills: Array<[string, string]>;
+    skillErrors: Array<[string, string]>;
   };
   activePreviousComments: PreviousComment[];
   filePatches: Array<{ filename: string; patch?: string }>;
@@ -93,6 +93,7 @@ function prData(): WorkflowPrData {
     checkRunId: 777,
     githubToken: 'token',
     baseBranch: 'main',
+    baseSha: 'basesha',
     willReview: true,
     retrigger: false,
   };
@@ -193,7 +194,7 @@ function setupGitHubMock(): CapturedCall[] {
       return { ok: true, json: async () => ({}) };
     }
     if (url.includes('/repos/owner/repo/pulls/42') && method === 'GET') {
-      return { ok: true, json: async () => ({ body: 'PR description', title: 't' }) };
+      return { ok: true, json: async () => ({ body: 'PR description', title: 't', head: { sha: 'headsha' }, base: { ref: 'main', sha: 'basesha' } }) };
     }
     if (url.includes('/repos/owner/repo/pulls/42') && method === 'PATCH') {
       return { ok: true, json: async () => ({}) };
@@ -579,9 +580,15 @@ describe('prepareFiles', () => {
       calls.push(url as string);
       if (url.includes('/pulls/42/files')) return prFilePages[0];
       if (url.includes('/repos/owner/repo/pulls/42') && !url.includes('/reviews')) {
-        return { ok: true, json: async () => ({ head: { sha: 'headsha' } }) };
+        return { ok: true, json: async () => ({ head: { sha: 'headsha' }, base: { ref: 'main', sha: 'basesha' } }) };
       }
       if (url.includes('contents/')) {
+        if (url.includes('contents/.donmerge')) {
+          return { ok: true, json: async () => ({ encoding: 'base64', content: btoa('exclude: ["dist/**"]\nskills:\n  - path: REVIEW.md\ninstructions: be strict about concurrency') }) };
+        }
+        if (url.includes('contents/REVIEW.md')) {
+          return { ok: true, json: async () => ({ encoding: 'base64', content: btoa('# project review notes') }) };
+        }
         return { ok: false, status: 404, text: async () => 'nf' };
       }
       return { ok: true, json: async () => ({}) };
@@ -608,11 +615,12 @@ describe('prepareFiles', () => {
     expect(prepared.coverage.reviewedCount).toBe(2);
     expect(prepared.diffText).toContain('src/f0.ts');
     // Skills rehydrated from the DTO — no second .donmerge fetch
-    expect(prepared.donmergeResolved?.skillsContent.get('REVIEW.md')).toBe('# project review notes');
+    expect(prepared.donmerge?.skills).toContainEqual(['REVIEW.md', '# project review notes']);
     const donmergeFetches = calls.filter((u) => u.includes('contents/.donmerge'));
-    expect(donmergeFetches).toHaveLength(0);
+    expect(donmergeFetches).toHaveLength(1);
+    expect(donmergeFetches[0]).toContain('ref=basesha');
     // Policy exclude honored through the plan
-    expect(typeof prepared.donmergeResolved?.config.instructions).toBe('string');
+    expect(typeof prepared.donmerge?.config.instructions).toBe('string');
   });
 
   it('throws non-retryable when the PR head moves during discovery', async () => {
@@ -634,6 +642,28 @@ describe('prepareFiles', () => {
     ).rejects.toThrow(/PR head changed/);
   });
 
+  it('stops before publishing if the destination commit changes', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({
+      head: { sha: 'headsha' }, base: { ref: 'main', sha: 'newbase' },
+    }) });
+    const { stub } = setupProcessorStub([]);
+    await expect((makeWorkflow() as unknown as {
+      publishReview: (r: unknown, s: unknown) => Promise<void>;
+    }).publishReview(llmResult(fullCoverage(), cleanReview()), stub)).rejects.toThrow('PR base changed');
+    expect(stub.saveTrackedIssuesRpc).not.toHaveBeenCalled();
+  });
+
+  it('fails the review when policy cannot be read', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/pulls/42/files')) return filesResponse([{ filename: 'a.ts', patch: '+x' }]);
+      if (url.includes('/pulls/42')) return { ok: true, json: async () => ({ head: { sha: 'headsha' }, base: { ref: 'main', sha: 'basesha' } }) };
+      return { ok: false, status: 403, text: async () => 'forbidden' };
+    });
+    await expect((makeWorkflow() as unknown as {
+      prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles>;
+    }).prepareFiles(prData())).rejects.toThrow('403');
+  });
+
   it('partial planning marks coverage partial when the budget drops files', async () => {
     mockFetch.mockImplementation(async (url: string) => {
       if (url.includes('/pulls/42/files')) {
@@ -645,7 +675,7 @@ describe('prepareFiles', () => {
         );
       }
       if (url.includes('/repos/owner/repo/pulls/42') && !url.includes('/reviews')) {
-        return { ok: true, json: async () => ({ head: { sha: 'headsha' } }) };
+        return { ok: true, json: async () => ({ head: { sha: 'headsha' }, base: { ref: 'main', sha: 'basesha' } }) };
       }
       if (url.includes('contents/')) {
         return { ok: false, status: 404, text: async () => 'nf' };

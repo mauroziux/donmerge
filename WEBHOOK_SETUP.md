@@ -19,7 +19,7 @@ wrangler secret put GITHUB_APP_ID
 wrangler secret put GITHUB_APP_PRIVATE_KEY
 ```
 
-> **Note:** See [ADR-001](../.planning/ADR-001-secrets-vs-vars.md) for the full decision on which values use `vars` vs `wrangler secret`. Multi-client secrets like `SENTRY_WEBHOOK_SECRET` and `DONMERGE_API_KEYS` use `vars` for operability.
+> **Note:** See [ADR-001](../.planning/ADR-001-secrets-vs-vars.md) for the full decision on which values use `vars` vs `wrangler secret`. `DONMERGE_PUSH_API_KEYS` is a Worker secret configured separately per environment.
 
 ### ⚠️ Important: GITHUB_APP_PRIVATE_KEY Format
 

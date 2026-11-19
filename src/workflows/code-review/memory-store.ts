@@ -95,11 +95,11 @@ export async function upsertLearning(
   } else {
     // Insert new learning
     await db.prepare(`
-      INSERT INTO learnings (owner, repo, learning_text, source, category, confidence, sample_size)
-      VALUES (?, ?, ?, ?, ?, ?, 1)
+      INSERT INTO learnings (owner, repo, learning_text, source, category, confidence, sample_size, review_state)
+      VALUES (?, ?, ?, ?, ?, ?, 1, CASE WHEN ? = 'ignore' THEN 'pending' ELSE 'active' END)
     `).bind(
       learning.owner, learning.repo, learning.learning_text,
-      learning.source, learning.category, learning.confidence
+      learning.source, learning.category, learning.confidence, learning.category
     ).run();
   }
 }
@@ -192,7 +192,9 @@ export async function upsertPatternWeight(
 export async function buildMemoryContext(
   db: D1Database,
   owner: string,
-  repo: string
+  repo: string,
+  reviewedPaths: string[] = [],
+  scopedEnabled = true
 ): Promise<MemoryContext> {
   const minConfidence = 50;
 
@@ -200,7 +202,7 @@ export async function buildMemoryContext(
   const ignoreResult = await db.prepare(`
     SELECT learning_text FROM learnings
     WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
-    AND category = 'ignore' AND confidence >= ?
+    AND category = 'ignore' AND review_state = 'active' AND confidence >= ?
     ORDER BY confidence DESC, learning_text ASC LIMIT 10
   `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
 
@@ -208,7 +210,7 @@ export async function buildMemoryContext(
   const focusResult = await db.prepare(`
     SELECT learning_text FROM learnings
     WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
-    AND category = 'focus' AND confidence >= ?
+    AND category = 'focus' AND review_state = 'active' AND confidence >= ?
     ORDER BY confidence DESC, learning_text ASC LIMIT 10
   `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
 
@@ -216,7 +218,7 @@ export async function buildMemoryContext(
   const prefResult = await db.prepare(`
     SELECT learning_text FROM learnings
     WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
-    AND category = 'style' AND confidence >= ?
+    AND category = 'style' AND review_state = 'active' AND confidence >= ?
     ORDER BY confidence DESC, learning_text ASC LIMIT 10
   `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
 
@@ -227,13 +229,107 @@ export async function buildMemoryContext(
     ORDER BY confidence DESC, rule_id ASC LIMIT 20
   `).bind(owner, repo).all<{ rule_id: string; confidence: number }>();
 
+  const scopedResult = await db.prepare(`
+    SELECT id, learning_text, category, scope_type, scope_path, confidence
+    FROM scoped_learnings
+    WHERE owner = ? AND repo = ? AND state = 'active' AND confidence >= ?
+  `).bind(owner, repo, minConfidence).all<ScopedLearning>();
+  const scoped = scopedEnabled ? selectScopedLearnings(scopedResult.results ?? [], reviewedPaths) : [];
+  const candidates: Array<{ text: string; category: 'ignore' | 'focus' | 'style'; scoped?: ScopedLearning }> = [
+    ...scoped.map(rule => ({ text: rule.learning_text, category: rule.category, scoped: rule })),
+    ...(ignoreResult.results ?? []).map(row => ({ text: row.learning_text, category: 'ignore' as const })),
+    ...(focusResult.results ?? []).map(row => ({ text: row.learning_text, category: 'focus' as const })),
+    ...(prefResult.results ?? []).map(row => ({ text: row.learning_text, category: 'style' as const })),
+  ];
+  const selected: typeof candidates = [];
+  const seen = new Set<string>();
+  let characters = 0;
+  for (const candidate of candidates) {
+    if (seen.has(candidate.text) || characters + candidate.text.length > 8000) continue;
+    selected.push(candidate);
+    seen.add(candidate.text);
+    characters += candidate.text.length;
+    if (selected.length === 30) break;
+  }
+  const texts = (category: 'ignore' | 'focus' | 'style') => selected
+    .filter(item => item.category === category)
+    .map(item => item.scoped ? `[learning #${item.scoped.id}] ${item.text}` : item.text);
+
   return {
-    ignorePatterns: (ignoreResult.results ?? []).map((r: { learning_text: string }) => r.learning_text),
-    focusAreas: (focusResult.results ?? []).map((r: { learning_text: string }) => r.learning_text),
-    preferences: (prefResult.results ?? []).map((r: { learning_text: string }) => r.learning_text),
+    ignorePatterns: texts('ignore'),
+    focusAreas: texts('focus'),
+    preferences: texts('style'),
+    scopedLearnings: selected.flatMap(item => item.scoped ? [item.scoped] : []),
     highConfidenceRules: (patternsResult.results ?? []).map((r: { rule_id: string; confidence: number }) => ({
       ruleId: r.rule_id,
       confidence: r.confidence,
     })),
   };
+}
+
+export interface ScopedLearning {
+  id: number;
+  learning_text: string;
+  category: 'ignore' | 'focus' | 'style';
+  scope_type: 'file' | 'directory' | 'repo';
+  scope_path: string;
+  confidence: number;
+}
+
+/** Store the triggering comment, feedback, and learning in one D1 transaction. */
+export async function recordScopedReply(
+  db: D1Database,
+  input: {
+    owner: string; repo: string; prNumber: number; commentId: number;
+    user: string; fingerprint: string; replyText: string; learningText: string;
+    type: 'dismiss' | 'accept'; filePath?: string; source?: 'reply' | 'command';
+  }
+): Promise<void> {
+  const category = input.type === 'dismiss' ? 'ignore' : 'focus';
+  const scopeType = input.filePath ? 'file' : 'repo';
+  // Suppression and unscoped inferences require maintainer confirmation.
+  const state = category === 'ignore' || !input.filePath ? 'pending' : 'active';
+  await db.batch([
+    db.prepare(`INSERT OR IGNORE INTO scoped_learning_events
+      (owner, repo, pr_number, source_type, source_id) VALUES (?, ?, ?, ?, ?)`)
+      .bind(input.owner, input.repo, input.prNumber, input.source ?? 'reply', String(input.commentId)),
+    db.prepare(`INSERT INTO feedback
+      (owner, repo, pr_number, fingerprint, feedback_type, feedback_source, feedback_text, github_user, github_comment_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
+      .bind(input.owner, input.repo, input.prNumber, input.fingerprint, input.type, input.source ?? 'reply', input.replyText.slice(0, 2000), input.user, input.commentId),
+    db.prepare(`INSERT INTO scoped_learnings
+      (owner, repo, learning_text, category, scope_type, scope_path, state, source_pr, source_comment_id, source_user)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1
+      ON CONFLICT(owner, repo, category, scope_type, scope_path, learning_text) DO UPDATE SET
+        sample_size = scoped_learnings.sample_size + 1,
+        updated_at = datetime('now')`)
+      .bind(input.owner, input.repo, input.learningText, category, scopeType, input.filePath ?? '', state,
+        input.prNumber, input.commentId, input.user),
+  ]);
+}
+
+/** Rank applicable rules by path specificity and apply a shared prompt budget. */
+export function selectScopedLearnings(learnings: ScopedLearning[], paths: string[]): ScopedLearning[] {
+  const ranked = learnings.flatMap(learning => {
+    const scope = learning.scope_path.replace(/\/+$/, '');
+    let rank = 0;
+    if (learning.scope_type === 'file' && paths.includes(scope)) rank = 10000 + scope.length;
+    if (learning.scope_type === 'directory' && scope && paths.some(path => path.startsWith(scope + '/'))) {
+      rank = 1000 + scope.split('/').length;
+    }
+    if (learning.scope_type === 'repo') rank = 1;
+    return rank ? [{ learning, rank }] : [];
+  });
+  ranked.sort((a, b) => b.rank - a.rank || b.learning.confidence - a.learning.confidence || a.learning.id - b.learning.id);
+  const seen = new Set<string>();
+  const selected: ScopedLearning[] = [];
+  let characters = 0;
+  for (const { learning } of ranked) {
+    if (seen.has(learning.learning_text) || characters + learning.learning_text.length > 8000) continue;
+    seen.add(learning.learning_text);
+    selected.push(learning);
+    characters += learning.learning_text.length;
+    if (selected.length === 30) break;
+  }
+  return selected;
 }

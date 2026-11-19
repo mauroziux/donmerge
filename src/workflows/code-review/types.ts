@@ -39,6 +39,8 @@ export interface WorkerEnv {
   /** 'false' → review docs/lockfile-only PRs like any other (default: trivial
    *  change sets complete a neutral check without an LLM pass). */
   DONMERGE_SKIP_TRIVIAL?: string;
+  /** Set to false to stop injecting scoped learnings. */
+  DONMERGE_SCOPED_MEMORY?: string;
   /** End-to-end model-chain budget in ms (default 35 min, plan 004-U2). */
   REVIEW_TOTAL_BUDGET_MS?: string;
   /** 'true' → add the adversarial investigation rubric to the prompt (003-U2). */
@@ -134,6 +136,7 @@ export interface MemoryContext {
   focusAreas: string[];
   highConfidenceRules: { ruleId: string; confidence: number }[];
   preferences: string[];
+  scopedLearnings?: Array<{ id: number; learning_text: string; scope_type: string; scope_path: string }>;
 }
 
 /**
@@ -293,7 +296,7 @@ export interface ReviewResult {
  * Defined here to avoid circular dependency with feedback-handler.ts.
  */
 export interface FeedbackCommand {
-  type: 'dismiss' | 'accept' | 'override' | 'preference';
+  type: 'dismiss' | 'accept' | 'override' | 'preference' | 'memory_approve' | 'memory_revoke' | 'memory_list' | 'memory_scope';
   fingerprint?: string;
   text?: string;
   newSeverity?: 'critical' | 'suggestion' | 'low';

@@ -21,18 +21,48 @@ export async function fetchDonmergeConfig(
   owner: string,
   repo: string,
   token: string,
-  fetchFile: (owner: string, repo: string, path: string, token: string) => Promise<string | null>
+  fetchFile: (owner: string, repo: string, path: string, token: string, ref?: string) => Promise<string | null>,
+  ref?: string,
+  strict = false
 ): Promise<DonmergeConfig | null> {
   try {
-    const content = await fetchFile(owner, repo, '.donmerge', token);
-    if (!content) return null;
+    const content = await fetchFile(owner, repo, '.donmerge', token, ref);
+    if (content === null) return null;
 
     const parsed = parseYaml(content);
-    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (strict) throw new Error('Invalid .donmerge configuration');
+      return null;
+    }
+    if (strict) {
+      const obj = parsed as Record<string, unknown>;
+      for (const key of ['exclude', 'include']) {
+        if (key in obj && (!Array.isArray(obj[key]) || !(obj[key] as unknown[]).every(item => typeof item === 'string'))) {
+          throw new Error(`Invalid .donmerge field: ${key}`);
+        }
+      }
+      if ('instructions' in obj && typeof obj.instructions !== 'string') {
+        throw new Error('Invalid .donmerge field: instructions');
+      }
+      if ('version' in obj && typeof obj.version !== 'string') {
+        throw new Error('Invalid .donmerge field: version');
+      }
+      if ('skills' in obj && (!Array.isArray(obj.skills) || !obj.skills.every(
+        (item: unknown) => !!item && typeof item === 'object' &&
+          typeof (item as Record<string, unknown>).path === 'string' &&
+          Boolean((item as Record<string, unknown>).path) &&
+          (!('description' in item) || typeof (item as Record<string, unknown>).description === 'string')
+      ) || obj.skills.length > MAX_SKILLS)) throw new Error('Invalid .donmerge field: skills');
+      if ('severity' in obj && (!obj.severity || typeof obj.severity !== 'object' || Array.isArray(obj.severity) ||
+        !Object.values(obj.severity).every(value => ['critical', 'suggestion', 'low'].includes(String(value))))) {
+        throw new Error('Invalid .donmerge field: severity');
+      }
+    }
 
     const validated = validateDonmergeConfig(parsed);
     return validated;
   } catch (error) {
+    if (strict) throw error;
     console.warn('[donmerge] Failed to fetch/parse .donmerge:', error);
     return null;
   }
@@ -112,7 +142,9 @@ export async function resolveDonmergeSkills(
   owner: string,
   repo: string,
   token: string,
-  fetchFile: (owner: string, repo: string, path: string, token: string) => Promise<string | null>
+  fetchFile: (owner: string, repo: string, path: string, token: string, ref?: string) => Promise<string | null>,
+  ref?: string,
+  strict = false
 ): Promise<DonmergeResolved> {
   const skillsContent = new Map<string, string>();
   const skillsErrors = new Map<string, string>();
@@ -124,7 +156,7 @@ export async function resolveDonmergeSkills(
   // Fetch all skill files in parallel
   const results = await Promise.allSettled(
     config.skills.map(async (skill) => {
-      const content = await fetchFile(owner, repo, skill.path, token);
+      const content = await fetchFile(owner, repo, skill.path, token, ref);
       return { skill, content };
     })
   );
@@ -158,6 +190,10 @@ export async function resolveDonmergeSkills(
         result.status === 'rejected' ? String(result.reason) : 'Unknown error'
       );
     }
+  }
+
+  if (strict && skillsErrors.size > 0) {
+    throw new Error(`Failed to load policy skills: ${Array.from(skillsErrors.keys()).join(', ')}`);
   }
 
   // Log warnings for failed skills

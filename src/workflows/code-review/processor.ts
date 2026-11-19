@@ -292,6 +292,19 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
     return true;
   }
 
+  /** Queue a fresh snapshot after a base or head change, preserving any newer request. */
+  async requestReviewRefresh(runId?: string): Promise<boolean> {
+    const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    if (!status || status.state !== 'running' || status.runId !== runId) return false;
+    const pending = await this.state.storage.get<ReviewContext>(STATE_KEYS.pendingLatest);
+    if (pending) return true;
+    const context = await this.state.storage.get<ReviewContext>(STATE_KEYS.context);
+    if (!context) return false;
+    await this.state.storage.put(STATE_KEYS.pendingLatest, { ...context, retrigger: true, headSha: undefined });
+    await this.state.storage.setAlarm(Date.now() + 60_000);
+    return true;
+  }
+
   /** Reserve each optional fixed reply before its POST; never replay an ambiguous POST. */
   async reserveFixedReply(runId: string, commentId: number): Promise<boolean> {
     const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
