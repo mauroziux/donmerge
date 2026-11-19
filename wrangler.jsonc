@@ -238,7 +238,7 @@
 			],
 			"workflows": [
 				{
-					"name": "code-review-workflow",
+					"name": "code-review-workflow-staging",
 					"binding": "CODE_REVIEW_WORKFLOW",
 					"class_name": "CodeReviewWorkflow"
 				}
