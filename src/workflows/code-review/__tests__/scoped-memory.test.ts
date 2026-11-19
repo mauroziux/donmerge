@@ -2,12 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { buildMemoryContext, recordScopedReply, selectScopedLearnings, type ScopedLearning } from '../memory-store';
+import { scopedMemoryEnabledForRepo } from '../memory-rollout';
 
 function learning(id: number, scope_type: ScopedLearning['scope_type'], scope_path: string, text: string): ScopedLearning {
   return { id, scope_type, scope_path, learning_text: text, confidence: 60, category: 'focus' };
 }
 
 describe('scoped review memory', () => {
+  it('limits an enabled rollout to explicitly listed repositories and honors the global kill switch', () => {
+    const pilot = { DONMERGE_SCOPED_MEMORY: 'true', DONMERGE_SCOPED_MEMORY_REPOS: ' Org/Repo , other/project ' };
+    expect(scopedMemoryEnabledForRepo(pilot, 'ORG', 'repo')).toBe(true);
+    expect(scopedMemoryEnabledForRepo(pilot, 'other', 'project')).toBe(true);
+    expect(scopedMemoryEnabledForRepo(pilot, 'org', 'repo-fork')).toBe(false);
+    expect(scopedMemoryEnabledForRepo(pilot, 'elsewhere', 'repo')).toBe(false);
+    expect(scopedMemoryEnabledForRepo({ ...pilot, DONMERGE_SCOPED_MEMORY: 'false' }, 'org', 'repo')).toBe(false);
+    expect(scopedMemoryEnabledForRepo({ DONMERGE_SCOPED_MEMORY_REPOS: '' }, 'org', 'repo')).toBe(false);
+    expect(scopedMemoryEnabledForRepo({}, 'org', 'repo')).toBe(true);
+  });
+
   it('orders exact file, nearest directory and repository rules, with segment boundaries', () => {
     const rules = [
       learning(1, 'repo', '', 'repo'),
@@ -75,6 +87,13 @@ it('persists one feedback event and applies a confirmed rule only to its file', 
     sqlite.prepare("UPDATE scoped_learnings SET state = 'active' WHERE repo = 'another-repo'").run();
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'])).ignorePatterns).toEqual(['[learning #1] Do not flag this']);
     expect((await buildMemoryContext(db, 'org', 'another-repo', ['src/a.ts'])).ignorePatterns).toEqual(['[learning #2] A different exception']);
+    const pilot = { DONMERGE_SCOPED_MEMORY: 'true', DONMERGE_SCOPED_MEMORY_REPOS: 'org/repo' };
+    expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'], scopedMemoryEnabledForRepo(pilot, 'org', 'repo'))).ignorePatterns)
+      .toEqual(['[learning #1] Do not flag this']);
+    expect((await buildMemoryContext(db, 'org', 'another-repo', ['src/a.ts'], scopedMemoryEnabledForRepo(pilot, 'org', 'another-repo'))).ignorePatterns)
+      .toEqual([]);
+    expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'], scopedMemoryEnabledForRepo({ ...pilot, DONMERGE_SCOPED_MEMORY: 'false' }, 'org', 'repo'))).ignorePatterns)
+      .toEqual([]);
     sqlite.prepare("UPDATE scoped_learnings SET state = 'revoked' WHERE repo = 'repo'").run();
     await recordScopedReply(db, { ...reply, commentId: 8 });
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'])).ignorePatterns).toEqual([]);

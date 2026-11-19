@@ -41,6 +41,8 @@ export interface WorkerEnv {
   DONMERGE_SKIP_TRIVIAL?: string;
   /** Set to false to stop injecting scoped learnings. */
   DONMERGE_SCOPED_MEMORY?: string;
+  /** Optional comma-separated owner/repo allowlist for scoped-memory rollout. */
+  DONMERGE_SCOPED_MEMORY_REPOS?: string;
   /** End-to-end model-chain budget in ms (default 35 min, plan 004-U2). */
   REVIEW_TOTAL_BUDGET_MS?: string;
   /** 'true' → add the adversarial investigation rubric to the prompt (003-U2). */
