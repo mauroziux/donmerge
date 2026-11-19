@@ -587,7 +587,7 @@ describe('handleNaturalReply', () => {
       ok: true,
       json: () => Promise.resolve({
         choices: [{ message: { content: JSON.stringify({
-          type: 'accept', reason: 'The crash was theoretical; fixed as hardening',
+          type: 'accept', reason: 'The crash was theoretical; fixed as hardening <!-- hidden -->',
           learning: 'Confirmed valid: use null-safe access for chained relations',
         }) } }],
       }),
@@ -606,6 +606,8 @@ describe('handleNaturalReply', () => {
       const learning = learningCall!.find((arg: unknown) => typeof arg === 'string' && arg.startsWith('Reported review consideration:')) as string;
       expect(learning).toContain('crash was theoretical');
       expect(learning).not.toContain('Confirmed valid');
+      expect(learning).not.toContain('<!--');
+      expect(learning).not.toContain('hidden');
       expect(ack!.ackBody).not.toContain('Findings like this are valid');
     } finally {
       vi.unstubAllGlobals();
