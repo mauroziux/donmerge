@@ -41,6 +41,7 @@ const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
 import { CodeReviewWorkflow } from '../code-review-workflow';
+import { buildReviewPrompt } from '../prompts';
 import { buildCurrentIssues } from '../issue-builder';
 import type { CoverageManifest } from '../review-coverage';
 import type { PreviousComment, ReviewResult, TrackedIssue } from '../types';
@@ -577,6 +578,93 @@ describe('publishReview verdict matrix', () => {
 // ─── prepareFiles: snapshot discovery + no double config load (002-U1/005-U1) ─
 
 describe('prepareFiles', () => {
+  it('uses the destination repository policy for a fork while reading head metadata at the fork commit', async () => {
+    const calls: string[] = [];
+    const forkPr = { title: 'Fork change', changed_files: 2,
+      head: { sha: 'forksha', repo: { full_name: 'contributor/repo' } },
+      base: { ref: 'develop', sha: 'basesha', repo: { full_name: 'owner/repo' } } };
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      calls.push(url);
+      if (url.includes('/compare/')) return { ok: true, json: async () => ({ status: 'ahead' }) };
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return { ok: true, json: async () => ({ id: 777 }) };
+      if (url.includes('/pulls/42/files')) return filesResponse([
+        { filename: 'src/keep.ts', patch: '@@ -1 +1 @@\n+kept' },
+        { filename: 'src/skip.ts', patch: '@@ -1 +1 @@\n+excluded' },
+      ]);
+      if (url.includes('/pulls/42')) return { ok: true, json: async () => forkPr };
+      const parsed = new URL(url), ref = parsed.searchParams.get('ref');
+      let content: string | null = null;
+      if (url.includes('/contents/.donmerge')) content = ref === 'basesha'
+        ? 'exclude: [src/skip.ts]\nskills:\n  - path: REVIEW.md\n' : 'exclude: [src/keep.ts]\n';
+      if (url.includes('/contents/REVIEW.md')) content = ref === 'basesha' ? 'BASE_SKILL_MARKER' : 'FORK_SKILL_MARKER';
+      if (url.includes('/contents/AGENTS.md')) content = ref === 'basesha' ? 'BASE_GUIDE_MARKER' : 'FORK_GUIDE_MARKER';
+      if (url.includes('/contents/README.md')) content = ref === 'forksha' ? 'HEAD_README_MARKER' : 'BASE_README_MARKER';
+      if (content === null) return { ok: false, status: 404, text: async () => 'not found' };
+      return { ok: true, json: async () => ({ encoding: 'base64', content: btoa(content) }) };
+    });
+    const workflow = makeWorkflow() as unknown as {
+      fetchPrData: (p: unknown) => Promise<WorkflowPrData>;
+      prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles>;
+    };
+    const snapshot = await workflow.fetchPrData({ owner: 'owner', repo: 'repo', prNumber: 42, githubToken: 'token', retrigger: false });
+    const prepared = await workflow.prepareFiles(snapshot);
+    const dto = prepared.donmerge!;
+    const prompt = buildReviewPrompt({ owner: 'owner', repo: 'repo', prNumber: 42, retrigger: false,
+      diffText: prepared.diffText, repoContext: prepared.repoContext },
+      { donmergeResolved: { config: dto.config, skillsContent: new Map(dto.skills), skillsErrors: new Map(dto.skillErrors) } });
+    expect(prepared.filePatches.map(file => file.filename)).toEqual(['src/keep.ts']);
+    expect(prepared.coverage).toMatchObject({ baseSha: 'basesha', headSha: 'forksha' });
+    expect(prompt).toContain('BASE_GUIDE_MARKER');
+    expect(prompt).toContain('BASE_SKILL_MARKER');
+    expect(prompt).toContain('HEAD_README_MARKER');
+    expect(prompt).not.toContain('FORK_GUIDE_MARKER');
+    expect(calls.filter(url => url.includes('/contents/')).every(url => url.includes('/repos/owner/repo/'))).toBe(true);
+    expect(calls.find(url => url.includes('/contents/.donmerge'))).toContain('ref=basesha');
+    expect(calls.find(url => url.includes('/contents/README.md'))).toContain('ref=forksha');
+  });
+
+  it('stops after file discovery if the destination advances', async () => {
+    const calls: string[] = [];
+    mockFetch.mockImplementation(async (url: string) => {
+      calls.push(url);
+      if (url.includes('/pulls/42/files')) return filesResponse([{ filename: 'a.ts', patch: '+x' }]);
+      if (url.includes('/pulls/42')) return { ok: true, json: async () => ({ head: { sha: 'headsha' }, base: { ref: 'main', sha: 'newbase' } }) };
+      return { ok: false, status: 404, text: async () => 'not found' };
+    });
+    await expect((makeWorkflow() as unknown as { prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles> }).prepareFiles(prData())).rejects.toThrow('PR base changed');
+    expect(calls.some(url => url.includes('/contents/'))).toBe(false);
+  });
+
+  it('uses a newly merged destination policy on the next snapshot and defaults when .donmerge is absent', async () => {
+    let base = 'base-old';
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/pulls/42/files')) return filesResponse([
+        { filename: 'a.ts', patch: '@@ -1 +1 @@\n+a' },
+        { filename: 'b.ts', patch: '@@ -1 +1 @@\n+b' },
+      ]);
+      if (url.includes('/pulls/42')) return { ok: true, json: async () => ({ head: { sha: 'headsha' }, base: { ref: 'main', sha: base } }) };
+      const ref = new URL(url).searchParams.get('ref');
+      let content: string | null = null;
+      if (url.includes('/contents/.donmerge') && ref !== 'base-empty') content = ref === 'base-old'
+        ? 'exclude: [b.ts]\nskills:\n  - path: REVIEW.md\n'
+        : 'exclude: [a.ts]\nskills:\n  - path: REVIEW.md\n';
+      if (url.includes('/contents/REVIEW.md')) content = ref === 'base-old' ? 'old rule' : 'new rule';
+      if (content === null) return { ok: false, status: 404, text: async () => 'not found' };
+      return { ok: true, json: async () => ({ encoding: 'base64', content: btoa(content) }) };
+    });
+    const workflow = makeWorkflow() as unknown as { prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles> };
+    const before = await workflow.prepareFiles({ ...prData(), baseSha: base, changedFilesCount: 2 });
+    base = 'base-new';
+    const after = await workflow.prepareFiles({ ...prData(), baseSha: base, changedFilesCount: 2 });
+    base = 'base-empty';
+    const defaults = await workflow.prepareFiles({ ...prData(), baseSha: base, changedFilesCount: 2 });
+    expect(before.filePatches.map(file => file.filename)).toEqual(['a.ts']);
+    expect(before.donmerge?.skills).toContainEqual(['REVIEW.md', 'old rule']);
+    expect(after.filePatches.map(file => file.filename)).toEqual(['b.ts']);
+    expect(after.donmerge?.skills).toContainEqual(['REVIEW.md', 'new rule']);
+    expect(defaults.donmerge).toBeUndefined();
+    expect(defaults.filePatches.map(file => file.filename)).toEqual(['a.ts', 'b.ts']);
+  });
   it('does not inherit prior coverage when a declared policy file is absent', async () => {
     mockFetch.mockImplementation(async (url: string) => {
       if (url.includes('/pulls/42/files')) return filesResponse([{ filename: 'a.ts', patch: '@@ -1 +1 @@\n+new' }]);
