@@ -24,6 +24,8 @@
 		"FALLBACK_MODEL": "openai/gpt-4o",
 		"MAX_REVIEW_FILES": "50",
 		"REVIEW_TRIGGER": "@donmerge",
+		// Enable after evaluating scoped-memory quality on a representative PR corpus.
+		"DONMERGE_SCOPED_MEMORY": "false",
 		// Sentry webhook integration (optional)
 		// SENTRY_WEBHOOK_SECRET: HMAC-SHA256 secret for verifying Sentry webhook signatures
 		// SENTRY_REPO_MAP: Maps Sentry org/project slugs to GitHub repos
