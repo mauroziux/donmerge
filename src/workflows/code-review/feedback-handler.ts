@@ -223,10 +223,10 @@ export async function handleNaturalReply(
 
   const learningText =
     classification.type === 'dismiss'
-      ? classification.learning ??
-        `Don't flag findings like: ${findingBody.slice(0, 200)} — reason: ${classification.reason}`
-      : classification.learning ??
-        `Confirmed valid: ${findingBody.slice(0, 200)}`;
+      ? stripHtmlComments(classification.learning ??
+        `Don't flag findings like: ${findingBody.slice(0, 200)} — reason: ${classification.reason}`)
+      : `Reported review consideration: ${stripHtmlComments(classification.learning ?? findingBody.slice(0, 200))
+        .replace(/^confirmed valid\s*:\s*/i, '')} (feedback summary: ${stripHtmlComments(classification.reason)})`;
 
   await recordScopedReply(db, {
     owner: params.owner,
@@ -261,7 +261,7 @@ export async function handleNaturalReply(
     classification.type === 'dismiss'
       ? '**Recorded.** A maintainer can confirm this exception for future reviews.'
       : params.filePath
-        ? '**Confirmed.** Findings like this are valid here — I will keep prioritizing them.'
+        ? '**Recorded.** I saved this feedback as a review consideration for this file.'
         : '**Recorded.** A maintainer can confirm the scope for future reviews.';
 
   // Do not let quoted user text trigger the review webhook or inject hidden
