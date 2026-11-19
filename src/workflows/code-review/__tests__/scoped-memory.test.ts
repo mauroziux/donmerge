@@ -71,9 +71,14 @@ it('persists one feedback event and applies a confirmed rule only to its file', 
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'])).ignorePatterns).toEqual(['[learning #1] Do not flag this']);
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/b.ts'])).ignorePatterns).toEqual([]);
     expect((await buildMemoryContext(db, 'other', 'repo', ['src/a.ts'])).ignorePatterns).toEqual([]);
-    sqlite.prepare("UPDATE scoped_learnings SET state = 'revoked'").run();
+    await recordScopedReply(db, { ...reply, repo: 'another-repo', commentId: 9, learningText: 'A different exception' });
+    sqlite.prepare("UPDATE scoped_learnings SET state = 'active' WHERE repo = 'another-repo'").run();
+    expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'])).ignorePatterns).toEqual(['[learning #1] Do not flag this']);
+    expect((await buildMemoryContext(db, 'org', 'another-repo', ['src/a.ts'])).ignorePatterns).toEqual(['[learning #2] A different exception']);
+    sqlite.prepare("UPDATE scoped_learnings SET state = 'revoked' WHERE repo = 'repo'").run();
     await recordScopedReply(db, { ...reply, commentId: 8 });
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'])).ignorePatterns).toEqual([]);
+    expect((await buildMemoryContext(db, 'org', 'another-repo', ['src/a.ts'])).ignorePatterns).toEqual(['[learning #2] A different exception']);
   } finally {
     sqlite.close();
   }
