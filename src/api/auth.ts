@@ -2,7 +2,7 @@ import type { AuthenticatedRequest } from './types';
 
 /**
  * Validates API key from Authorization header.
- * Keys are stored in DONMERGE_API_KEYS env var (comma-separated).
+ * Keys are stored in a comma-separated secret.
  * Format: dm_live_* for production, dm_test_* for test.
  */
 export function validateApiKey(

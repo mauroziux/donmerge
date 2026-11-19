@@ -217,7 +217,7 @@ Key variables:
 | `CODEX_MODEL` | No | Primary model in `provider/model` format (default: `kimi/k3`) |
 | `FALLBACK_MODEL` | No | Fallback model attempted if the primary provider fails (default: `openai/gpt-4o`) |
 | `ANTHROPIC_API_KEY` | No | Anthropic API key (enables Claude models for auto-fix V2) |
-| `DONMERGE_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
+| `DONMERGE_PUSH_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
 | `REVIEW_PUSH_DEBOUNCE_SECONDS` | No | Push-debounce window in seconds for `synchronize` reviews (default `600`, `0` disables). See [Cost controls](#cost-controls-automatic-reviews). |
 | `DONMERGE_INCREMENTAL_REVIEW` | No | `false` disables incremental re-reviews (default on). See [Cost controls](#cost-controls-automatic-reviews). |
 | `DONMERGE_SKIP_TRIVIAL` | No | `false` reviews docs/lockfile-only PRs like any other (default: skip with a neutral check). See [Cost controls](#cost-controls-automatic-reviews). |

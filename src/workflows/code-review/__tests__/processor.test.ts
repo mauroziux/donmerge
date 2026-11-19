@@ -68,6 +68,22 @@ const baseContext = {
   retrigger: false,
 };
 
+describe('refreshing a changed PR snapshot', () => {
+  it('queues the active request again and preserves a newer deferred request', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 1, runId: 'current' });
+    store.set('reviewContext', { ...baseContext, headSha: 'old' });
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    expect(await processor.requestReviewRefresh('stale')).toBe(false);
+    expect(await processor.requestReviewRefresh('current')).toBe(true);
+    expect(await storage.get('reviewPendingLatest')).toMatchObject({ retrigger: true, headSha: undefined });
+    const newer = { ...baseContext, headSha: 'newer' };
+    await storage.put('reviewPendingLatest', newer);
+    expect(await processor.requestReviewRefresh('current')).toBe(true);
+    expect(await storage.get('reviewPendingLatest')).toEqual(newer);
+  });
+});
+
 beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});

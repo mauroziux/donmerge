@@ -45,6 +45,7 @@ describe('getReviewState', () => {
       repo: 'rms',
       prNumber: 42,
       baseRef: 'develop',
+      baseSha: null,
       lastReviewedSha: 'abc123',
       fullCoverage: true,
     });
@@ -81,11 +82,12 @@ describe('recordReviewState', () => {
       repo: 'rms',
       prNumber: 42,
       baseRef: 'develop',
+      baseSha: 'base123',
       headSha: 'def456',
       fullCoverage: true,
     });
 
-    expect(bind).toHaveBeenCalledWith('tableoltd', 'rms', 42, 'develop', 'def456', 1);
+    expect(bind).toHaveBeenCalledWith('tableoltd', 'rms', 42, 'develop', 'base123', 'def456', 1);
     expect(vi.mocked(prepare).mock.calls[0][0]).toContain('ON CONFLICT(owner, repo, pr_number) DO UPDATE');
   });
 
@@ -99,7 +101,7 @@ describe('recordReviewState', () => {
       headSha: 'def456',
       fullCoverage: false,
     });
-    expect(bind).toHaveBeenCalledWith('tableoltd', 'rms', 42, 'develop', 'def456', 0);
+    expect(bind).toHaveBeenCalledWith('tableoltd', 'rms', 42, 'develop', null, 'def456', 0);
   });
 
   it('defaults the base ref to an empty string', async () => {
@@ -111,6 +113,6 @@ describe('recordReviewState', () => {
       headSha: 'def456',
       fullCoverage: true,
     });
-    expect(bind).toHaveBeenCalledWith('tableoltd', 'rms', 42, '', 'def456', 1);
+    expect(bind).toHaveBeenCalledWith('tableoltd', 'rms', 42, '', null, 'def456', 1);
   });
 });

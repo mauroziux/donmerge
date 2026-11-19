@@ -1,5 +1,7 @@
 # DonMerge: reviews de mayor valor y mejor rendimiento
 
+Siguiente ciclo, 19 de noviembre de 2026. [Política desde la rama destino y memoria por archivo](006-politica-memoria-y-revision-incremental.md) incluye la rotación de claves de la Push API y la verificación del incremental después de un force push. El diagnóstico y los estados siguientes corresponden al ciclo 001–005.
+
 Estado: **núcleo implementado en la rama `improvements`** (base del plan: `8fd3eef`). Las unidades que requieren datos reales, gasto LLM o activación en producción quedan marcadas como PENDIENTE-ACTIVACIÓN en cada plan; el resto está implementado y verificado con tests (1241 tests, 54 suites).
 
 ## Objetivo y decisión del operador

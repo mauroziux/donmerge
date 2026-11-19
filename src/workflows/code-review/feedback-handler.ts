@@ -1,5 +1,5 @@
 import type { Feedback, ReviewOutcome } from './types';
-import { recordFeedback, recordReviewOutcomes, upsertLearning, upsertPatternWeight } from './memory-store';
+import { recordFeedback, recordReviewOutcomes, recordScopedReply, upsertLearning, upsertPatternWeight } from './memory-store';
 import { recalculatePatternWeights } from './pattern-recalculator';
 import {
   classifyReply,
@@ -10,7 +10,7 @@ import {
 // ── Parse @donmerge commands ─────────────────────────────────────────────────
 
 export interface ParsedCommand {
-  type: 'dismiss' | 'accept' | 'override' | 'preference';
+  type: 'dismiss' | 'accept' | 'override' | 'preference' | 'memory_approve' | 'memory_revoke' | 'memory_list' | 'memory_scope';
   fingerprint?: string;
   text?: string;
   newSeverity?: 'critical' | 'suggestion' | 'low';
@@ -21,6 +21,13 @@ export function parseDonmergeCommand(text: string): ParsedCommand | null {
   const mention = text.search(/@donmerge\b/i);
   if (mention < 0) return null;
   text = text.slice(mention);
+  if (/^@donmerge\s+memory\s+list\s*$/i.test(text)) return { type: 'memory_list' };
+  const scopeMatch = text.match(/^@donmerge\s+memory\s+scope\s+(\d+)\s+(file|directory|repo)(?:\s+(\S+))?\s*$/i);
+  if (scopeMatch) return { type: 'memory_scope', text: [scopeMatch[1], scopeMatch[2].toLowerCase(), scopeMatch[3] ?? ''].join(' ') };
+  const memoryMatch = text.match(/^@donmerge\s+memory\s+(approve|revoke)\s+(\d+)\s*$/i);
+  if (memoryMatch) {
+    return { type: memoryMatch[1].toLowerCase() === 'approve' ? 'memory_approve' : 'memory_revoke', text: memoryMatch[2] };
+  }
   // Fingerprints are case-sensitive; only command matching is case-insensitive.
 
   // @donmerge dismiss [fingerprint]
@@ -87,18 +94,14 @@ export async function handleCommentFeedback(
 
   // For dismiss/accept/override, we need the fingerprint from the parent comment
   if (command.fingerprint && params.inReplyToId) {
-    await recordFeedback(db, {
-      owner: params.owner,
-      repo: params.repo,
-      pr_number: params.prNumber,
-      fingerprint: command.fingerprint,
-      feedback_type: command.type as 'dismiss' | 'accept' | 'override',
-      feedback_source: 'command',
-      feedback_text: params.commentBody,
-      new_severity: command.newSeverity,
-      github_user: params.githubUser,
-      github_comment_id: params.commentId,
-    });
+    if (command.type === 'override') {
+      await recordFeedback(db, {
+        owner: params.owner, repo: params.repo, pr_number: params.prNumber,
+        fingerprint: command.fingerprint, feedback_type: 'override', feedback_source: 'command',
+        feedback_text: params.commentBody, new_severity: command.newSeverity,
+        github_user: params.githubUser, github_comment_id: params.commentId,
+      });
+    }
 
     // Also create a learning from dismiss — use the actual finding body so the
     // stored rule is actionable, not a generic "something was dismissed".
@@ -118,14 +121,11 @@ export async function handleCommentFeedback(
           ? `Confirmed valid: ${finding}`
           : `A finding in this codebase was accepted as valid`;
 
-      await upsertLearning(db, {
-        owner: params.owner,
-        repo: params.repo,
-        learning_text: learningText,
-        source: 'feedback',
-        category: command.type === 'dismiss' ? 'ignore' : 'focus',
-        confidence: 60,
-        sample_size: 1,
+      await recordScopedReply(db, {
+        owner: params.owner, repo: params.repo, prNumber: params.prNumber,
+        commentId: params.commentId, user: params.githubUser, fingerprint: command.fingerprint,
+        replyText: params.commentBody, learningText, type: command.type,
+        filePath: outcome?.file_path, source: 'command',
       });
     }
 
@@ -204,6 +204,7 @@ export async function handleNaturalReply(
     replyText: string;
     parentFingerprint: string;
     parentCommentId?: number;
+    replyCommentId: number;
     parentBody: string;
     filePath?: string;
   }
@@ -220,17 +221,6 @@ export async function handleNaturalReply(
     return null;
   }
 
-  await recordFeedback(db, {
-    owner: params.owner,
-    repo: params.repo,
-    pr_number: params.prNumber,
-    fingerprint: params.parentFingerprint,
-    feedback_type: classification.type,
-    feedback_source: 'reply',
-    feedback_text: params.replyText.slice(0, 2000),
-    github_user: params.githubUser,
-  });
-
   const learningText =
     classification.type === 'dismiss'
       ? classification.learning ??
@@ -238,14 +228,17 @@ export async function handleNaturalReply(
       : classification.learning ??
         `Confirmed valid: ${findingBody.slice(0, 200)}`;
 
-  await upsertLearning(db, {
+  await recordScopedReply(db, {
     owner: params.owner,
     repo: params.repo,
-    learning_text: learningText,
-    source: 'feedback',
-    category: classification.type === 'dismiss' ? 'ignore' : 'focus',
-    confidence: 65,
-    sample_size: 1,
+    prNumber: params.prNumber,
+    commentId: params.replyCommentId,
+    user: params.githubUser,
+    fingerprint: params.parentFingerprint,
+    replyText: params.replyText,
+    learningText,
+    type: classification.type,
+    filePath: params.filePath,
   });
 
   // Update the finding outcome (best-effort — rows may not exist for old findings).
@@ -266,8 +259,10 @@ export async function handleNaturalReply(
 
   const ackLine =
     classification.type === 'dismiss'
-      ? '**Learned.** I will stop flagging this pattern in future reviews of this repo.'
-      : '**Confirmed.** Findings like this are valid here — I will keep prioritizing them.';
+      ? '**Recorded.** A maintainer can confirm this exception for future reviews.'
+      : params.filePath
+        ? '**Confirmed.** Findings like this are valid here — I will keep prioritizing them.'
+        : '**Recorded.** A maintainer can confirm the scope for future reviews.';
 
   // Do not let quoted user text trigger the review webhook or inject hidden
   // metadata into our acknowledgment comment.
@@ -311,29 +306,6 @@ export async function handleReactionFeedback(
     feedback_source: 'reaction',
     github_user: params.githubUser,
   });
-
-  // Create a learning from thumbsdown (dismiss) with human-readable text
-  if (feedbackType === 'dismiss') {
-    const outcome = await db.prepare(`
-      SELECT body FROM review_outcomes
-      WHERE owner = ? AND repo = ? AND pr_number = ? AND github_comment_id = ? AND fingerprint = ?
-      LIMIT 1
-    `).bind(params.owner, params.repo, params.prNumber, params.commentId, params.commentFingerprint).first<{ body: string }>();
-
-    const learningText = outcome?.body
-      ? `Finding dismissed: "${outcome.body.slice(0, 200)}"`
-      : `A finding was dismissed — similar findings may be false positives`;
-
-    await upsertLearning(db, {
-      owner: params.owner,
-      repo: params.repo,
-      learning_text: learningText,
-      source: 'feedback',
-      category: 'ignore',
-      confidence: 60,
-      sample_size: 1,
-    });
-  }
 
   return true;
 }

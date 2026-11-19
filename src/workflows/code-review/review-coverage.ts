@@ -187,6 +187,7 @@ export function planReviewFiles(input: PlanReviewFilesInput): CoveragePlan {
 export interface CoverageManifest {
   /** PR head the manifest was built against. */
   headSha: string;
+  baseSha?: string;
   /** Files the PR object declares as changed (may exceed what the API lists). */
   changedFilesCount: number;
   /** Files actually discovered through the files API (all pages). */
@@ -222,6 +223,7 @@ export interface CoverageManifest {
 
 export interface BuildManifestContext {
   headSha: string;
+  baseSha?: string;
   changedFilesCount: number;
   apiFileCapReached: boolean;
   /**
@@ -264,6 +266,7 @@ export function buildCoverageManifest(
 
   return {
     headSha: ctx.headSha,
+    baseSha: ctx.baseSha,
     changedFilesCount: ctx.changedFilesCount,
     discoveredCount,
     apiFileCapReached: ctx.apiFileCapReached,
@@ -303,18 +306,22 @@ export function checkConclusion(
 
 /** Human-readable coverage note for check-run output and PR description. */
 export function coverageReportText(manifest: CoverageManifest): string {
+  const snapshot = manifest.baseSha
+    ? `Snapshot: base \`${manifest.baseSha}\`, head \`${manifest.headSha}\`.\n\n`
+    : '';
   const incrementalNote = manifest.incrementalSince
     ? `Incremental review: this run covers only the file(s) changed since the last fully reviewed commit \`${manifest.incrementalSince.slice(0, 12)}\`; files unchanged since then inherit that review's verdict.\n\n`
     : '';
 
   if (manifest.scopeComplete) {
     return (
-      incrementalNote +
+      snapshot + incrementalNote +
       `Coverage: full — ${manifest.reviewedCount} file(s) reviewed, ${manifest.excludedPolicyCount} excluded by repo policy.`
     );
   }
 
   const lines: string[] = [];
+  if (snapshot) lines.push(snapshot.trimEnd());
   if (incrementalNote) {
     lines.push(incrementalNote.trimEnd());
   }

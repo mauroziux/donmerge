@@ -460,7 +460,7 @@ Cloudflare Workflow step outputs are inspectable through the Workflows API and C
 | `REPO_CONFIGS` | No | Per-repo base branch config: `owner/repo:branch,...` |
 | `REVIEW_TRIGGER` | No | Comment trigger tag (default: `@donmerge`) |
 | `DONMERGE_POST_FIXED_REPLIES` | No | Legacy setting; fixed replies are disabled until a fix can be verified explicitly. |
-| `DONMERGE_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
+| `DONMERGE_PUSH_API_KEYS` | Push API | Comma-separated API keys (`dm_live_*`, `dm_test_*`) |
 | `SENTRY_WEBHOOK_SECRET` | Sentry | HMAC secrets for Sentry webhook verification |
 | `SENTRY_REPO_MAP` | Sentry | Maps Sentry org slugs to GitHub repos |
 | `SENTRY_GITHUB_TOKEN` | Sentry | GitHub token for Sentry-triggered code fetching |

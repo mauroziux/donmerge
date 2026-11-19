@@ -109,7 +109,7 @@ type AuthenticatedHandler = (c: any, auth: AuthenticatedRequest) => Promise<Resp
 function withAuth(handler: AuthenticatedHandler) {
   return async (c: any): Promise<Response> => {
     const authHeader = c.req.header('Authorization');
-    const auth = validateApiKey(authHeader, c.env.DONMERGE_API_KEYS);
+    const auth = validateApiKey(authHeader, c.env.DONMERGE_PUSH_API_KEYS);
 
     if (!auth) {
       return c.json(

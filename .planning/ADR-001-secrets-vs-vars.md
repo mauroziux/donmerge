@@ -1,6 +1,11 @@
 # ADR-001: Wrangler Secrets vs Plaintext Vars
 
-## Status: Accepted
+## Status: Partially superseded
+
+The Push API bearer keys are credentials and must be stored as the
+`DONMERGE_PUSH_API_KEYS` Worker secret, separately for each environment.
+The Push API key portions of the decision below are superseded. The Sentry
+webhook configuration is unaffected by this revision.
 
 ## Context
 

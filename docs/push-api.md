@@ -31,7 +31,7 @@ All push API endpoints require a Bearer token in the `Authorization` header.
 | `dm_live_` | Production | 30 req/min, 200 req/hr |
 | `dm_test_` | Staging / testing | 10 req/min, 50 req/hr |
 
-Keys are managed via the `DONMERGE_API_KEYS` environment variable (comma-separated for multiple keys).
+Keys are managed via the `DONMERGE_PUSH_API_KEYS` Worker secret (comma-separated for multiple keys).
 
 ### Example
 

@@ -34,9 +34,8 @@ import {
   fetchPreviousDonMergeComments,
   fetchReviewComments,
   fetchRepoContext,
-  fetchRepoFile,
+  fetchPolicyFile,
   fetchAllPrFiles,
-  fetchPrHeadSha,
   fetchFileContentsAtRef,
   publishReview,
   completeCheckRun,
@@ -174,6 +173,8 @@ interface PreparedFiles {
   prData: PrData;
   diffText: string;
   repoContext: RepoContextType;
+  donmerge?: DonmergeDto;
+  /** Older in-flight workflows may still hold this field. */
   donmergeResolved?: DonmergeResolved;
   activePreviousComments: PreviousComment[];
   /** PR file patches captured in step 2, reused by step 4 for anchor validation. */
@@ -280,6 +281,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
           timeout: '1 minute',
         }, async () => {
+          await this.assertSnapshotCurrent(activePrData);
           const title = preparedFiles.trivialSkip
             ? '📄 Trivial change — review skipped'
             : '📄 No file changes since last review';
@@ -306,7 +308,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
         timeout: '40 minutes',
       }, async () => {
-        return this.runLlmReview(preparedFiles);
+        return this.runLlmReview(preparedFiles, runId);
       });
 
       // Persist the pre-publication snapshot across retries of the publication step.
@@ -344,6 +346,15 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         detail,
       });
 
+      let refreshQueued = false;
+      if (code === ErrorCode.PR_CHANGED) {
+        try {
+          refreshQueued = await (processorStub as any).requestReviewRefresh(runId);
+        } catch (refreshError) {
+          console.error('Could not queue a fresh PR snapshot', refreshError);
+        }
+      }
+
       // Fail check run if we created one before the failure
       if (prData?.checkRunId) {
         try {
@@ -356,8 +367,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
               prData.repo,
               prData.checkRunId,
               '🔀 PR updated during review',
-              `The PR received new commits while the review was running.`,
-              `DonMerge stopped this run instead of reporting on a stale version of the diff.\n\nThe latest push will be reviewed; you can also comment \`@donmerge\` to re-trigger immediately.`,
+              `The PR head or destination changed while the review was running.`,
+              refreshQueued
+                ? `DonMerge stopped this run because the snapshot changed. A fresh review is queued.`
+                : `DonMerge stopped this run because the snapshot changed. Comment \`@donmerge\` to re-trigger the review.`,
               prData.githubToken
             );
           } else if (code === ErrorCode.PUBLISH_UNRESOLVED) {
@@ -411,6 +424,20 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
   private getProcessorStub(doName: string) {
     const id = this.env.ReviewProcessor.idFromName(doName);
     return this.env.ReviewProcessor.get(id);
+  }
+
+  private async assertSnapshotCurrent(prData: PrData): Promise<void> {
+    const current = await githubFetch<{ head: { sha: string }; base: { ref: string; sha: string } }>(
+      `https://api.github.com/repos/${prData.owner}/${prData.repo}/pulls/${prData.prNumber}`,
+      prData.githubToken
+    );
+    if (current.head.sha !== prData.headSha) {
+      throw new NonRetryableError(new PrHeadChangedError(prData.headSha, current.head.sha).message);
+    }
+    if (!prData.baseSha || !prData.baseBranch ||
+        current.base.sha !== prData.baseSha || current.base.ref !== prData.baseBranch) {
+      throw new NonRetryableError('PR base changed during review snapshot');
+    }
   }
 
   /**
@@ -531,41 +558,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       };
     }
 
-    // Fetch .donmerge config (best-effort)
-    let donmergeResolved: DonmergeResolved | undefined;
-    try {
-      const donmergeConfig = await fetchDonmergeConfig(owner, repo, githubToken, fetchRepoFile);
-      if (donmergeConfig) {
-        console.log('[donmerge] Loaded config', {
-          exclude: donmergeConfig.exclude?.length ?? 0,
-          include: donmergeConfig.include?.length ?? 0,
-          skills: donmergeConfig.skills?.length ?? 0,
-          severity: donmergeConfig.severity ? Object.keys(donmergeConfig.severity).length : 0,
-        });
-        donmergeResolved = { config: donmergeConfig, skillsContent: new Map(), skillsErrors: new Map() };
-      }
-    } catch (error) {
-      console.warn('[donmerge] Failed to fetch config, continuing without it:', error);
-    }
-
     // Add eyes reaction
     if (params.commentId && params.commentType) {
       await addCommentReaction(owner, repo, params.commentId, params.commentType, githubToken);
-    }
-
-    // Resolve .donmerge skills
-    if (donmergeResolved && donmergeResolved.config.skills && donmergeResolved.config.skills.length > 0) {
-      try {
-        donmergeResolved = await resolveDonmergeSkills(
-          donmergeResolved.config, owner, repo, githubToken, fetchRepoFile
-        );
-        console.log('[donmerge] Resolved skills', {
-          loaded: donmergeResolved.skillsContent.size,
-          errors: donmergeResolved.skillsErrors.size,
-        });
-      } catch (error) {
-        console.warn('[donmerge] Skill resolution failed, continuing without skills:', error);
-      }
     }
 
     // Create check run last — so retries after this point don't create duplicates
@@ -583,7 +578,6 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       baseBranch: pr.base.ref,
       baseSha: pr.base.sha,
       changedFilesCount: pr.changed_files,
-      donmerge: donmergeResolved ? toDonmergeDto(donmergeResolved) : undefined,
       willReview: true,
       retrigger: params.retrigger,
       commentId: params.commentId,
@@ -619,19 +613,14 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     // this snapshot would mix two versions of the diff. Non-retryable — a step
     // retry replays with the same cached PR data and would loop; the latest
     // push gets its own run.
-    const currentHead = await fetchPrHeadSha(owner, repo, prNumber, githubToken);
-    if (currentHead !== prData.headSha) {
-      throw new NonRetryableError(
-        new PrHeadChangedError(prData.headSha, currentHead).message
-      );
-    }
+    await this.assertSnapshotCurrent(prData);
 
     const maxFiles = prData.maxFiles ?? Number.parseInt(this.env.MAX_REVIEW_FILES ?? '50', 10);
 
-    // Reuse the .donmerge config+skills resolved in step 1 (plan 005-U1: no
-    // double fetch/re-resolve per run). Rehydrate the serializable DTO.
-    const donmergeResolved: DonmergeResolved | undefined = prData.donmerge
-      ? fromDonmergeDto(prData.donmerge)
+    if (!prData.baseSha) throw new Error('Cannot load review policy without the base SHA');
+    const config = await fetchDonmergeConfig(owner, repo, githubToken, fetchPolicyFile, prData.baseSha, true);
+    const donmergeResolved = config
+      ? await resolveDonmergeSkills(config, owner, repo, githubToken, fetchPolicyFile, prData.baseSha, true)
       : undefined;
 
     // ── Cost control: trivial change sets ──────────────────────────────────
@@ -640,6 +629,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     if (
       this.env.DONMERGE_SKIP_TRIVIAL !== 'false' &&
       !prData.explicitRequest &&
+      !discovery.files.some(file =>
+        ['AGENTS.md', 'CLAUDE.md', '.cursorrules', 'CONTRIBUTING.md', 'DEVELOPMENT.md', '.donmerge'].includes(file.filename) ||
+        config?.skills?.some(skill => skill.path === file.filename)
+      ) &&
       isTrivialChangeSet({ files: discovery.files })
     ) {
       console.log('[trivial-skip] whole change set is trivial — no LLM review', {
@@ -660,6 +653,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         filePatches: [],
         coverage: buildCoverageManifest(plan, {
           headSha: prData.headSha,
+          baseSha: prData.baseSha,
           changedFilesCount: declaredCount,
           apiFileCapReached: discovery.apiFileCapReached,
         }),
@@ -687,6 +681,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           state &&
           state.fullCoverage &&
           state.baseRef === (prData.baseBranch ?? '') &&
+          Boolean(prData.baseSha) &&
+          state.baseSha === prData.baseSha &&
           state.lastReviewedSha !== prData.headSha
         ) {
           const between = await fetchPrFilesBetween(
@@ -716,6 +712,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
                 },
                 {
                   headSha: prData.headSha,
+                  baseSha: prData.baseSha,
                   changedFilesCount: 0,
                   apiFileCapReached: false,
                   incrementalSince: state.lastReviewedSha,
@@ -770,6 +767,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     const coverage = buildCoverageManifest(plan, {
       headSha: prData.headSha,
+      baseSha: prData.baseSha,
       changedFilesCount: declaredCount,
       apiFileCapReached,
       incrementalSince,
@@ -795,7 +793,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       .join('\n');
 
     // Fetch repo context at the reviewed head (plan 005-U1: explicit ref).
-    const repoContext = await fetchRepoContext(owner, repo, prData.headSha, githubToken);
+    const repoContext = await fetchRepoContext(owner, repo, prData.headSha, githubToken, prData.baseSha);
 
     // Fetch previous comments if retrigger
     let activePreviousComments: PreviousComment[] = [];
@@ -809,7 +807,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       prData,
       diffText,
       repoContext,
-      donmergeResolved,
+      donmerge: donmergeResolved ? toDonmergeDto(donmergeResolved) : undefined,
       activePreviousComments,
       // Capture the reviewed file patches so step 4 can validate comment anchors
       // without re-fetching listFiles. plan.selected is the filtered set the LLM
@@ -829,16 +827,25 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
    * The review-model-runner owns model ordering and format retries. This module
    * owns only memory/config loading, sandbox lifecycle, and prompt construction.
    */
-  private async runLlmReview(preparedFiles: PreparedFiles): Promise<LlmReviewResult> {
-    const { prData, diffText, repoContext, donmergeResolved, activePreviousComments } = preparedFiles;
+  private async runLlmReview(preparedFiles: PreparedFiles, runId?: string): Promise<LlmReviewResult> {
+    const { prData, diffText, repoContext, activePreviousComments } = preparedFiles;
+    const donmergeResolved = preparedFiles.donmerge
+      ? fromDonmergeDto(preparedFiles.donmerge)
+      : preparedFiles.donmergeResolved;
 
     // Load memory context and pattern weights (best-effort)
     let memoryContext: MemoryContext | undefined;
     let patternWeights: Map<string, PatternWeight> | undefined;
     if (this.env.DB) {
       try {
-        memoryContext = await buildMemoryContext(this.env.DB, prData.owner, prData.repo);
-        patternWeights = await getPatternWeights(this.env.DB, prData.owner, prData.repo);
+        memoryContext = await buildMemoryContext(
+          this.env.DB, prData.owner, prData.repo, preparedFiles.filePatches.map(file => file.filename),
+          this.env.DONMERGE_SCOPED_MEMORY !== 'false'
+        );
+        const weights = await getPatternWeights(this.env.DB, prData.owner, prData.repo);
+        // Historical dismissal weights have no maintainer approval or file
+        // scope. They cannot suppress or demote findings across a repository.
+        patternWeights = new Map([...weights].filter(([, weight]) => weight.confidence >= 0.4));
       } catch (e) {
         console.warn('[memory] Failed to load memory context, proceeding without:', e);
       }
@@ -1021,6 +1028,28 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         result = verified.result;
       }
 
+      if (this.env.DB && memoryContext) {
+        try {
+          const output = JSON.stringify(result);
+          const snapshotRunId = runId ?? `check-${prData.checkRunId}`;
+          const statement = this.env.DB.prepare(`INSERT INTO review_learning_snapshots
+            (owner, repo, pr_number, head_sha, run_id, learning_id, learning_text, scope_type, scope_path, cited)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+          await this.env.DB.batch([
+            this.env.DB.prepare(`DELETE FROM review_learning_snapshots
+              WHERE owner = ? AND repo = ? AND pr_number = ? AND run_id = ?`)
+              .bind(prData.owner, prData.repo, prData.prNumber, snapshotRunId),
+            ...(memoryContext.scopedLearnings ?? []).map(learning => statement.bind(
+              prData.owner, prData.repo, prData.prNumber, prData.headSha, snapshotRunId, learning.id,
+              learning.learning_text, learning.scope_type, learning.scope_path,
+              output.toLowerCase().includes(`learning #${learning.id}`.toLowerCase()) ? 1 : 0
+            )),
+          ]);
+        } catch (error) {
+          console.warn('[memory] Failed to record citations', error);
+        }
+      }
+
       return { preparedFiles, result };
     } catch (error) {
       if (error instanceof AllModelsFailedError) {
@@ -1064,6 +1093,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       });
       return;
     }
+
+    await this.assertSnapshotCurrent(prData);
 
     // Load tracked issues from DO via RPC
     const storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
@@ -1234,6 +1265,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           repo,
           prNumber,
           baseRef: prData.baseBranch,
+          baseSha: prData.baseSha,
           headSha,
           fullCoverage: preparedFiles.coverage.scopeComplete,
         });

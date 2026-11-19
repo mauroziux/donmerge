@@ -392,7 +392,7 @@ describe('handleReactionFeedback', () => {
     expect(result).toBe(false);
   });
 
-  it('creates learning from thumbsdown with outcome body', async () => {
+  it('records thumbsdown as feedback without creating a suppression', async () => {
     const mock = createMockDb({ firstResult: { body: 'SQL injection vulnerability in query' } });
 
     const result = await handleReactionFeedback(mock.db, {
@@ -406,13 +406,11 @@ describe('handleReactionFeedback', () => {
     });
 
     expect(result).toBe(true);
-    // Body lookup must not select a same-fingerprint finding from another PR.
-    expect(mock.prepare).toHaveBeenCalledWith(expect.stringMatching(/pr_number = \? AND github_comment_id = \? AND fingerprint = \?/));
-    expect(mock.bind).toHaveBeenCalledWith('test', 'repo', 1, 100, 'fp-abc');
-    expect(mock.first).toHaveBeenCalled();
+    expect(mock.prepare).toHaveBeenCalledTimes(1);
+    expect(mock.batch).not.toHaveBeenCalled();
   });
 
-  it('creates generic learning from thumbsdown when no outcome body', async () => {
+  it('records thumbsdown when no outcome body is available', async () => {
     const mock = createMockDb({ firstResult: null });
 
     const result = await handleReactionFeedback(mock.db, {
@@ -451,6 +449,7 @@ describe('handleNaturalReply', () => {
         prNumber: 1,
         githubUser: 'dev',
         replyText: 'No aplica porque el null ya se valida arriba',
+        replyCommentId: 777,
         parentFingerprint: 'fp-abc',
         parentCommentId: 123,
         parentBody: '<!-- DONMERGE: {"fingerprint":"fp-abc","version":1} -->\n\nPossible null dereference here',
@@ -459,12 +458,12 @@ describe('handleNaturalReply', () => {
 
       expect(ack).not.toBeNull();
       expect(ack!.classification.type).toBe('dismiss');
-      expect(ack!.ackBody).toContain('Learned');
+      expect(ack!.ackBody).toContain('maintainer can confirm');
       expect(ack!.ackBody).toContain('null ya se valida');
       expect(ack!.ackBody).not.toContain('@donmerge');
       // Feedback insert ran with source 'reply' and the parent fingerprint
       const feedbackCall = mock.bind.mock.calls.find((call: unknown[]) =>
-        call.some((arg) => arg === 'reply' && call.includes('fp-abc'))
+        call.includes('fp-abc') && call.includes(777)
       );
       expect(feedbackCall).toBeDefined();
       expect(mock.bind).toHaveBeenCalledWith('dismissed', 'reply', 'test', 'repo', 1, 123, 'fp-abc');
@@ -483,7 +482,8 @@ describe('handleNaturalReply', () => {
     const ack = await handleNaturalReply(mock.db, {}, {
       owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
       replyText: 'Is this a false positive?',
-      parentFingerprint: 'fp-q', parentBody: 'finding',
+      replyCommentId: 777,
+        parentFingerprint: 'fp-q', parentBody: 'finding',
     });
     expect(ack).toBeNull();
     expect(mock.prepare).not.toHaveBeenCalled();
@@ -503,6 +503,7 @@ describe('handleNaturalReply', () => {
       const ack = await handleNaturalReply(mock.db, { OPENAI_API_KEY: 'sk-x' }, {
         owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
         replyText: 'Does this apply here?',
+        replyCommentId: 777,
         parentFingerprint: 'fp-model-q', parentBody: 'finding',
       });
       expect(ack).toBeNull();
@@ -526,6 +527,7 @@ describe('handleNaturalReply', () => {
       const ack = await handleNaturalReply(mock.db, { OPENAI_API_KEY: 'sk-x' }, {
         owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
         replyText: 'hola, cómo vas?',
+        replyCommentId: 777,
         parentFingerprint: 'fp-model-o', parentBody: 'finding',
       });
       expect(ack).toBeNull();
@@ -540,7 +542,8 @@ describe('handleNaturalReply', () => {
     const ack = await handleNaturalReply(mock.db, {}, {
       owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
       replyText: 'Hola @donmerge preference por  qué no aplica',
-      parentFingerprint: 'fp-spanish-question', parentBody: 'finding',
+      replyCommentId: 777,
+        parentFingerprint: 'fp-spanish-question', parentBody: 'finding',
     });
     expect(ack).toBeNull();
     expect(mock.prepare).not.toHaveBeenCalled();
@@ -563,6 +566,7 @@ describe('handleNaturalReply', () => {
         prNumber: 1,
         githubUser: 'dev',
         replyText: 'good catch, lo arreglé en 1a2b3c4',
+        replyCommentId: 777,
         parentFingerprint: 'fp-def',
         parentBody: '<!-- DONMERGE: {"fingerprint":"fp-def","version":1} -->\n\nMissing error handling',
         filePath: 'src/api.ts',
@@ -593,6 +597,7 @@ describe('handleNaturalReply', () => {
         prNumber: 1,
         githubUser: 'dev',
         replyText: 'the container always passes a valid instance',
+        replyCommentId: 777,
         parentFingerprint: 'fp-ghi',
         parentBody: 'nullable param may be undefined',
         filePath: 'src/service.ts',
@@ -617,7 +622,8 @@ describe('handleNaturalReply', () => {
       prNumber: 1,
       githubUser: 'dev',
       replyText: 'why do you consider this unsafe here?',
-      parentFingerprint: 'fp-x',
+      replyCommentId: 777,
+        parentFingerprint: 'fp-x',
       parentBody: 'unsafe deserialization',
     });
 
@@ -630,7 +636,8 @@ describe('handleNaturalReply', () => {
     const ack = await handleNaturalReply(mock.db, {}, {
       owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
       replyText: '   ',
-      parentFingerprint: 'fp-x',
+      replyCommentId: 777,
+        parentFingerprint: 'fp-x',
       parentBody: 'finding',
     });
     expect(ack).toBeNull();

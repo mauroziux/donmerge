@@ -16,6 +16,7 @@ export interface ReviewState {
   prNumber: number;
   /** PR base ref the recorded review ran against (retarget invalidates). */
   baseRef: string;
+  baseSha: string | null;
   /** Reviewed head commit. */
   lastReviewedSha: string;
   /** True when the recorded review covered the whole PR diff (scopeComplete). */
@@ -24,6 +25,7 @@ export interface ReviewState {
 
 interface ReviewStateRow {
   base_ref: string;
+  base_sha: string | null;
   last_reviewed_sha: string;
   full_coverage: number;
 }
@@ -36,7 +38,7 @@ export async function getReviewState(
 ): Promise<ReviewState | null> {
   const row = await db
     .prepare(
-      `SELECT base_ref, last_reviewed_sha, full_coverage
+      `SELECT base_ref, base_sha, last_reviewed_sha, full_coverage
        FROM review_state
        WHERE owner = ? AND repo = ? AND pr_number = ?
        LIMIT 1`
@@ -49,6 +51,7 @@ export async function getReviewState(
     repo,
     prNumber,
     baseRef: row.base_ref,
+    baseSha: row.base_sha ?? null,
     lastReviewedSha: row.last_reviewed_sha,
     fullCoverage: row.full_coverage === 1,
   };
@@ -69,16 +72,18 @@ export async function recordReviewState(
     repo: string;
     prNumber: number;
     baseRef?: string;
+    baseSha?: string;
     headSha: string;
     fullCoverage: boolean;
   }
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO review_state (owner, repo, pr_number, base_ref, last_reviewed_sha, full_coverage, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO review_state (owner, repo, pr_number, base_ref, base_sha, last_reviewed_sha, full_coverage, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
          base_ref = excluded.base_ref,
+         base_sha = excluded.base_sha,
          last_reviewed_sha = excluded.last_reviewed_sha,
          full_coverage = excluded.full_coverage,
          updated_at = datetime('now')`
@@ -88,6 +93,7 @@ export async function recordReviewState(
       input.repo,
       input.prNumber,
       input.baseRef ?? '',
+      input.baseSha ?? null,
       input.headSha,
       input.fullCoverage ? 1 : 0
     )

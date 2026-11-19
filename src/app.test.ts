@@ -93,6 +93,30 @@ import type { WebhookContext } from './workflows/code-review';
 
 const mockedValidate = vi.mocked(validateWebhookFast);
 
+describe('provider diagnostics authorization', () => {
+  it('rejects a model probe before trying to create a sandbox when authentication is missing', async () => {
+    const handler = routeHandlers.get('POST /api/v1/debug/providers')!;
+    const json = vi.fn((_body: unknown, status: number) => ({ status }));
+    const result = await handler({
+      req: { url: 'https://example.test/api/v1/debug/providers?model=dynamic/test', header: () => undefined },
+      env: { DONMERGE_PUSH_API_KEYS: 'dm_live_testkey123' },
+      json,
+    }) as { status: number };
+    expect(result.status).toBe(401);
+  });
+
+  it('rejects a model outside the configured allowlist', async () => {
+    const handler = routeHandlers.get('POST /api/v1/debug/providers')!;
+    const json = vi.fn((_body: unknown, status: number) => ({ status }));
+    const result = await handler({
+      req: { url: 'https://example.test/api/v1/debug/providers?model=unconfigured', header: () => 'Bearer dm_live_testkey123' },
+      env: { DONMERGE_PUSH_API_KEYS: 'dm_live_testkey123', CODEX_MODEL: 'dynamic/configured' },
+      json,
+    }) as { status: number };
+    expect(result.status).toBe(400);
+  });
+});
+
 // ── Build a mock Flue context `c` (same shape as sentry.test.ts) ─────────────
 
 function makeContext(overrides: {
