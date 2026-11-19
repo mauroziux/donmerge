@@ -574,7 +574,39 @@ describe('handleNaturalReply', () => {
 
       expect(ack).not.toBeNull();
       expect(ack!.classification.type).toBe('accept');
-      expect(ack!.ackBody).toContain('Confirmed');
+      expect(ack!.ackBody).toContain('saved this feedback');
+      expect(ack!.ackBody).not.toContain('Confirmed');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps the stated qualification when a precautionary fix is summarized as confirmed', async () => {
+    const mock = createMockDb();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: JSON.stringify({
+          type: 'accept', reason: 'The crash was theoretical; fixed as hardening',
+          learning: 'Confirmed valid: use null-safe access for chained relations',
+        }) } }],
+      }),
+    }));
+    try {
+      const ack = await handleNaturalReply(mock.db, { OPENAI_API_KEY: 'sk-x' }, {
+        owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
+        replyText: 'Fixed as hardening, but the crash was theoretical',
+        replyCommentId: 778, parentFingerprint: 'fp-hardening',
+        parentBody: 'Possible null relation', filePath: 'src/model.ts',
+      });
+      const learningCall = mock.bind.mock.calls.find((call: unknown[]) =>
+        call.some((arg) => typeof arg === 'string' && arg.startsWith('Reported review consideration:'))
+      );
+      expect(learningCall).toBeDefined();
+      const learning = learningCall!.find((arg: unknown) => typeof arg === 'string' && arg.startsWith('Reported review consideration:')) as string;
+      expect(learning).toContain('crash was theoretical');
+      expect(learning).not.toContain('Confirmed valid');
+      expect(ack!.ackBody).not.toContain('Findings like this are valid');
     } finally {
       vi.unstubAllGlobals();
     }

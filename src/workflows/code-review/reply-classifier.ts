@@ -110,13 +110,15 @@ export async function classifyReplyWithLlm(
     'a human replied to it. Decide what the reply teaches:\n' +
     '- "dismiss": the finding does not apply, is a false positive, out of scope, or intentional ' +
     '(with or without an explanation)\n' +
-    '- "accept": the finding is valid — acknowledged, being fixed, or already fixed\n' +
+    '- "accept": the reply acknowledges or acts on the finding, including precautionary fixes\n' +
     '- "question": the human is asking for clarification (no teaching yet)\n' +
     '- "other": anything without actionable teaching\n\n' +
     'Respond with ONLY a JSON object: ' +
     '{"type":"dismiss|accept|question|other","reason":"<one short sentence restating the human\'s point>","learning":"<imperative instruction for future reviews, null unless dismiss/accept>"}\n' +
-    'The learning must be a generalizable repo-level rule derived from the reply, not a quote. ' +
-    'For dismiss it starts with "Don\'t flag"; for accept it starts with "Confirmed valid".';
+    'The learning must describe a narrowly applicable review consideration derived from the reply, not a quote. ' +
+    'Preserve qualifications and uncertainty: a precautionary fix does not establish that a defect existed. ' +
+    'Do not claim independent verification. For dismiss it starts with "Don\'t flag"; ' +
+    'for accept describe what to check, without claiming the finding was confirmed.';
 
   const user = JSON.stringify({
     finding_file: input.filePath,
