@@ -664,6 +664,39 @@ describe('prepareFiles', () => {
     }).prepareFiles(prData())).rejects.toThrow('403');
   });
 
+  it('uses destination policy and skills even when the PR changes them', async () => {
+    const calls: string[] = [];
+    mockFetch.mockImplementation(async (url: string) => {
+      calls.push(url);
+      if (url.includes('/pulls/42/files')) return filesResponse([
+        { filename: 'src/f0.ts', patch: '@@ -1 +1 @@\n+changed' },
+        { filename: 'src/f1.ts', patch: '@@ -1 +1 @@\n+excluded' },
+      ]);
+      if (url.includes('/pulls/42')) return { ok: true, json: async () => ({
+        head: { sha: 'headsha' }, base: { ref: 'main', sha: 'basesha' },
+      }) };
+      const parsed = new URL(url);
+      const ref = parsed.searchParams.get('ref');
+      let content: string | null = null;
+      if (url.includes('/contents/.donmerge')) content = ref === 'basesha'
+        ? 'exclude: [src/f1.ts]\nskills:\n  - path: REVIEW.md\n'
+        : 'exclude: []\n';
+      if (url.includes('/contents/REVIEW.md')) content = ref === 'basesha' ? 'Base skill' : 'Head skill';
+      if (url.includes('/contents/AGENTS.md')) content = ref === 'basesha' ? 'Base policy' : 'Head policy';
+      if (content === null) return { ok: false, status: 404, text: async () => 'not found' };
+      return { ok: true, json: async () => ({ encoding: 'base64', content: btoa(content!) }) };
+    });
+    const prepared = await (makeWorkflow() as unknown as {
+      prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles>;
+    }).prepareFiles({ ...prData(), changedFilesCount: 2 });
+    expect(prepared.diffText).toContain('src/f0.ts');
+    expect(prepared.diffText).not.toContain('src/f1.ts');
+    expect(prepared.donmerge?.skills).toContainEqual(['REVIEW.md', 'Base skill']);
+    expect(prepared.repoContext).toMatchObject({ agents: 'Base policy' });
+    expect(prepared.coverage).toMatchObject({ baseSha: 'basesha', headSha: 'headsha', excludedPolicyCount: 1 });
+    expect(calls.find(url => url.includes('/contents/REVIEW.md'))).toContain('ref=basesha');
+  });
+
   it('partial planning marks coverage partial when the budget drops files', async () => {
     mockFetch.mockImplementation(async (url: string) => {
       if (url.includes('/pulls/42/files')) {
