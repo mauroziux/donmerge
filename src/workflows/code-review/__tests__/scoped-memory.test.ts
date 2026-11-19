@@ -78,3 +78,19 @@ it('persists one feedback event and applies a confirmed rule only to its file', 
     sqlite.close();
   }
 });
+
+it('imports historical exceptions as pending reviewable repository rules', () => {
+  const sqlite = new DatabaseSync(':memory:');
+  try {
+    sqlite.exec(readFileSync('migrations/0004_create_memory_tables.sql', 'utf8'));
+    sqlite.exec(`INSERT INTO learnings(owner, repo, learning_text, source, category, confidence)
+      VALUES ('org', 'repo', 'historical exception', 'feedback', 'ignore', 75)`);
+    sqlite.exec(readFileSync('migrations/0007_scoped_review_memory.sql', 'utf8'));
+    sqlite.exec(readFileSync('migrations/0008_import_legacy_review_memory.sql', 'utf8'));
+    expect(sqlite.prepare('SELECT scope_type, state, source_pr FROM scoped_learnings').get())
+      .toMatchObject({ scope_type: 'repo', state: 'pending', source_pr: 0 });
+    expect(sqlite.prepare('SELECT review_state FROM learnings').get()).toMatchObject({ review_state: 'pending' });
+  } finally {
+    sqlite.close();
+  }
+});

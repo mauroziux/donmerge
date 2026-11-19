@@ -302,9 +302,10 @@ export async function processGitHubCodeReviewWebhook(
         }>();
         const lines = (rows.results ?? []).map(row => {
           const text = row.learning_text.replace(/[\r\n]/g, ' ').replace(/@/g, '@\u200b').slice(0, 300);
-          const source = `https://github.com/${context.owner}/${context.repo}/pull/${row.source_pr}` +
-            (row.source_comment_id ? `#discussion_r${row.source_comment_id}` : '');
-          return `- #${row.id} [${row.state}] ${row.scope_type} ${row.scope_path}: ${text} ([source](${source}))`;
+          const source = row.source_pr > 0
+            ? ` ([source](https://github.com/${context.owner}/${context.repo}/pull/${row.source_pr}${row.source_comment_id ? `#discussion_r${row.source_comment_id}` : ''}))`
+            : ' (historical)';
+          return `- #${row.id} [${row.state}] ${row.scope_type} ${row.scope_path}: ${text}${source}`;
         });
         const used = await env.DB.prepare(`
           SELECT head_sha, run_id, learning_id, learning_text, scope_type, scope_path, cited
