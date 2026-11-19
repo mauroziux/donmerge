@@ -577,6 +577,22 @@ describe('publishReview verdict matrix', () => {
 // ─── prepareFiles: snapshot discovery + no double config load (002-U1/005-U1) ─
 
 describe('prepareFiles', () => {
+  it('does not inherit prior coverage when a declared policy file is absent', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/pulls/42/files')) return filesResponse([{ filename: 'a.ts', patch: '@@ -1 +1 @@\n+new' }]);
+      if (url.includes('/pulls/42/comments')) return { ok: true, json: async () => [] };
+      if (url.includes('/pulls/42')) return { ok: true, json: async () => ({ head: { sha: 'headsha' }, base: { ref: 'main', sha: 'basesha' } }) };
+      if (url.includes('/contents/.donmerge')) return { ok: true, json: async () => ({ encoding: 'base64', content: btoa('skills:\n  - path: RULES.md\n') }) };
+      return { ok: false, status: 404, text: async () => 'not found' };
+    });
+    const db = { prepare: vi.fn() };
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+    const prepared = await (workflow as unknown as { prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles> })
+      .prepareFiles({ ...prData(), retrigger: true, changedFilesCount: 1 });
+    expect(prepared.donmerge?.skillErrors).toEqual([['RULES.md', 'File not found']]);
+    expect(prepared.filePatches).toHaveLength(1);
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
   function makeEnv() {
     return { MAX_REVIEW_FILES: '50' } as never;
   }
