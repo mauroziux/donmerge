@@ -1,62 +1,31 @@
-# ADR-001: Wrangler Secrets vs Plaintext Vars
+# ADR-001: Wrangler secrets and plaintext variables
 
 ## Status: Partially superseded
 
-The Push API bearer keys are credentials and must be stored as the
-`DONMERGE_PUSH_API_KEYS` Worker secret, separately for each environment.
-The Push API key portions of the decision below are superseded. The Sentry
-webhook configuration is unaffected by this revision.
+The Push API decision below supersedes the original decision to keep its bearer keys in plaintext Wrangler variables. The existing Sentry webhook configuration is a separate, unresolved migration: staging still has a webhook secret in `wrangler.jsonc`. Its presence here does not make that secret safe to reuse; rotate it with the affected Sentry integrations before moving it to a Worker secret.
 
 ## Context
 
-Cloudflare Workers supports two ways to configure environment variables:
-- **`vars` in `wrangler.jsonc`**: Plaintext, visible in dashboard, editable anytime
-- **`wrangler secret put`**: Encrypted at rest, can't be read back, must overwrite to change
+A bearer key or webhook signing secret authenticates requests that may start work and lead to external writes. Publishing one exposes that capability even when the credential does not itself identify a GitHub user. Source control and CI logs are unsuitable places for those values.
 
-We have variables that fall into different sensitivity levels:
-1. **Non-sensitive config** (model name, limits, repo lists) → always `vars`
-2. **High-severity secrets** (API keys for OpenAI/Anthropic, GitHub private keys) → always `wrangler secret`
-3. **Medium-severity shared secrets** (webhook HMAC keys, multi-client secrets) → **`vars`** for operability
+The original ADR treated multi-client HMAC and API credentials as ordinary variables for operational convenience. That decision was incorrect for Push API keys and is superseded below. Existing Git history may still contain retired values and must not be treated as a credential store.
 
 ## Decision
 
-### Rule 1: Use `vars` (plaintext) for:
-- Non-sensitive configuration: `CODEX_MODEL`, `MAX_REVIEW_FILES`, `REVIEW_TRIGGER`, `REPO_CONFIGS`, `SENTRY_REPO_MAP`
-- Multi-client aggregated secrets: `SENTRY_WEBHOOK_SECRET`, `DONMERGE_API_KEYS`
-- Any value that needs to be **readable** when adding new entries
+- Keep non-sensitive settings such as `CODEX_MODEL`, `REPO_CONFIGS`, review limits, and `SENTRY_REPO_MAP` in Wrangler `vars`.
+- Store Push API keys in the encrypted Worker secret `DONMERGE_PUSH_API_KEYS`, separately for production and staging. Use a distinct credential per client and environment; keep recoverable client credentials in an appropriate secret manager.
+- Store provider credentials, GitHub credentials, and new webhook signing secrets as encrypted secrets, not source-controlled variables. Never print secret values or write them to deployment logs.
+- `DONMERGE_API_KEYS` is retired. Neither its values nor the new secret belong in `vars` or repository history. CI checks the Wrangler configuration for these names under `vars`.
 
-**Justification:** These are HMAC verification keys or API auth tokens. They don't grant access to user data — they authenticate webhook senders or API callers. The operational cost of `wrangler secret` (can't read back, must re-enter all values when adding a client) outweighs the security benefit for this category.
+The legacy Sentry webhook secret still present in staging requires a coordinated rotation with its installed integrations. Migrating its binding without rotating the exposed value would not revoke it; removing it without updating the senders would interrupt webhook delivery.
 
-### Rule 2: Use `wrangler secret put` for:
-- Provider API keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
-- GitHub credentials: `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_ID`, `SENTRY_GITHUB_TOKEN`
-- Any value that grants **data access** or **write capabilities** to external services
+## Rotation and recovery
 
-**Justification:** These tokens can access user data, write to repositories, or make API calls on our behalf. Compromise = data breach. The inability to read them back is a feature, not a bug.
-
-### The litmus test:
-> **If someone reads this value, can they access user data or make write actions on external services?**
-> - Yes → `wrangler secret`
-> - No (only verifies identity of sender) → `vars`
+1. Inventory clients and active jobs. Job status is scoped to the hash of the key that created it, so allow outstanding jobs to finish before retiring a key or agree on a bounded overlap.
+2. Provision new per-client credentials and update the corresponding consumer secrets. Test creation and status lookup, rejection of a retired key, and rejection of credentials from the other environment. Remove overlap at its agreed end.
+3. For a failed deployment, **roll forward** with a compatible Worker version using `DONMERGE_PUSH_API_KEYS`. Do not deploy an older version that reads the retired `DONMERGE_API_KEYS` variable: it can reactivate credentials already exposed in history. Keep the retired credentials revoked during recovery.
+4. Verify the active Worker version and bindings after any deployment or rollback. A successful health check alone does not prove that API clients can authenticate or that old keys remain rejected.
 
 ## Consequences
 
-- `SENTRY_WEBHOOK_SECRET` and `DONMERGE_API_KEYS` are visible in Cloudflare dashboard
-- Adding a new Sentry org: edit `wrangler.jsonc`, append comma + new secret, deploy
-- Adding a new API client: edit `wrangler.jsonc`, append comma + new key, deploy
-- No need to remember/re-enter existing values when adding new ones
-
-## Examples
-
-| Variable | Type | Why |
-|----------|------|-----|
-| `CODEX_MODEL` | `vars` | Non-sensitive config |
-| `REPO_CONFIGS` | `vars` | Org/repo allowlist |
-| `SENTRY_REPO_MAP` | `vars` | Non-sensitive mapping |
-| `DONMERGE_API_KEYS` | `vars` | Multi-client auth tokens (aggregated) |
-| `SENTRY_WEBHOOK_SECRET` | `vars` | Multi-client HMAC keys (aggregated) |
-| `OPENAI_API_KEY` | `wrangler secret` | Bills us money, accesses AI APIs |
-| `ANTHROPIC_API_KEY` | `wrangler secret` | Bills us money, accesses AI APIs |
-| `GITHUB_WEBHOOK_SECRET` | `wrangler secret` | Validates GitHub identity |
-| `GITHUB_APP_PRIVATE_KEY` | `wrangler secret` | Write access to GitHub repos |
-| `SENTRY_GITHUB_TOKEN` | `wrangler secret` | Write access to GitHub repos |
+Adding or rotating a Push API client requires updating the encrypted allowed-key list and the client's own secret. Because Worker secrets are not readable back, the source credentials must be maintained in an authorized secret manager or deliberately replaced together. Revoked values must not be reintroduced for convenience.
