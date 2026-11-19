@@ -18,6 +18,8 @@ export const ErrorCode = {
   BUDGET_EXCEEDED: 'DM-E008',
   /** Publication state could not be resolved after an ambiguous failure */
   PUBLISH_UNRESOLVED: 'DM-E009',
+  /** Destination policy could not be read or validated. */
+  POLICY_UNAVAILABLE: 'DM-E010',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -40,4 +42,6 @@ export const ErrorCodeDescriptions: Record<ErrorCode, string> = {
     'The review exceeded its configured time budget before every model attempt could run. Re-trigger the review to try again with fresh budget.',
   [ErrorCode.PUBLISH_UNRESOLVED]:
     'The review POST may or may not have reached GitHub (ambiguous transport failure) and could not be confirmed. Automated re-posting is disabled to avoid duplicates — verify the PR and re-trigger if the review is missing.',
+  [ErrorCode.POLICY_UNAVAILABLE]:
+    'DonMerge could not read or validate the policy at the destination commit. Check .donmerge and its referenced files, then re-trigger the review.',
 };

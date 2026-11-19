@@ -40,6 +40,7 @@ import {
   publishReview,
   completeCheckRun,
   completeCheckRunNeutral,
+  formatMissingPolicyFiles,
   fetchInheritedCommitRefs,
   fetchPrFilesBetween,
   supersedeBaseChangedReviews,
@@ -293,7 +294,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
               'Comment `@donmerge` to force a full review anyway.'
             : 'This push changed no files relative to the last fully reviewed commit. ' +
               'Comment `@donmerge` to force a full review anyway.';
-          await completeCheckRunNeutral(owner, repo, checkRunId, title, summary, text, githubToken);
+          const missing = (preparedFiles.donmerge?.skillErrors ?? []).map(([path]) => path);
+          await completeCheckRunNeutral(owner, repo, checkRunId, title, summary,
+            missing.length ? `${text}\n\n${formatMissingPolicyFiles(missing)}` : text, githubToken);
         });
         await (processorStub as any).updateFromWorkflow({
           state: 'complete',
@@ -618,10 +621,22 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const maxFiles = prData.maxFiles ?? Number.parseInt(this.env.MAX_REVIEW_FILES ?? '50', 10);
 
     if (!prData.baseSha) throw new Error('Cannot load review policy without the base SHA');
-    const config = await fetchDonmergeConfig(owner, repo, githubToken, fetchPolicyFile, prData.baseSha, true);
-    const donmergeResolved = config
-      ? await resolveDonmergeSkills(config, owner, repo, githubToken, fetchPolicyFile, prData.baseSha, true)
-      : undefined;
+    let config: DonmergeConfig | null;
+    let donmergeResolved: DonmergeResolved | undefined;
+    try {
+      config = await fetchDonmergeConfig(owner, repo, githubToken, fetchPolicyFile, prData.baseSha, true);
+      donmergeResolved = config
+        ? await resolveDonmergeSkills(config, owner, repo, githubToken, fetchPolicyFile, prData.baseSha, true)
+        : undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const http = message.match(/GitHub API error (\d{3})/);
+      const reason = message.startsWith('Failed to load policy skills:')
+        ? 'One or more declared policy files could not be read or exceeded the size limit.'
+        : http ? `GitHub returned HTTP ${http[1]} while reading the destination policy.`
+          : 'The destination .donmerge is invalid or could not be read.';
+      throw new Error(`[POLICY_UNAVAILABLE] ${reason}`);
+    }
 
     // ── Cost control: trivial change sets ──────────────────────────────────
     // Docs/lockfile-only PRs get no LLM pass. Explicit human requests
@@ -649,6 +664,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         prData,
         diffText: '',
         repoContext: {},
+        donmerge: donmergeResolved ? toDonmergeDto(donmergeResolved) : undefined,
         activePreviousComments: [],
         filePatches: [],
         coverage: buildCoverageManifest(plan, {
@@ -672,6 +688,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     if (
       prData.retrigger &&
       !prData.explicitRequest &&
+      !donmergeResolved?.skillsErrors.size &&
       this.env.DONMERGE_INCREMENTAL_REVIEW !== 'false' &&
       this.env.DB
     ) {
@@ -793,7 +810,12 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       .join('\n');
 
     // Fetch repo context at the reviewed head (plan 005-U1: explicit ref).
-    const repoContext = await fetchRepoContext(owner, repo, prData.headSha, githubToken, prData.baseSha);
+    let repoContext: RepoContextType;
+    try {
+      repoContext = await fetchRepoContext(owner, repo, prData.headSha, githubToken, prData.baseSha);
+    } catch {
+      throw new Error('[POLICY_UNAVAILABLE] A destination policy guide could not be read from GitHub.');
+    }
 
     // Fetch previous comments if retrigger
     let activePreviousComments: PreviousComment[] = [];
@@ -1083,6 +1105,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     const { preparedFiles, result } = llmResult;
     const { prData, activePreviousComments } = preparedFiles;
     const { owner, repo, prNumber, headSha, checkRunId, githubToken } = prData;
+    const missingPolicyFiles = preparedFiles.donmerge
+      ? preparedFiles.donmerge.skillErrors.map(([path]) => path)
+      : [...(preparedFiles.donmergeResolved?.skillsErrors.keys() ?? [])];
 
     // Skip if checkRunId is 0 (base branch mismatch)
     if (checkRunId === 0) {
@@ -1145,6 +1170,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       });
     }
 
+    const reviewForPublication = missingPolicyFiles.length
+      ? { ...gated.review, summary: `${gated.review.summary}\n\n${formatMissingPolicyFiles(missingPolicyFiles)}` }
+      : gated.review;
+
     // Publish review (validates anchors against threaded patches; returns dropped comments)
     let expectedComments: Array<{ path: string; fingerprint: string }> = [];
     const droppedComments = await publishReview(
@@ -1152,7 +1181,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       repo,
       prNumber,
       headSha,
-      gated.review,
+      reviewForPublication,
       githubToken,
       activePreviousComments,
       preparedFiles.filePatches,
@@ -1244,14 +1273,15 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       owner,
       repo,
       checkRunId,
-      gated.review,
+      reviewForPublication,
       githubToken,
       droppedComments,
-      preparedFiles.coverage
+      preparedFiles.coverage,
+      missingPolicyFiles
     );
 
     // Update PR description
-    await updatePRDescription(owner, repo, prNumber, gated.review, githubToken, preparedFiles.coverage);
+    await updatePRDescription(owner, repo, prNumber, reviewForPublication, githubToken, preparedFiles.coverage, missingPolicyFiles);
 
     // Record review state (cost control): the next push can review only the
     // commits since this SHA — but only when THIS run covered its whole scope.
@@ -1267,7 +1297,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           baseRef: prData.baseBranch,
           baseSha: prData.baseSha,
           headSha,
-          fullCoverage: preparedFiles.coverage.scopeComplete,
+          fullCoverage: preparedFiles.coverage.scopeComplete && missingPolicyFiles.length === 0,
         });
       } catch (error) {
         console.warn('[review-state] failed to record review state', {
@@ -1283,7 +1313,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
     await (processorStub as any).updateFromWorkflow({
       state: 'complete',
       completedAt: new Date().toISOString(),
-      result: gated.review,
+      result: reviewForPublication,
       runId,
       headSha,
     });

@@ -16,6 +16,7 @@ import {
   createCheckRun,
   completeCheckRun,
   failCheckRun,
+  updatePRDescription,
   publishReview,
   findInheritedCommitRefs,
   parseReviewMarker,
@@ -133,6 +134,29 @@ describe('createCheckRun', () => {
 });
 
 describe('completeCheckRun', () => {
+  it('reports missing destination policy as neutral without hiding blocking findings', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+    const clean = { approved: true, summary: 'Reviewed', lineComments: [], criticalIssues: [], suggestions: [] };
+    await completeCheckRun('owner', 'repo', 123, clean, 'token', [], undefined, ['RULES.md']);
+    let body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.conclusion).toBe('neutral');
+    expect(body.output.text).toContain('RULES.md');
+    expect(body.output.title).toContain('incomplete policy');
+    await completeCheckRun('owner', 'repo', 123, { ...clean, approved: false, criticalIssues: ['SQL injection allows attackers to bypass authentication and read user data'] }, 'token', [], undefined, ['RULES.md']);
+    body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.conclusion).toBe('failure');
+    expect(body.output.text).toContain('RULES.md');
+  });
+
+  it('does not label a review with missing policy as all good in the PR description', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ body: 'Original', title: 'Title' }) });
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await updatePRDescription('owner', 'repo', 42, { approved: true, summary: 'Reviewed', lineComments: [], criticalIssues: [], suggestions: [] }, 'token', undefined, ['RULES.md']);
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string).body;
+    expect(body).toContain('Review completed with incomplete policy');
+    expect(body).toContain('RULES.md');
+    expect(body).not.toContain('All good, compadre!');
+  });
   it('should PATCH check run with success conclusion when approved', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
 
@@ -279,6 +303,14 @@ describe('completeCheckRun', () => {
 });
 
 describe('failCheckRun', () => {
+  it('explains destination policy failures in the check', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await failCheckRun('owner', 'repo', 123, 'DM-E010', '[POLICY_UNAVAILABLE] GitHub returned HTTP 403 while reading the destination policy.', 'token');
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.conclusion).toBe('failure');
+    expect(body.output.summary).toContain('destination policy');
+    expect(body.output.text).toContain('HTTP 403');
+  });
   it('should PATCH check run with failure and error code', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
 
