@@ -483,6 +483,9 @@ describe('extractJsonFromResponse', () => {
 });
 
 describe('classifyError', () => {
+  it('classifies a destination policy read error before a generic GitHub error', () => {
+    expect(classifyError(new Error('[POLICY_UNAVAILABLE] GitHub returned HTTP 403 while reading the destination policy.')).code).toBe(ErrorCode.POLICY_UNAVAILABLE);
+  });
   it('should classify Flue prompt errors as LLM_FAILURE', () => {
     const error = new Error("Flue prompt failed for model 'openai/gpt-4o': timeout");
     const result = classifyError(error);

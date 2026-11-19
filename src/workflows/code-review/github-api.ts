@@ -3,7 +3,7 @@
  */
 
 import type { PreviousComment, RepoContext, ReviewResult, FilePatch, DroppedComment } from './types';
-import { ErrorCodeDescriptions, type ErrorCode } from './error-codes';
+import { ErrorCodeDescriptions, ErrorCode } from './error-codes';
 import { attachFingerprint, computeFingerprint, parseFingerprint } from './fingerprint';
 import { computeFingerprint as computeIssueFingerprint } from './issue-identity';
 import { identityForReviewComment } from './issue-builder';
@@ -234,14 +234,17 @@ export async function completeCheckRun(
   review: ReviewResult,
   token: string,
   droppedComments: DroppedComment[] = [],
-  coverage?: CoverageManifest
+  coverage?: CoverageManifest,
+  missingPolicyFiles: string[] = []
 ): Promise<void> {
   const approved = !hasBlockingFindings(review);
-  const conclusion = checkConclusion(!approved, coverage, review.verificationPending);
+  const conclusion = checkConclusion(!approved, coverage, review.verificationPending || missingPolicyFiles.length > 0);
   const title = !approved
     ? '⚠️ Ojo, some things need attention'
     : conclusion === 'success'
       ? '✅ All good, compadre!'
+      : missingPolicyFiles.length > 0
+        ? '🟡 Review completed with incomplete policy'
       : review.verificationPending
         ? '🟡 No blocking findings verified — unverified finding(s) pending'
         : '🟡 Partial review — no blocking issues in the reviewed scope';
@@ -257,7 +260,8 @@ export async function completeCheckRun(
 
   const droppedNote = formatDroppedCommentsNote(droppedComments);
   const coverageNote = coverage ? `\n\n${coverageReportText(coverage)}` : '';
-  const text = `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}${droppedNote}${coverageNote}`;
+  const policyNote = missingPolicyFiles.length ? `\n\n${formatMissingPolicyFiles(missingPolicyFiles)}` : '';
+  const text = `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}${droppedNote}${coverageNote}${policyNote}`;
   // When comments were dropped, flag it in the title so it is visible at a glance.
   const finalTitle = droppedComments.length > 0 ? `${title} · ${droppedComments.length} comment(s) dropped` : title;
 
@@ -276,6 +280,12 @@ export async function completeCheckRun(
       },
     }
   );
+}
+
+/** Known-absent policy files must be visible without treating a 404 as a read failure. */
+export function formatMissingPolicyFiles(paths: string[]): string {
+  const safe = paths.map(path => `\`${path.replace(/[\r\n`]/g, '?').slice(0, 300)}\``);
+  return `Policy incomplete: these files declared in .donmerge are absent at the destination commit: ${safe.join(', ')}. Restore them or update .donmerge, then re-run the review.`;
 }
 
 /**
@@ -305,8 +315,10 @@ export async function failCheckRun(
       completed_at: new Date().toISOString(),
       output: {
         title: `🤠 DonMerge hit a snag [${code}]`,
-        summary: 'Something went wrong during the review.',
-        text: `Error code: ${code} — ${description}`,
+        summary: code === ErrorCode.POLICY_UNAVAILABLE
+          ? 'The destination policy could not be loaded; the review did not complete.'
+          : 'Something went wrong during the review.',
+        text: `Error code: ${code} — ${description}${code === ErrorCode.POLICY_UNAVAILABLE ? `\n\n${detail.replace(/^\[POLICY_UNAVAILABLE\]\s*/, '').slice(0, 500)}` : ''}`,
       },
     }
   );
@@ -974,7 +986,8 @@ export async function updatePRDescription(
   prNumber: number,
   review: ReviewResult,
   token: string,
-  coverage?: CoverageManifest
+  coverage?: CoverageManifest,
+  missingPolicyFiles: string[] = []
 ): Promise<void> {
   const pr = await githubFetch<{ body: string; title: string }>(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
@@ -992,7 +1005,7 @@ export async function updatePRDescription(
   }
 
   // Append new donmerge section
-  newBody = `${newBody}\n\n${separator}\n${buildDonmergeSection(review, coverage)}`;
+  newBody = `${newBody}\n\n${separator}\n${buildDonmergeSection(review, coverage, missingPolicyFiles)}`;
 
   await githubFetch(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
@@ -1005,9 +1018,9 @@ export async function updatePRDescription(
 /**
  * Build the DonMerge section for the PR description.
  */
-function buildDonmergeSection(review: ReviewResult, coverage?: CoverageManifest): string {
-  const statusEmoji = review.approved ? '✅' : '⚠️';
-  const statusText = review.approved ? 'All good, compadre!' : 'Ojo, some things need attention';
+function buildDonmergeSection(review: ReviewResult, coverage?: CoverageManifest, missingPolicyFiles: string[] = []): string {
+  const statusEmoji = !review.approved ? '⚠️' : missingPolicyFiles.length ? '🟡' : '✅';
+  const statusText = !review.approved ? 'Ojo, some things need attention' : missingPolicyFiles.length ? 'Review completed with incomplete policy' : 'All good, compadre!';
   const timestamp = new Date().toISOString();
 
   let section = `
@@ -1015,6 +1028,7 @@ function buildDonmergeSection(review: ReviewResult, coverage?: CoverageManifest)
 
 **Status:** ${statusEmoji} ${statusText}
 `;
+  if (missingPolicyFiles.length) section += `\n${formatMissingPolicyFiles(missingPolicyFiles)}\n`;
 
   // Add structured summary if available
   if (review.prSummary) {

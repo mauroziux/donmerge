@@ -517,12 +517,11 @@ describe('resolveDonmergeSkills', () => {
     expect(result.skillsErrors.get('MISSING.md')).toBe('File not found');
   });
 
-  it('should add skill to errors when file exceeds 20KB', async () => {
+  it('should add skill to errors when file exceeds 64KB', async () => {
     const config: DonmergeConfig = {
       skills: [{ path: 'LARGE.md', description: 'Too big' }],
     };
-    // Create a string > 20KB
-    const largeContent = 'x'.repeat(21 * 1024);
+    const largeContent = 'x'.repeat(65 * 1024);
     mockFetchFile.mockResolvedValueOnce(largeContent);
 
     const result = await resolveDonmergeSkills(config, 'owner', 'repo', 'token', mockFetchFile);
@@ -546,7 +545,7 @@ describe('resolveDonmergeSkills', () => {
     expect(result.skillsErrors.get('BAD.md')).toBe('File not found');
   });
 
-  it('should add skill to errors when total content exceeds 50KB', async () => {
+  it('should add skill to errors when total content exceeds 256KB', async () => {
     const config: DonmergeConfig = {
       skills: [
         { path: 'A.md', description: 'Big A' },
@@ -557,8 +556,8 @@ describe('resolveDonmergeSkills', () => {
         { path: 'F.md', description: 'Should overflow' },
       ],
     };
-    // Each file is ~9KB (under 20KB per-file limit), but 6 × 9KB = ~54KB total → exceeds 50KB
-    const content9k = 'a'.repeat(9 * 1024);
+    // Each file is under the per-file limit; the sixth exceeds the total.
+    const content9k = 'a'.repeat(45 * 1024);
 
     mockFetchFile
       .mockResolvedValueOnce(content9k)  // A: 9KB, total=9KB ✓
@@ -571,16 +570,37 @@ describe('resolveDonmergeSkills', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = await resolveDonmergeSkills(config, 'owner', 'repo', 'token', mockFetchFile);
 
-    // First 5 should succeed (9KB * 5 = 45KB)
+    // First 5 succeed (45KB * 5 = 225KB).
     expect(result.skillsContent.has('A.md')).toBe(true);
     expect(result.skillsContent.has('B.md')).toBe(true);
     expect(result.skillsContent.has('C.md')).toBe(true);
     expect(result.skillsContent.has('D.md')).toBe(true);
     expect(result.skillsContent.has('E.md')).toBe(true);
-    // Sixth should fail (45KB + 9KB = 54KB > 50KB)
+    // Sixth fails (270KB > 256KB).
     expect(result.skillsContent.has('F.md')).toBe(false);
     expect(result.skillsErrors.get('F.md')).toContain('size limit');
     warnSpy.mockRestore();
+  });
+
+  it('loads a representative RMS policy and reports a known absent optional file', async () => {
+    const sizes = [32550, 0, 11914, 13005, 13453, 8882, 14050, 17601, 17856, 39392];
+    const config: DonmergeConfig = { skills: sizes.map((_, i) => ({ path: `policy-${i}.md`, description: 'Policy' })) };
+    mockFetchFile.mockImplementation(async (_owner, _repo, path) => {
+      const i = Number(String(path).match(/policy-(\d+)/)?.[1]);
+      return i === 1 ? null : 'x'.repeat(sizes[i]);
+    });
+    const result = await resolveDonmergeSkills(config, 'owner', 'repo', 'token', mockFetchFile, 'base-sha', true);
+    expect(result.skillsContent.size).toBe(9);
+    expect(result.skillsErrors.get('policy-1.md')).toBe('File not found');
+    expect(mockFetchFile).toHaveBeenCalledWith('owner', 'repo', 'policy-0.md', 'token', 'base-sha');
+  });
+
+  it('still fails strict policy loading on a read error or an oversized document', async () => {
+    const config: DonmergeConfig = { skills: [{ path: 'policy.md', description: 'Policy' }] };
+    mockFetchFile.mockRejectedValueOnce(new Error('GitHub API error 403'));
+    await expect(resolveDonmergeSkills(config, 'owner', 'repo', 'token', mockFetchFile, 'base', true)).rejects.toThrow('policy.md');
+    mockFetchFile.mockResolvedValueOnce('x'.repeat(65 * 1024));
+    await expect(resolveDonmergeSkills(config, 'owner', 'repo', 'token', mockFetchFile, 'base', true)).rejects.toThrow('policy.md');
   });
 
   it('should handle fetch rejection gracefully', async () => {

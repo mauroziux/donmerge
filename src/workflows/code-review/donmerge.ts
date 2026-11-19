@@ -10,8 +10,10 @@ import type { DonmergeConfig, DonmergeSkill, DonmergeResolved } from './types';
 
 // Constants
 const MAX_SKILLS = 10;
-const MAX_SKILL_SIZE_BYTES = 20 * 1024; // 20KB per skill
-const MAX_TOTAL_SKILLS_BYTES = 50 * 1024; // 50KB total
+// RMS's committed policy includes documents up to 39 KB and about 169 KB in
+// total. Keep explicit bounds, but allow the complete destination policy.
+const MAX_SKILL_SIZE_BYTES = 64 * 1024;
+const MAX_TOTAL_SKILLS_BYTES = 256 * 1024;
 
 /**
  * Fetch and parse .donmerge config from a repo.
@@ -192,8 +194,12 @@ export async function resolveDonmergeSkills(
     }
   }
 
-  if (strict && skillsErrors.size > 0) {
-    throw new Error(`Failed to load policy skills: ${Array.from(skillsErrors.keys()).join(', ')}`);
+  // A confirmed 404 is a known absence, not a failed read. Preserve it as a
+  // warning so the review cannot claim a complete policy. Network/permission
+  // failures and size-limit violations remain fatal in strict mode.
+  const unresolved = [...skillsErrors].filter(([, reason]) => reason !== 'File not found');
+  if (strict && unresolved.length > 0) {
+    throw new Error(`Failed to load policy skills: ${unresolved.map(([path]) => path).join(', ')}`);
   }
 
   // Log warnings for failed skills

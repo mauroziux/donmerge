@@ -276,6 +276,25 @@ describe('workflow ownership at startup', () => {
 // ── the matrix ───────────────────────────────────────────────────────────────
 
 describe('publishReview verdict matrix', () => {
+  it('publishes a neutral result and disables inherited coverage when policy is missing', async () => {
+    const calls = setupGitHubMock();
+    const bindings: unknown[][] = [];
+    const db = { prepare: vi.fn(() => ({ bind: (...args: unknown[]) => {
+      bindings.push(args);
+      return { run: async () => ({}) };
+    } })) };
+    const input = llmResult(fullCoverage(), cleanReview());
+    input.preparedFiles.donmerge = { config: {}, skills: [], skillErrors: [['RULES.md', 'File not found']] };
+    const { stub } = setupProcessorStub([]);
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+    await (workflow as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> }).publishReview(input, stub);
+    const check = calls.find(call => call.url.includes('/check-runs') && call.method === 'PATCH')?.body as { conclusion: string; output: { text: string } };
+    expect(check.conclusion).toBe('neutral');
+    expect(check.output.text).toContain('RULES.md');
+    const description = calls.find(call => call.url.includes('/pulls/42') && call.method === 'PATCH')?.body as { body: string };
+    expect(description.body).toContain('incomplete policy');
+    expect(bindings.at(-1)?.at(-1)).toBe(0);
+  });
   it.each(['new', 'anchor', 'same-fingerprint'] as const)('records a published finding after retries (%s)', async (scenario) => {
     const calls = setupGitHubMock();
     const normalFetch = mockFetch.getMockImplementation()!;

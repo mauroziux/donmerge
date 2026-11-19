@@ -281,6 +281,9 @@ export function safeStringify(value: unknown): string {
  */
 export function classifyError(error: unknown): { code: ErrorCodeType; detail: string } {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith('[POLICY_UNAVAILABLE]')) {
+    return { code: ErrorCode.POLICY_UNAVAILABLE, detail: message };
+  }
   if (message.includes('GitHub API error')) {
     return { code: ErrorCode.GITHUB_API, detail: message };
   }
