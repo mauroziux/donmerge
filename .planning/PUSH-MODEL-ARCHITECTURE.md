@@ -6,6 +6,8 @@
 **Date:** 2026-04-24
 **Author:** Architecture planning session
 
+> Historical design: credential-storage guidance in this document is superseded by [ADR-001](ADR-001-secrets-vs-vars.md). Push API keys now use the `DONMERGE_PUSH_API_KEYS` Worker secret; the legacy staging Sentry webhook secret still requires coordinated rotation.
+
 ---
 
 ## Table of Contents
@@ -1631,12 +1633,12 @@ For production, store sensitive values as Wrangler secrets instead of env vars:
 ```bash
 # Set secrets via Wrangler CLI (encrypted at rest)
 wrangler secret put OPENAI_API_KEY
-wrangler secret put DONMERGE_API_KEYS
+wrangler secret put DONMERGE_PUSH_API_KEYS
 wrangler secret put GITHUB_WEBHOOK_SECRET
 wrangler secret put GITHUB_APP_PRIVATE_KEY
 ```
 
-> **Updated per ADR-001:** `DONMERGE_API_KEYS` and `SENTRY_WEBHOOK_SECRET` are now stored as `vars` (plaintext) to support multi-client aggregation. See `.planning/ADR-001-secrets-vs-vars.md`.
+> **Current decision:** keep Push API keys in `DONMERGE_PUSH_API_KEYS`, never in `vars`. The legacy staging Sentry webhook secret remains a separate unresolved rotation; see [ADR-001](ADR-001-secrets-vs-vars.md).
 
 ---
 

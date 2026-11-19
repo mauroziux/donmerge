@@ -321,7 +321,7 @@ Receives Sentry `event_alert` webhooks directly. Verifies HMAC-SHA256 signatures
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SENTRY_WEBHOOK_SECRET` | Yes | HMAC-SHA256 secret (comma-separated for multiple Sentry orgs). Stored in `vars` per [ADR-001](../.planning/ADR-001-secrets-vs-vars.md). |
+| `SENTRY_WEBHOOK_SECRET` | Yes | HMAC-SHA256 secret (comma-separated for multiple Sentry orgs). Provision as a Worker secret; see the migration caveat below and [ADR-001](../.planning/ADR-001-secrets-vs-vars.md). |
 | `SENTRY_REPO_MAP` | Yes | Maps Sentry org/project slugs to GitHub repos. Format: `"org-slug:owner/repo:branch,org-slug/project:owner/repo:branch"` |
 | `SENTRY_GITHUB_TOKEN` | Yes | GitHub token for fetching repo code during triage. Use `wrangler secret put`. |
 
@@ -330,8 +330,10 @@ Receives Sentry `event_alert` webhooks directly. Verifies HMAC-SHA256 signatures
 1. Go to **Settings → Integrations → Internal Integration → New Integration**
 2. Set the webhook URL to: `POST https://your-donmerge-instance.example.com/webhook/sentry`
 3. Under "Alert Rules", select **Issue Alert** as the resource
-4. Copy the **Client Secret** and set it as `SENTRY_WEBHOOK_SECRET` on your DonMerge worker
+4. Provision the **Client Secret** as the encrypted `SENTRY_WEBHOOK_SECRET` Worker secret, without writing it to source control or logs. For multiple integrations, provision the complete comma-separated list.
 5. Create an alert rule that triggers on `event_alert` and sends to this integration
+
+**Existing staging migration:** a legacy signing secret is still present in the versioned staging configuration. Coordinate rotation with the installed Sentry integrations and replace the plaintext binding with the new Worker secret. Moving the exposed value without rotating it does not revoke it; removing it before the senders are updated interrupts delivery.
 
 #### Tracker auto-creation (D1 tenants)
 
