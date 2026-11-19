@@ -91,6 +91,8 @@ DonMerge installs as a GitHub App and automatically reviews PRs in configured re
 
 Incremental state lives in D1 (`review_state`, migration 0005) and records the last fully-reviewed SHA per PR; the check-run/PR-description coverage notes say explicitly when a review was incremental. Prompt sections above the diff are deterministic (stable ordering, tie-broken memory queries) so provider-side prompt caching stays effective.
 
+Scoped review memory is disabled in production until its quality has been evaluated. For a controlled pilot, set `DONMERGE_SCOPED_MEMORY=true` and `DONMERGE_SCOPED_MEMORY_REPOS` to a comma-separated list of exact `owner/repo` names. Matching is case-insensitive; an explicitly empty list selects no repositories. If the list is omitted, the existing all-repository behavior is retained. Set `DONMERGE_SCOPED_MEMORY=false` to stop injecting scoped memory everywhere, regardless of the list; existing legacy memory is unaffected. These settings do not change stored rules or their revocation state.
+
 ### Push API
 
 Trigger reviews and Sentry triage from any CI/CD pipeline via HTTP POST calls.

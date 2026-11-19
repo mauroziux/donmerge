@@ -76,6 +76,7 @@ import {
 import { recordReviewFindings } from './feedback-handler';
 import { buildReviewOutcomeInputs, newlyPublishedComments } from './review-outcomes';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
+import { scopedMemoryEnabledForRepo } from './memory-rollout';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
 import { AllModelsFailedError, runReviewModels, DEFAULT_REVIEW_TOTAL_BUDGET_MS } from './review-model-runner';
 import { PrHeadChangedError } from './review-snapshot';
@@ -862,7 +863,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       try {
         memoryContext = await buildMemoryContext(
           this.env.DB, prData.owner, prData.repo, preparedFiles.filePatches.map(file => file.filename),
-          this.env.DONMERGE_SCOPED_MEMORY !== 'false'
+          scopedMemoryEnabledForRepo(this.env, prData.owner, prData.repo)
         );
         const weights = await getPatternWeights(this.env.DB, prData.owner, prData.repo);
         // Historical dismissal weights have no maintainer approval or file
