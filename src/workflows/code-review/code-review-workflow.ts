@@ -77,6 +77,7 @@ import { recordReviewFindings } from './feedback-handler';
 import { buildReviewOutcomeInputs, newlyPublishedComments } from './review-outcomes';
 import { buildMemoryContext, getPatternWeights } from './memory-store';
 import { scopedMemoryEnabledForRepo } from './memory-rollout';
+import { citedLearningIds } from './memory-citations';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
 import { AllModelsFailedError, runReviewModels, DEFAULT_REVIEW_TOTAL_BUDGET_MS } from './review-model-runner';
 import { PrHeadChangedError } from './review-snapshot';
@@ -1053,7 +1054,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
       if (this.env.DB && memoryContext) {
         try {
-          const output = JSON.stringify(result);
+          const citations = citedLearningIds(JSON.stringify(result));
           const snapshotRunId = runId ?? `check-${prData.checkRunId}`;
           const statement = this.env.DB.prepare(`INSERT INTO review_learning_snapshots
             (owner, repo, pr_number, head_sha, run_id, learning_id, learning_text, scope_type, scope_path, cited)
@@ -1065,7 +1066,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
             ...(memoryContext.scopedLearnings ?? []).map(learning => statement.bind(
               prData.owner, prData.repo, prData.prNumber, prData.headSha, snapshotRunId, learning.id,
               learning.learning_text, learning.scope_type, learning.scope_path,
-              output.toLowerCase().includes(`learning #${learning.id}`.toLowerCase()) ? 1 : 0
+              citations.has(learning.id) ? 1 : 0
             )),
           ]);
         } catch (error) {
