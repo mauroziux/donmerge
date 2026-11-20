@@ -699,6 +699,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         if (
           state &&
           state.fullCoverage &&
+          state.incrementalEligible &&
           state.baseRef === (prData.baseBranch ?? '') &&
           Boolean(prData.baseSha) &&
           state.baseSha === prData.baseSha &&
@@ -1310,6 +1311,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           headSha,
           fullCoverage: preparedFiles.coverage.scopeComplete && missingPolicyFiles.length === 0 &&
             !reviewForPublication.verificationPending && !reviewForPublication.qualityFilterPending,
+          incrementalEligible: preparedFiles.coverage.scopeComplete && missingPolicyFiles.length === 0 &&
+            !reviewForPublication.verificationPending && !reviewForPublication.qualityFilterPending &&
+            reviewForPublication.approved && !gated.overridden,
         });
       } catch (error) {
         console.warn('[review-state] failed to record review state', {

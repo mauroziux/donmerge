@@ -238,7 +238,8 @@ export async function completeCheckRun(
   missingPolicyFiles: string[] = []
 ): Promise<void> {
   const approved = !hasBlockingFindings(review);
-  const conclusion = checkConclusion(!approved, coverage, review.verificationPending || review.qualityFilterPending || missingPolicyFiles.length > 0);
+  const conclusion = checkConclusion(!approved, coverage, review.verificationPending || review.qualityFilterPending ||
+    (review.unresolvedReviewThreads ?? 0) > 0 || missingPolicyFiles.length > 0);
   const title = !approved
     ? '⚠️ Ojo, some things need attention'
     : conclusion === 'success'
@@ -249,6 +250,8 @@ export async function completeCheckRun(
         ? '🟡 Review needs attention — critical candidate withheld'
       : review.verificationPending
         ? '🟡 No blocking findings verified — unverified finding(s) pending'
+      : (review.unresolvedReviewThreads ?? 0) > 0
+        ? '🟡 Previous review threads need attention'
         : '🟡 Partial review — no blocking issues in the reviewed scope';
   const criticalFindings = collectCriticalFindings(review);
   const critical =
@@ -256,6 +259,8 @@ export async function completeCheckRun(
       ? criticalFindings.map((issue) => `- ${issue}`).join('\n')
       : review.qualityFilterPending
         ? '- None confirmed; a critical candidate was withheld.'
+        : (review.unresolvedReviewThreads ?? 0) > 0
+        ? '- Prior review threads remain unresolved; inspect them before merging.'
         : '- None, ¡nada que objetar!';
   const suggestions =
     review.suggestions.length > 0
