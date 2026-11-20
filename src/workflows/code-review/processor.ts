@@ -22,6 +22,8 @@ const STATE_KEYS = {
   /** Latest deferred request: a push/comment arrived while a run was active. */
   pendingLatest: 'reviewPendingLatest',
   handoff: 'reviewHandoff',
+  /** A published run has not yet committed its incremental state to D1. */
+  incrementalBaselineUncertain: 'incrementalBaselineUncertain',
 };
 
 interface ReviewContext {
@@ -209,6 +211,21 @@ export class ReviewProcessor extends DurableObject<EnvWithBindings> {
   }
 
   // ── RPC methods called by CodeReviewWorkflow ──────────────────────────────
+
+  /** Fail closed if this run does not own the processor or state is uncertain. */
+  async isIncrementalBaselineUncertain(runId?: string): Promise<boolean> {
+    const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    if (!status || status.state !== 'running' || (status.runId ?? null) !== (runId ?? null)) return true;
+    return (await this.state.storage.get<boolean>(STATE_KEYS.incrementalBaselineUncertain)) === true;
+  }
+
+  /** Fence stale runs so they cannot clear a newer run's uncertainty. */
+  async setIncrementalBaselineUncertain(runId: string | undefined, uncertain: boolean): Promise<boolean> {
+    const status = await this.state.storage.get<ReviewStatus>(STATE_KEYS.status);
+    if (!status || status.state !== 'running' || (status.runId ?? null) !== (runId ?? null)) return false;
+    await this.state.storage.put(STATE_KEYS.incrementalBaselineUncertain, uncertain);
+    return true;
+  }
 
   /**
    * Update review status from the workflow.

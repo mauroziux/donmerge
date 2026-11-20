@@ -215,6 +215,8 @@ function setupProcessorStub(seedIssues: TrackedIssue[]) {
     saveTrackedIssuesRpc: vi.fn(async (issues: TrackedIssue[]) => {
       saved.push(issues);
     }),
+    isIncrementalBaselineUncertain: vi.fn(async () => false),
+    setIncrementalBaselineUncertain: vi.fn(async () => true),
     updateFromWorkflow: vi.fn(async () => {}),
   };
   return { stub, saved };
@@ -312,6 +314,26 @@ describe('publishReview verdict matrix', () => {
     expect(bindings.find(args => args.length === 7)?.at(-1)).toBe(1);
     expect(bindings.some(args => args.length === 6)).toBe(eligible);
     expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(stub.setIncrementalBaselineUncertain.mock.calls).toEqual([[undefined, true], [undefined, false]]);
+  });
+
+  it('keeps the durable baseline uncertain when the review-state write fails', async () => {
+    setupGitHubMock();
+    const db = { prepare: () => ({ bind: () => ({}) }), batch: vi.fn(async () => { throw new Error('D1 unavailable'); }) };
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+    const { stub } = setupProcessorStub([]);
+    await (workflow as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> })
+      .publishReview(llmResult(fullCoverage(), blockingReview()), stub);
+    expect(stub.setIncrementalBaselineUncertain.mock.calls).toEqual([[undefined, true]]);
+  });
+
+  it('does not publish if the run cannot persist its uncertainty fence', async () => {
+    const calls = setupGitHubMock();
+    const { stub } = setupProcessorStub([]);
+    stub.setIncrementalBaselineUncertain.mockResolvedValue(false);
+    await expect((makeWorkflow() as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> })
+      .publishReview(llmResult(fullCoverage(), cleanReview()), stub)).rejects.toThrow('Cannot fence incremental state');
+    expect(calls.some(call => call.url.endsWith('/reviews') && call.method === 'POST')).toBe(false);
   });
 
   it.each(['qualityFilterPending', 'verificationPending'] as const)(
@@ -743,11 +765,12 @@ describe('prepareFiles', () => {
   });
 
   it.each([
-    ['legacy full review without clean marker', 0, 'ahead', ['a.ts', 'b.ts'], false],
-    ['clean linear advance', 1, 'ahead', ['b.ts'], true],
-    ['clean baseline followed by divergent force push', 1, 'diverged', ['a.ts', 'b.ts'], false],
-    ['clean baseline followed by rollback', 1, 'behind', ['a.ts', 'b.ts'], false],
-  ] as const)('selects the correct files for %s', async (_label, eligible, status, expectedFiles, incremental) => {
+    ['legacy full review without clean marker', 0, false, 'ahead', ['a.ts', 'b.ts'], false],
+    ['uncertain later publication after D1 failure', 1, true, 'ahead', ['a.ts', 'b.ts'], false],
+    ['clean linear advance', 1, false, 'ahead', ['b.ts'], true],
+    ['clean baseline followed by divergent force push', 1, false, 'diverged', ['a.ts', 'b.ts'], false],
+    ['clean baseline followed by rollback', 1, false, 'behind', ['a.ts', 'b.ts'], false],
+  ] as const)('selects the correct files for %s', async (_label, eligible, uncertain, status, expectedFiles, incremental) => {
     const calls: string[] = [];
     mockFetch.mockImplementation(async (url: string) => {
       calls.push(url);
@@ -768,11 +791,12 @@ describe('prepareFiles', () => {
       incremental_eligible: eligible,
     }) }) }) };
     const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
-    const prepared = await (workflow as unknown as { prepareFiles: (p: unknown) => Promise<WorkflowPreparedFiles> })
-      .prepareFiles({ ...prData(), retrigger: true, changedFilesCount: 2 });
+    const processor = { isIncrementalBaselineUncertain: vi.fn(async () => uncertain) };
+    const prepared = await (workflow as unknown as { prepareFiles: (p: unknown, s: unknown, id: string) => Promise<WorkflowPreparedFiles> })
+      .prepareFiles({ ...prData(), retrigger: true, changedFilesCount: 2 }, processor, 'run');
     expect(prepared.filePatches.map(file => file.filename)).toEqual(expectedFiles);
     expect(Boolean(prepared.coverage.incrementalSince)).toBe(incremental);
-    expect(calls.some(url => url.includes('/compare/'))).toBe(eligible === 1);
+    expect(calls.some(url => url.includes('/compare/'))).toBe(eligible === 1 && !uncertain);
   });
 
   function makeEnv() {

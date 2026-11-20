@@ -84,6 +84,23 @@ describe('refreshing a changed PR snapshot', () => {
   });
 });
 
+describe('incremental baseline fencing', () => {
+  it('preserves uncertainty across runs and rejects stale attempts to clear it', async () => {
+    const { store, storage } = createMockStorage();
+    store.set('reviewStatus', { state: 'running', attempts: 1, runId: 'run-a' });
+    const processor = new ReviewProcessor(createMockState(storage), {} as never);
+    expect(await processor.isIncrementalBaselineUncertain('run-a')).toBe(false);
+    expect(await processor.setIncrementalBaselineUncertain('run-a', true)).toBe(true);
+    store.set('reviewStatus', { state: 'running', attempts: 1, runId: 'run-b' });
+    expect(await processor.isIncrementalBaselineUncertain('run-b')).toBe(true);
+    expect(await processor.setIncrementalBaselineUncertain('run-a', false)).toBe(false);
+    expect(await processor.isIncrementalBaselineUncertain('run-a')).toBe(true);
+    expect(await processor.isIncrementalBaselineUncertain('run-b')).toBe(true);
+    expect(await processor.setIncrementalBaselineUncertain('run-b', false)).toBe(true);
+    expect(await processor.isIncrementalBaselineUncertain('run-b')).toBe(false);
+  });
+});
+
 beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -270,7 +270,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
         timeout: '2 minutes',
       }, async () => {
-        return this.prepareFiles(activePrData);
+        return this.prepareFiles(activePrData, processorStub, runId);
       });
 
       // Cost-control short-circuits (no LLM spend):
@@ -607,7 +607,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
    *     since that commit (`incrementalSince`), with full-diff fallback on any
    *     doubt about the compare range.
    */
-  private async prepareFiles(prData: PrData): Promise<PreparedFiles> {
+  private async prepareFiles(prData: PrData, processorStub?: DurableObjectStub, runId?: string): Promise<PreparedFiles> {
     const { owner, repo, prNumber, githubToken } = prData;
 
     // Discover every file in the PR (all pages) for a versioned snapshot.
@@ -695,7 +695,10 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       this.env.DB
     ) {
       try {
-        const state = await getReviewState(this.env.DB, owner, repo, prNumber);
+        // A prior publication whose D1 update failed leaves the DO dirty; the
+        // older clean marker is not proof about that more recent review.
+        const uncertain = !processorStub || await (processorStub as any).isIncrementalBaselineUncertain(runId);
+        const state = uncertain ? null : await getReviewState(this.env.DB, owner, repo, prNumber);
         if (
           state &&
           state.fullCoverage &&
@@ -1127,6 +1130,12 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
 
     await this.assertSnapshotCurrent(prData);
 
+    // Persist uncertainty before publishing anything. If a crash or D1 error
+    // prevents updating review_state, later runs must not reuse an older clean
+    // marker. A successful atomic state write clears it below.
+    const marked = await (processorStub as any).setIncrementalBaselineUncertain(runId, true);
+    if (!marked) throw new Error('Cannot fence incremental state for this review');
+
     // Load tracked issues from DO via RPC
     const storedIssues: TrackedIssue[] = await (processorStub as any).loadTrackedIssuesRpc();
 
@@ -1315,6 +1324,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
             !reviewForPublication.verificationPending && !reviewForPublication.qualityFilterPending &&
             reviewForPublication.approved && !gated.overridden,
         });
+        const cleared = await (processorStub as any).setIncrementalBaselineUncertain(runId, false);
+        if (!cleared) console.warn('[review-state] unable to clear incremental uncertainty for stale run');
       } catch (error) {
         console.warn('[review-state] failed to record review state', {
           owner,
