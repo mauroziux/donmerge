@@ -24,6 +24,29 @@ export async function resolveGitHubToken(env: WorkerEnv, installationId?: number
   );
 }
 
+/** Resolve the app installation for a repository when no webhook payload exists. */
+export async function resolveGitHubTokenForRepo(env: WorkerEnv, owner: string, repo: string): Promise<string> {
+  if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
+    const appJwt = await createGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+    const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`, {
+      headers: {
+        Authorization: `Bearer ${appJwt}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'codex-review-worker',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`GitHub installation lookup failed (${response.status})`);
+    const installation = await response.json() as { id?: unknown };
+    if (typeof installation.id !== 'number' || !Number.isSafeInteger(installation.id) || installation.id <= 0) {
+      throw new Error('GitHub returned an invalid installation identifier');
+    }
+    return createInstallationToken(installation.id, appJwt);
+  }
+  return resolveGitHubToken(env);
+}
+
 /**
  * Create an installation access token for a GitHub App.
  */
@@ -39,6 +62,7 @@ async function createInstallationToken(installationId: number, appJwt: string): 
         'User-Agent': 'codex-review-worker',
         'X-GitHub-Api-Version': '2022-11-28',
       },
+      signal: AbortSignal.timeout(10_000),
     }
   );
 

@@ -310,6 +310,14 @@ describe('handleCommentFeedback', () => {
 // ─── handleReactionFeedback ─────────────────────────────────────────
 
 describe('handleReactionFeedback', () => {
+  it('rejects a reaction without an identifier instead of recording duplicates', async () => {
+    const mock = createMockDb();
+    expect(await handleReactionFeedback(mock.db, {
+      owner: 'test', repo: 'repo', prNumber: 1, githubUser: 'dev',
+      reaction: 'thumbsup', commentId: 100, commentFingerprint: 'fp-abc',
+    })).toBe(false);
+    expect(mock.prepare).not.toHaveBeenCalled();
+  });
   it('returns false when no fingerprint provided', async () => {
     const mock = createMockDb();
 
@@ -320,6 +328,7 @@ describe('handleReactionFeedback', () => {
       githubUser: 'dev',
       reaction: 'thumbsdown',
       commentId: 100,
+      reactionId: 501,
       // no commentFingerprint
     });
 
@@ -337,6 +346,7 @@ describe('handleReactionFeedback', () => {
       githubUser: 'dev',
       reaction: 'thumbsdown',
       commentId: 100,
+      reactionId: 501,
       commentFingerprint: 'fp-abc',
     });
 
@@ -354,6 +364,7 @@ describe('handleReactionFeedback', () => {
       githubUser: 'dev',
       reaction: 'thumbsup',
       commentId: 100,
+      reactionId: 501,
       commentFingerprint: 'fp-abc',
     });
 
@@ -370,6 +381,7 @@ describe('handleReactionFeedback', () => {
       githubUser: 'dev',
       reaction: 'heart',
       commentId: 100,
+      reactionId: 501,
       commentFingerprint: 'fp-abc',
     });
 
@@ -386,6 +398,7 @@ describe('handleReactionFeedback', () => {
       githubUser: 'dev',
       reaction: 'hooray',
       commentId: 100,
+      reactionId: 501,
       commentFingerprint: 'fp-abc',
     });
 
@@ -402,12 +415,13 @@ describe('handleReactionFeedback', () => {
       githubUser: 'dev',
       reaction: 'thumbsdown',
       commentId: 100,
+      reactionId: 501,
       commentFingerprint: 'fp-abc',
     });
 
     expect(result).toBe(true);
-    expect(mock.prepare).toHaveBeenCalledTimes(1);
-    expect(mock.batch).not.toHaveBeenCalled();
+    expect(mock.prepare).toHaveBeenCalledTimes(2);
+    expect(mock.batch).toHaveBeenCalledTimes(1);
   });
 
   it('records thumbsdown when no outcome body is available', async () => {
@@ -420,6 +434,7 @@ describe('handleReactionFeedback', () => {
       githubUser: 'dev',
       reaction: 'thumbsdown',
       commentId: 100,
+      reactionId: 501,
       commentFingerprint: 'fp-abc',
     });
 

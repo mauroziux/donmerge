@@ -97,3 +97,31 @@ describe('verifyWebhookSignature', () => {
     expect(result).toBe(false);
   });
 });
+
+describe('repository-scoped GitHub App authentication', () => {
+  it('looks up the repository installation before issuing an installation token', async () => {
+    const { generateKeyPairSync, verify } = await import('node:crypto');
+    const { vi } = await import('vitest');
+    const { resolveGitHubTokenForRepo } = await import('../github-auth');
+    const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const privateKey = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      requests.push({ url, init });
+      return new Response(JSON.stringify(requests.length === 1 ? { id: 123 } : { token: 'installation-token' }), { status: 200 });
+    }));
+    try {
+      const env = { GITHUB_APP_ID: '42', GITHUB_APP_PRIVATE_KEY: privateKey } as import('../types').WorkerEnv;
+      expect(await resolveGitHubTokenForRepo(env, 'the-org', 'the-repo')).toBe('installation-token');
+      expect(requests.map(r => r.url)).toEqual([
+        'https://api.github.com/repos/the-org/the-repo/installation',
+        'https://api.github.com/app/installations/123/access_tokens',
+      ]);
+      const jwt = (requests[0].init.headers as Record<string, string>).Authorization.slice('Bearer '.length);
+      const [header, payload, signature] = jwt.split('.');
+      expect(JSON.parse(Buffer.from(payload, 'base64url').toString()).iss).toBe('42');
+      expect(verify('RSA-SHA256', Buffer.from(`${header}.${payload}`), pair.publicKey, Buffer.from(signature, 'base64url'))).toBe(true);
+      expect(requests[1].init.method).toBe('POST');
+    } finally { vi.unstubAllGlobals(); }
+  });
+});

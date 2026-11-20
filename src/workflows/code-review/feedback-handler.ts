@@ -1,5 +1,6 @@
 import type { Feedback, ReviewOutcome } from './types';
 import { recordFeedback, recordReviewOutcomes, recordScopedPreference, recordScopedReply, upsertPatternWeight } from './memory-store';
+import { recordReactionSignals } from './reaction-feedback-sync';
 import { recalculatePatternWeights } from './pattern-recalculator';
 import {
   classifyReply,
@@ -286,10 +287,11 @@ export async function handleReactionFeedback(
     githubUser: string;
     reaction: string; // thumbsup, thumbsdown, etc.
     commentId: number;
+    reactionId?: number;
     commentFingerprint?: string; // from DONMERGE_META in parent comment
   }
 ): Promise<boolean> {
-  if (!params.commentFingerprint) return false;
+  if (!params.commentFingerprint || !Number.isSafeInteger(params.reactionId) || (params.reactionId ?? 0) <= 0) return false;
 
   const feedbackType = params.reaction === 'thumbsdown' ? 'dismiss'
     : params.reaction === 'thumbsup' ? 'accept'
@@ -297,15 +299,10 @@ export async function handleReactionFeedback(
 
   if (!feedbackType) return false;
 
-  await recordFeedback(db, {
-    owner: params.owner,
-    repo: params.repo,
-    pr_number: params.prNumber,
-    fingerprint: params.commentFingerprint,
-    feedback_type: feedbackType as 'dismiss' | 'accept',
-    feedback_source: 'reaction',
-    github_user: params.githubUser,
-  });
+  await recordReactionSignals(db, {
+    owner: params.owner, repo: params.repo, pr_number: params.prNumber,
+    comment_id: params.commentId, fingerprint: params.commentFingerprint,
+  }, [{ id: params.reactionId!, type: feedbackType, user: params.githubUser }]);
 
   return true;
 }

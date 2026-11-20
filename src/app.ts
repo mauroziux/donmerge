@@ -10,6 +10,7 @@ import { validateApiKey } from './api/auth';
 import { handleSentryWebhook } from './webhooks/sentry';
 import { handleCodeReviewQueue } from './queues/code-review-consumer';
 import { debounceSendOptions } from './queues/push-debounce';
+import { syncReactionFeedback } from './workflows/code-review/reaction-feedback-sync';
 
 // Extended env type that includes all DO bindings
 interface AppEnv extends WorkerEnv {
@@ -150,4 +151,10 @@ export { RateLimiter };
 export default {
   fetch: app.fetch.bind(app),
   queue: handleCodeReviewQueue,
+  scheduled(_controller: { readonly scheduledTime: number; readonly cron: string; noRetry(): void }, env: AppEnv, ctx: ExecutionContext) {
+    if (env.DONMERGE_REACTION_SYNC?.trim().toLowerCase() !== 'true') return;
+    ctx.waitUntil(syncReactionFeedback(env).then(result => {
+      console.log('[reaction-sync] Completed bounded poll', result);
+    }));
+  },
 };

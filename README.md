@@ -95,6 +95,17 @@ Scoped review memory is disabled by default until its quality has been evaluated
 
 Maintainers can use `@donmerge memory list` on a PR to inspect rules and the rules recorded for its runs, then use `@donmerge memory approve <id>`, `@donmerge memory revoke <id>`, or `@donmerge memory scope <id> <file|directory|repo> [path]`. Explicit preferences are recorded with their source; exceptions remain pending until approved. Apply D1 migration `0009` before deploying the code that uses it; production and staging CI deployments check the migration and links table before publishing, and a review fails explicitly if a manual deployment lacks that table. Transient D1 read failures still fall back to the base policy. The migration is additive and can be run again to link legacy rows created while the old Worker was still active. Production and staging currently share the same D1 database.
 
+GitHub does not deliver review-comment reaction webhooks. Production instead polls
+reactions on recorded DonMerge review comments every 15 minutes, up to eight
+comments per run in rotation, prioritizing recent comments while reserving
+capacity for older ones. Each human thumbs-up or thumbs-down is recorded
+once by reaction ID; a reaction does not create an exception or silence a
+finding. Poll latency grows with the number of tracked comments. Removing a
+reaction does not erase the historical feedback record. Apply additive D1
+migration `0010` before deploying this collector; staging does not run the cron
+because it shares production's database. Set `DONMERGE_REACTION_SYNC=false` to
+stop polling without deleting feedback or cursors.
+
 ### Push API
 
 Trigger reviews and Sentry triage from any CI/CD pipeline via HTTP POST calls.

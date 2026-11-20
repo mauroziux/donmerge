@@ -5,6 +5,7 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
+	"triggers": { "crons": ["*/15 * * * *"] },
 	"containers": [
 		{
 			"class_name": "Sandbox",
@@ -28,6 +29,7 @@
 		"DONMERGE_SCOPED_MEMORY": "false",
 		// Populate with exact owner/repo names for a pilot; empty permits no repos.
 		"DONMERGE_SCOPED_MEMORY_REPOS": "",
+		"DONMERGE_REACTION_SYNC": "true",
 		// Sentry webhook integration (optional)
 		// SENTRY_WEBHOOK_SECRET: HMAC-SHA256 secret for verifying Sentry webhook signatures
 		// SENTRY_REPO_MAP: Maps Sentry org/project slugs to GitHub repos
@@ -153,6 +155,7 @@
 	"env": {
 		"staging": {
 			"name": "tableo-assitant-worker-staging",
+			"triggers": { "crons": [] },
 			"vars": {
 				"REPO_CONFIGS": "tableoltd/tableo-s3-browser-app:main,tableoltd/rms:develop+master",
 				"CODEX_MODEL": "aigateway/dynamic/donmerge-text-fallback",

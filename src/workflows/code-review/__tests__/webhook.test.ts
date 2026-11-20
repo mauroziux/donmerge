@@ -967,6 +967,7 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       ...baseContext,
       feedback: { type: 'dismiss' },
       commentId: 30,
+      reactionId: 501,
       commentType: 'review',
       githubUser: 'dev',
     });
@@ -989,6 +990,7 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       githubUser: 'dev',
       reaction: 'thumbsdown',
       commentId: 30,
+      reactionId: 501,
       commentFingerprint: 'fingerprint_from_comment',
     });
     expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();

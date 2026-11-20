@@ -18,7 +18,7 @@ jobs:
       - name: Verify review memory schema
         run: |
           set -o pipefail
-          npx wrangler d1 execute donmerge-db --env staging --remote --json --command "SELECT (SELECT count(*) FROM d1_migrations WHERE name = '0009_link_legacy_review_memory.sql') AS migration_applied, (SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'legacy_learning_links') AS links_table" | node scripts/check-review-memory-schema.mjs
+          npx wrangler d1 execute donmerge-db --env staging --remote --json --command "SELECT (SELECT count(*) FROM d1_migrations WHERE name = '0009_link_legacy_review_memory.sql') AS migration_applied, (SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'legacy_learning_links') AS links_table, (SELECT count(*) FROM d1_migrations WHERE name = '0010_reaction_feedback_poll.sql') AS reaction_migration_applied, (SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'reaction_poll_targets') AS reaction_targets_table, (SELECT count(*) FROM pragma_table_info('reaction_poll_targets') WHERE name = 'created_at') AS reaction_created_at_column, (SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'reaction_poll_target_after_outcome') AS reaction_trigger" | node scripts/check-review-memory-schema.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
