@@ -7,13 +7,13 @@ function check(input: string) {
 
 describe('review memory deployment gate', () => {
   it('accepts a recorded migration and existing links table', () => {
-    const result = check(JSON.stringify([{ results: [{ migration_applied: 1, links_table: 1, reaction_migration_applied: 1, reaction_targets_table: 1, reaction_trigger: 1 }] }]));
+    const result = check(JSON.stringify([{ results: [{ migration_applied: 1, links_table: 1, reaction_migration_applied: 1, reaction_targets_table: 1, reaction_created_at_column: 1, reaction_trigger: 1 }] }]));
     expect(result.status).toBe(0);
   });
 
   it.each([
-    ...['migration_applied', 'links_table', 'reaction_migration_applied', 'reaction_targets_table', 'reaction_trigger'].map(missing =>
-      JSON.stringify([{ results: [{ ...{ migration_applied: 1, links_table: 1, reaction_migration_applied: 1, reaction_targets_table: 1, reaction_trigger: 1 }, [missing]: 0 }] }])
+    ...['migration_applied', 'links_table', 'reaction_migration_applied', 'reaction_targets_table', 'reaction_created_at_column', 'reaction_trigger'].map(missing =>
+      JSON.stringify([{ results: [{ ...{ migration_applied: 1, links_table: 1, reaction_migration_applied: 1, reaction_targets_table: 1, reaction_created_at_column: 1, reaction_trigger: 1 }, [missing]: 0 }] }])
     ),
     'not JSON',
     '[]',

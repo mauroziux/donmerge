@@ -77,7 +77,7 @@ describe('GitHub reaction feedback synchronization', () => {
     try {
       sqlite.exec("CREATE TRIGGER reject_feedback BEFORE INSERT ON feedback BEGIN SELECT RAISE(ABORT, 'test rejection'); END");
       await expect(recordReactionSignals(env.DB!, {
-        owner: 'org', repo: 'repo', pr_number: 5, comment_id: 101, fingerprint: 'fp-101', next_page: 1,
+        owner: 'org', repo: 'repo', pr_number: 5, comment_id: 101, fingerprint: 'fp-101',
       }, [{ id: 1, user: 'dev', type: 'accept' }])).rejects.toThrow('test rejection');
       expect(sqlite.prepare('SELECT count(*) AS n FROM scoped_learning_events').get()).toMatchObject({ n: 0 });
       expect(sqlite.prepare('SELECT count(*) AS n FROM feedback').get()).toMatchObject({ n: 0 });
@@ -126,6 +126,21 @@ describe('GitHub reaction feedback synchronization', () => {
       expect(sqlite.prepare('SELECT count(*) AS n FROM reaction_poll_targets WHERE last_attempted_at IS NULL').get()).toMatchObject({ n: 3 });
       await syncReactionFeedback(env);
       expect(sqlite.prepare('SELECT count(*) AS n FROM reaction_poll_targets WHERE last_attempted_at IS NULL').get()).toMatchObject({ n: 0 });
+    } finally { sqlite.close(); }
+  });
+
+  it('reserves capacity for older comments while prioritizing recent ones', async () => {
+    const { sqlite, add, env } = setup();
+    try {
+      for (let id = 1; id <= 10; id++) add(id);
+      for (let id = 101; id <= 110; id++) add(id);
+      sqlite.exec("UPDATE reaction_poll_targets SET created_at = '2000-01-01 00:00:00' WHERE comment_id >= 101");
+      vi.stubGlobal('fetch', vi.fn(async () => ok([])));
+      expect(await syncReactionFeedback(env)).toEqual({ attempted: 8, failed: 0, skipped: 0 });
+      expect(sqlite.prepare('SELECT count(*) AS n FROM reaction_poll_targets WHERE comment_id < 101 AND last_attempted_at IS NOT NULL').get()).toMatchObject({ n: 6 });
+      expect(sqlite.prepare('SELECT count(*) AS n FROM reaction_poll_targets WHERE comment_id >= 101 AND last_attempted_at IS NOT NULL').get()).toMatchObject({ n: 2 });
+      await syncReactionFeedback(env);
+      expect(sqlite.prepare('SELECT count(*) AS n FROM reaction_poll_targets WHERE comment_id >= 101 AND last_attempted_at IS NOT NULL').get()).toMatchObject({ n: 4 });
     } finally { sqlite.close(); }
   });
 

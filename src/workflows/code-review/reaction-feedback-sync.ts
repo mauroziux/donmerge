@@ -28,7 +28,7 @@ export interface ReactionSignal {
 }
 
 /** Record the event and feedback atomically; redeliveries and concurrent polls are idempotent. */
-export async function recordReactionSignals(db: D1Database, target: ReactionTarget, signals: ReactionSignal[]): Promise<void> {
+export async function recordReactionSignals(db: D1Database, target: Omit<ReactionTarget, 'next_page'>, signals: ReactionSignal[]): Promise<void> {
   if (!signals.length) return;
   const statements: D1PreparedStatement[] = [];
   for (const signal of signals) {
@@ -65,14 +65,31 @@ async function fetchReactionPage(target: ReactionTarget, token: string): Promise
 export async function syncReactionFeedback(env: WorkerEnv): Promise<{ attempted: number; failed: number; skipped: number }> {
   if (!env.DB) throw new Error('D1 is required to sync reaction feedback');
   const db = env.DB;
-  const result = await db.prepare(`SELECT owner, repo, pr_number, comment_id, fingerprint, next_page
+  // Reserve six slots for comments from the past 30 days and two for older
+  // comments. Fill unused slots from the other group; older feedback remains
+  // observable without letting a growing archive dominate current reviews.
+  const fetchTargets = (recent: boolean, limit: number, offset = 0) => db.prepare(`
+    SELECT owner, repo, pr_number, comment_id, fingerprint, next_page
     FROM reaction_poll_targets
-    ORDER BY last_attempted_at ASC, owner ASC, repo ASC, comment_id ASC LIMIT ?`)
-    .bind(MAX_TARGETS_PER_RUN).all<ReactionTarget>();
+    WHERE created_at ${recent ? '>=' : '<'} datetime('now', '-30 days')
+    ORDER BY last_attempted_at ASC, owner ASC, repo ASC, comment_id ASC LIMIT ? OFFSET ?`)
+    .bind(limit, offset).all<ReactionTarget>();
+  const [recentResult, olderResult] = await Promise.all([fetchTargets(true, 6), fetchTargets(false, 2)]);
+  const recent = recentResult.results ?? [];
+  const older = olderResult.results ?? [];
+  const targets = [...recent, ...older];
+  if (targets.length < MAX_TARGETS_PER_RUN) {
+    const extraLimit = MAX_TARGETS_PER_RUN - targets.length;
+    if (recent.length === 6 && older.length < 2) {
+      targets.push(...((await fetchTargets(true, extraLimit, recent.length)).results ?? []));
+    } else if (older.length === 2 && recent.length < 6) {
+      targets.push(...((await fetchTargets(false, extraLimit, older.length)).results ?? []));
+    }
+  }
   const tokens = new Map<string, Promise<string>>();
   let failed = 0;
   let skipped = 0;
-  for (const target of result.results ?? []) {
+  for (const target of targets) {
     let nextPage = target.next_page;
     try {
       if (!isRepoAllowed(target.owner, target.repo, env.REPO_CONFIGS)) {
@@ -107,5 +124,5 @@ export async function syncReactionFeedback(env: WorkerEnv): Promise<{ attempted:
         .bind(nextPage, target.owner, target.repo, target.comment_id, target.next_page).run();
     }
   }
-  return { attempted: result.results?.length ?? 0, failed, skipped };
+  return { attempted: targets.length, failed, skipped };
 }

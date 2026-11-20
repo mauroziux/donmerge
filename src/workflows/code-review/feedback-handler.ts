@@ -301,7 +301,7 @@ export async function handleReactionFeedback(
 
   await recordReactionSignals(db, {
     owner: params.owner, repo: params.repo, pr_number: params.prNumber,
-    comment_id: params.commentId, fingerprint: params.commentFingerprint, next_page: 1,
+    comment_id: params.commentId, fingerprint: params.commentFingerprint,
   }, [{ id: params.reactionId!, type: feedbackType, user: params.githubUser }]);
 
   return true;

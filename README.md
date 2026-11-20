@@ -97,7 +97,8 @@ Maintainers can use `@donmerge memory list` on a PR to inspect rules and the rul
 
 GitHub does not deliver review-comment reaction webhooks. Production instead polls
 reactions on recorded DonMerge review comments every 15 minutes, up to eight
-comments per run in rotation. Each human thumbs-up or thumbs-down is recorded
+comments per run in rotation, prioritizing recent comments while reserving
+capacity for older ones. Each human thumbs-up or thumbs-down is recorded
 once by reaction ID; a reaction does not create an exception or silence a
 finding. Poll latency grows with the number of tracked comments. Removing a
 reaction does not erase the historical feedback record. Apply additive D1
