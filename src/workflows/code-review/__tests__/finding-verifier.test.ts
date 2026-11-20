@@ -134,14 +134,14 @@ describe('verifyReviewResult', () => {
   it('prioritizes the candidate file’s other hunks before unrelated files', async () => {
     const promptFn = vi.fn(async (_prompt: string) => verifierSupported);
     const filePatches = [
-      { filename: 'src/other.ts', patch: `@@ -1 +1 @@\n-old\n+${'x'.repeat(19_900)}` },
+      { filename: 'src/other.ts', patch: `@@ -1 +1 @@\n-old\n+${'x'.repeat(19_860)}` },
       { filename: 'src/api/bookings.ts', patch:
         '@@ -42 +42 @@\n-oldBooking()\n+createBooking()\n@@ -80 +80 @@\n-oldGuard()\n+newGuard()' },
     ];
     await verifyReviewResult({ promptFn, model: MODEL, repo: 'acme/rms', filePatches, result: review([critical()]) });
     const prompt = promptFn.mock.calls[0][0];
     expect(prompt).toContain('+newGuard()');
-    expect(prompt).not.toContain('x'.repeat(19_900));
+    expect(prompt).not.toContain('x'.repeat(19_860));
   });
 
   it.each([
