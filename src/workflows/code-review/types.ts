@@ -291,6 +291,8 @@ export interface ReviewResult {
   /** True when verification withheld criticals for insufficient evidence: a
    * full-coverage run must report neutral, never a green clean (plan 003-U3). */
   verificationPending?: boolean;
+  /** A potentially substantive critical candidate was withheld by the quality filter. */
+  qualityFilterPending?: boolean;
 }
 
 /**

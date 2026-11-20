@@ -204,6 +204,35 @@ describe('validateReviewResult', () => {
 // ─── normalizeReviewResult ──────────────────────────────────────────
 
 describe('normalizeReviewResult', () => {
+  it('marks a filtered potentially critical SMS abuse candidate as unresolved', () => {
+    const result: ReviewResult = {
+      approved: true,
+      summary: 'Removing the phone-change cap reopens an SMS abuse vector worth blocking on.',
+      lineComments: [],
+      criticalIssues: ['Removing the phone-change cap reopens an SMS abuse vector.'],
+      suggestions: [],
+    };
+    const normalized = normalizeReviewResult(result);
+    expect(normalized.criticalIssues).toEqual([]);
+    expect(normalized.qualityFilterPending).toBe(true);
+  });
+
+  it('does not mark a clearly stylistic rejected critical as unresolved', () => {
+    const result: ReviewResult = {
+      approved: false, summary: 'Sort the imports.', lineComments: [],
+      criticalIssues: ['Imports should be sorted alphabetically.'], suggestions: [],
+    };
+    expect(normalizeReviewResult(result).qualityFilterPending).toBeUndefined();
+  });
+
+  it('does not treat an explicit severity override as a filtered critical', () => {
+    const result: ReviewResult = {
+      approved: false, summary: 'A review suggestion.', criticalIssues: [], suggestions: [],
+      lineComments: [createReviewComment({ path: 'src/a.ts', severity: 'critical', body: 'A missing null check causes a crash.' })],
+    };
+    expect(normalizeReviewResult(result, [], { 'src/a.ts': 'suggestion' }).qualityFilterPending).toBeUndefined();
+  });
+
   it('should normalize approved=true when no issues', () => {
     const result: ReviewResult = {
       approved: false, // LLM might say false, but normalization corrects

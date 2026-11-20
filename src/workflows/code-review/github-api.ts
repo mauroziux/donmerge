@@ -238,13 +238,15 @@ export async function completeCheckRun(
   missingPolicyFiles: string[] = []
 ): Promise<void> {
   const approved = !hasBlockingFindings(review);
-  const conclusion = checkConclusion(!approved, coverage, review.verificationPending || missingPolicyFiles.length > 0);
+  const conclusion = checkConclusion(!approved, coverage, review.verificationPending || review.qualityFilterPending || missingPolicyFiles.length > 0);
   const title = !approved
     ? '⚠️ Ojo, some things need attention'
     : conclusion === 'success'
       ? '✅ All good, compadre!'
       : missingPolicyFiles.length > 0
         ? '🟡 Review completed with incomplete policy'
+      : review.qualityFilterPending
+        ? '🟡 Review needs attention — critical candidate withheld'
       : review.verificationPending
         ? '🟡 No blocking findings verified — unverified finding(s) pending'
         : '🟡 Partial review — no blocking issues in the reviewed scope';
@@ -252,7 +254,9 @@ export async function completeCheckRun(
   const critical =
     criticalFindings.length > 0
       ? criticalFindings.map((issue) => `- ${issue}`).join('\n')
-      : '- None, ¡nada que objetar!';
+      : review.qualityFilterPending
+        ? '- None confirmed; a critical candidate was withheld.'
+        : '- None, ¡nada que objetar!';
   const suggestions =
     review.suggestions.length > 0
       ? review.suggestions.map((issue) => `- ${issue}`).join('\n')
@@ -261,7 +265,10 @@ export async function completeCheckRun(
   const droppedNote = formatDroppedCommentsNote(droppedComments);
   const coverageNote = coverage ? `\n\n${coverageReportText(coverage)}` : '';
   const policyNote = missingPolicyFiles.length ? `\n\n${formatMissingPolicyFiles(missingPolicyFiles)}` : '';
-  const text = `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}${droppedNote}${coverageNote}${policyNote}`;
+  const qualityNote = review.qualityFilterPending
+    ? '\n\nA potentially critical candidate was withheld by the quality filter. Inspect the summary and reviewed changes; this review does not certify the PR as clean.'
+    : '';
+  const text = `🔴 Critical Issues:\n${critical}\n\n💡 Suggestions:\n${suggestions}${droppedNote}${coverageNote}${policyNote}${qualityNote}`;
   // When comments were dropped, flag it in the title so it is visible at a glance.
   const finalTitle = droppedComments.length > 0 ? `${title} · ${droppedComments.length} comment(s) dropped` : title;
 
@@ -1018,8 +1025,8 @@ export async function updatePRDescription(
  * Build the DonMerge section for the PR description.
  */
 function buildDonmergeSection(review: ReviewResult, coverage?: CoverageManifest, missingPolicyFiles: string[] = []): string {
-  const statusEmoji = !review.approved ? '⚠️' : missingPolicyFiles.length ? '🟡' : '✅';
-  const statusText = !review.approved ? 'Ojo, some things need attention' : missingPolicyFiles.length ? 'Review completed with incomplete policy' : 'All good, compadre!';
+  const statusEmoji = !review.approved ? '⚠️' : missingPolicyFiles.length || review.qualityFilterPending || review.verificationPending ? '🟡' : '✅';
+  const statusText = !review.approved ? 'Ojo, some things need attention' : missingPolicyFiles.length ? 'Review completed with incomplete policy' : review.qualityFilterPending || review.verificationPending ? 'Review needs further attention' : 'All good, compadre!';
   const timestamp = new Date().toISOString();
 
   let section = `
@@ -1076,6 +1083,10 @@ ${riskAssessment}
 
   if (review.verificationPending) {
     section += `\n### 🔍 Verification\nSome critical finding(s) could not be verified with the available evidence. This review does not certify the PR as clean; re-trigger to re-establish them.\n`;
+  }
+
+  if (review.qualityFilterPending) {
+    section += `\n### 🔍 Withheld critical candidate\nA potentially critical candidate was withheld by the quality filter. Inspect the summary and reviewed changes; this review does not certify the PR as clean.\n`;
   }
 
   section += `\n---\n*Reviewed by DonMerge 🤠 — ${timestamp}*\n`;
