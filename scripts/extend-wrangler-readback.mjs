@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Temporary workaround for https://github.com/cloudflare/workers-sdk/issues/16717.
 // Restrict it to the exact pinned Wrangler bundle; a dependency upgrade must
@@ -48,7 +48,7 @@ export function extendReadbackRetry(source, version) {
   return source.replace(original, replacement);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const require = createRequire(import.meta.url);
     const packageFile = require.resolve('wrangler/package.json');
