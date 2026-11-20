@@ -173,7 +173,7 @@ describe('handleCommentFeedback', () => {
     });
 
     expect(result).toBe(true);
-    // Should call recordFeedback (prepare → bind → run) and upsertLearning (prepare → bind → first → prepare → bind → run)
+    // The scoped feedback transaction is prepared for the recorded finding.
     expect(mock.prepare).toHaveBeenCalled();
   });
 
