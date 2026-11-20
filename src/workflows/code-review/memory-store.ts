@@ -330,14 +330,16 @@ export function selectScopedLearnings(learnings: ScopedLearning[], paths: string
   const ranked = learnings.flatMap(learning => {
     const scope = learning.scope_path.replace(/\/+$/, '');
     let rank = 0;
-    if (learning.scope_type === 'file' && paths.includes(scope)) rank = 10000 + scope.length;
+    let depth = 0;
+    if (learning.scope_type === 'file' && paths.includes(scope)) rank = 3;
     if (learning.scope_type === 'directory' && scope && paths.some(path => path.startsWith(scope + '/'))) {
-      rank = 1000 + scope.split('/').length;
+      rank = 2;
+      depth = scope.split('/').length;
     }
     if (learning.scope_type === 'repo') rank = 1;
-    return rank ? [{ learning, rank }] : [];
+    return rank ? [{ learning, rank, depth }] : [];
   });
-  ranked.sort((a, b) => b.rank - a.rank || b.learning.confidence - a.learning.confidence || a.learning.id - b.learning.id);
+  ranked.sort((a, b) => b.rank - a.rank || b.depth - a.depth || b.learning.confidence - a.learning.confidence || a.learning.id - b.learning.id);
   const seen = new Set<string>();
   const selected: ScopedLearning[] = [];
   let characters = 0;

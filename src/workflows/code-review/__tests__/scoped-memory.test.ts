@@ -68,6 +68,17 @@ describe('scoped review memory', () => {
     expect(selectScopedLearnings(rules, ['src/billing/invoice.ts']).map(rule => rule.id)).toEqual([4, 2, 3, 1]);
   });
 
+  it('breaks ties between exact file rules by confidence and stable ID, not path length', () => {
+    const rules = [
+      { ...learning(8, 'file', 'src/long/path/file.ts', 'long path'), confidence: 55 },
+      { ...learning(5, 'file', 'a.ts', 'short path'), confidence: 80 },
+      { ...learning(2, 'file', 'b.ts', 'same confidence'), confidence: 80 },
+      { ...learning(1, 'directory', 'src/long/path', 'directory'), confidence: 100 },
+    ];
+    expect(selectScopedLearnings(rules, ['src/long/path/file.ts', 'a.ts', 'b.ts']).map(rule => rule.id))
+      .toEqual([2, 5, 8, 1]);
+  });
+
   it('deduplicates text and bounds the amount of injected memory', () => {
     const rules = [
       learning(1, 'file', 'a.ts', 'same'),
