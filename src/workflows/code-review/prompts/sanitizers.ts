@@ -39,7 +39,12 @@ export function sanitizePromptInput(input: string, maxLength = MAX_PROMPT_INPUT_
  * explicit prompt instructions that the quoted data is not executable.
  */
 export function quoteUntrustedPromptData(input: string, maxLength = 2000): string {
-  return JSON.stringify(sanitizePromptInput(input, maxLength))
+  return quoteUntrustedProjectData(sanitizePromptInput(input, maxLength));
+}
+
+/** Quote project files as data without altering their contents or truncating them. */
+export function quoteUntrustedProjectData(input: string): string {
+  return JSON.stringify(input)
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e');
 }
