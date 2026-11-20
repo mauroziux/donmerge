@@ -19,6 +19,8 @@ import {
   verifyReviewResult,
 } from '../finding-verifier';
 import type { ModelConfig } from '../../../lib/llm-providers';
+import { hasBlockingFindings } from '../processor-utils';
+import { checkConclusion } from '../review-coverage';
 
 const MODEL: ModelConfig = { providerID: 'kimi', modelID: 'k3' };
 
@@ -122,7 +124,7 @@ describe('verifyReviewResult', () => {
       model: MODEL,
       repo: 'acme/rms',
       diffText: 'd',
-      result: review([critical()]),
+      result: { ...review([critical()]), criticalIssues: [] },
     });
 
     expect(output.result.lineComments).toHaveLength(0);
@@ -133,6 +135,28 @@ describe('verifyReviewResult', () => {
     expect(output.result.summary).toContain('Withheld');
     // A refuted claim is wrong, not pending: no verificationPending flag
     expect(output.result.verificationPending).toBeUndefined();
+  });
+
+  it('keeps the check neutral when a refuted inline finding has an unrelated critical summary', async () => {
+    const input = {
+      ...review([critical()]),
+      criticalIssues: ['A separate SQL injection permits an attacker to read another tenant’s data.'],
+    };
+    const output = await verifyReviewResult({
+      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', diffText: 'd', result: input,
+    });
+    expect(output.result.lineComments).toEqual([]);
+    expect(output.result.verificationPending).toBe(true);
+    expect(output.result.summary).toContain('A separate SQL injection');
+    expect(checkConclusion(hasBlockingFindings(output.result), undefined, output.result.verificationPending)).toBe('neutral');
+  });
+
+  it('preserves an earlier pending-verification state when a later claim is refuted', async () => {
+    const input = { ...review([critical()]), criticalIssues: [], verificationPending: true };
+    const output = await verifyReviewResult({
+      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', diffText: 'd', result: input,
+    });
+    expect(output.result.verificationPending).toBe(true);
   });
 
   it('verifier infrastructure failure withholds the finding (never publishes unverified)', async () => {
@@ -185,10 +209,11 @@ describe('verifyReviewResult', () => {
     expect(promptFn).toHaveBeenCalledTimes(2);
     expect(output.result.lineComments).toHaveLength(1);
     expect(output.result.lineComments[0].issueKey).toBe('missing-idempotency-key');
-    expect(output.notes).toHaveLength(1);
+    expect(output.notes.filter(note => note.includes('refuted'))).toHaveLength(1);
     // criticalIssues rebuilt from the SURVIVING inline findings
     expect(output.result.criticalIssues).toHaveLength(1);
     expect(output.result.criticalIssues[0]).toContain('idempotency');
+    expect(output.result.verificationPending).toBe(true);
   });
 });
 
