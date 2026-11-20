@@ -265,7 +265,7 @@ export function normalizeReviewResult(
   // false. Keep the check neutral until the concern can be reviewed, rather
   // than converting a model/filter disagreement into a clean verdict.
   const qualityFilterPending = rawCriticalIssues.some(
-    (issue) => !shouldKeepCriticalIssue(issue) && !isClearlyStyleNoise(issue)
+    (issue) => issue.trim() !== '' && !shouldKeepCriticalIssue(issue) && !isClearlyStyleNoise(issue)
   ) || overriddenLineComments.some((comment) => {
     if (comment.severity !== 'critical' || shouldKeepLineComment(comment, patternWeights)) return false;
     const searchable = `${comment.body ?? ''}\n${comment.issueKey ?? ''}\n${comment.ruleId ?? ''}`;

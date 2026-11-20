@@ -204,6 +204,16 @@ describe('validateReviewResult', () => {
 // ─── normalizeReviewResult ──────────────────────────────────────────
 
 describe('normalizeReviewResult', () => {
+  it('ignores empty critical entries instead of marking a review unresolved', () => {
+    const result: ReviewResult = {
+      approved: true, summary: 'No issues found.', lineComments: [],
+      criticalIssues: ['', '   ', '\n'], suggestions: [],
+    };
+    const normalized = normalizeReviewResult(result);
+    expect(normalized.criticalIssues).toEqual([]);
+    expect(normalized.qualityFilterPending).toBeUndefined();
+  });
+
   it('marks a filtered potentially critical SMS abuse candidate as unresolved', () => {
     const result: ReviewResult = {
       approved: true,
