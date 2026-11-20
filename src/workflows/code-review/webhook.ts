@@ -628,7 +628,7 @@ export async function processGitHubCodeReviewWebhook(
             context.prNumber,
             context.inReplyToId ?? context.commentId,
             context.commentType ?? 'review',
-            '🤖 **Learned.** I will apply this preference to future reviews of this repo.',
+            '🤖 **Recorded.** Use the memory list command to check its status. Exceptions require maintainer approval.',
             token
           );
         } catch (error) {

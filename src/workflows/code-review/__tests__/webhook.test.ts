@@ -449,6 +449,8 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
     // default directive verdict so per-test overrides start from a clean state.
     vi.mocked(classifyCommandIntent).mockReset();
     vi.mocked(classifyCommandIntent).mockResolvedValue('directive');
+    vi.mocked(githubFetch).mockReset();
+    vi.mocked(githubFetch).mockResolvedValue({ permission: 'write', role_name: 'maintain' });
   });
 
   it('should acknowledge an active duplicate without creating a Workflow', async () => {
@@ -707,6 +709,7 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
   it('stores a preference only when it replies to a verified DonMerge finding', async () => {
     mockedHandleCommentFeedback.mockResolvedValue(true);
     mockedResolveToken.mockResolvedValue('ghp_test_token');
+    vi.mocked(githubFetch).mockResolvedValue({ permission: 'write', role_name: 'maintain' });
     mockedFetchComment.mockResolvedValue({
       id: 88, body: 'review finding', in_reply_to_id: null,
       user: { login: 'donmerge[bot]', type: 'Bot' },
@@ -719,17 +722,34 @@ describe('processGitHubCodeReviewWebhook feedback branch', () => {
       feedback: { type: 'preference', text: 'Focus on: src/auth.ts' },
       commentId: 77,
       inReplyToId: 88,
-      githubUser: 'contributor',
+      githubUser: 'maintainer',
     });
 
     expect(mockedHandleCommentFeedback).toHaveBeenCalledWith(mockDb, {
       owner: 'tableoltd',
       repo: 'test-repo',
       prNumber: 42,
-      githubUser: 'contributor',
+      githubUser: 'maintainer',
       commentBody: '@donmerge preference Focus on: src/auth.ts',
       commentId: 77,
     });
+  });
+
+  it('does not store a preference from a contributor without maintain permission', async () => {
+    mockedResolveToken.mockResolvedValue('ghp_test_token');
+    vi.mocked(githubFetch).mockResolvedValue({ permission: 'write', role_name: 'write' });
+    mockedFetchComment.mockResolvedValue({
+      id: 88, body: 'review finding', in_reply_to_id: null,
+      user: { login: 'donmerge[bot]', type: 'Bot' },
+    });
+    mockedParseFingerprint.mockReturnValue({ fingerprint: 'fp-preference', version: 1 });
+    mockDbFirst.mockResolvedValue({ id: 1 });
+    await processGitHubCodeReviewWebhook(mockEnv, {
+      ...baseContext,
+      feedback: { type: 'preference', text: "Don't comment on auth" },
+      commentId: 77, inReplyToId: 88, githubUser: 'contributor',
+    });
+    expect(mockedHandleCommentFeedback).not.toHaveBeenCalled();
   });
 
   it('does not execute a verified dismiss command when the classifier reads it as a question', async () => {
