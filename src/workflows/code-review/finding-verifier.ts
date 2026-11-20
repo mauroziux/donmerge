@@ -142,16 +142,17 @@ async function verifyCandidate(
  * Verify every critical lineComment of a review.
  *
  *   - `supported` criticals stay and may block.
- *   - `refuted` criticals are withheld — the claim was wrong; a green verdict
- *     for the rest is correct.
+ *   - `refuted` criticals are withheld. The rest may be green only if no
+ *     independent critical summary or earlier verification limitation remains.
  *   - `insufficient_evidence` criticals are withheld AND mark the result
  *     `verificationPending`, so a full-coverage run can never report a green
  *     clean check while an unconfirmed critical limitation exists — the check
  *     lands neutral until the finding is re-established.
  *
- * Non-critical comments pass through untouched. criticalIssues is rebuilt
- * from the surviving inline findings (never an independent list that could
- * bypass evidence).
+ * Non-critical comments pass through untouched. When a finding is withheld,
+ * free-text critical summaries cannot be reliably associated with inline
+ * comments. Preserve them as unverified limitations rather than dropping a
+ * potentially independent critical and certifying the review as clean.
  */
 export async function verifyReviewResult(args: {
   promptFn: PromptFn;
@@ -198,27 +199,38 @@ export async function verifyReviewResult(args: {
     return { result, notes };
   }
 
+  // criticalIssues are free text, not stable identifiers linked to inline
+  // comments. A refuted inline claim does not refute every critical summary.
+  const unresolvedSummaries = result.criticalIssues.filter(issue => issue.trim().length > 0);
+  for (const issue of unresolvedSummaries.slice(0, 10)) {
+    notes.push(`Unverified critical summary (not reliably linked to an inline finding): ${issue.trim().slice(0, 300)}`);
+  }
+  if (unresolvedSummaries.length > 10) {
+    notes.push(`${unresolvedSummaries.length - 10} additional critical summaries could not be linked to an inline finding.`);
+  }
+  const unverifiedCount = insufficient + unresolvedSummaries.length;
+
   return {
     result: {
       ...result,
       lineComments: kept,
       // Rebuilt from the survivors: consistent with the inline evidence.
       criticalIssues: keptCriticals.map(summarizeCritical),
-      verificationPending: insufficient > 0 || undefined,
-      summary: appendNotes(result.summary, notes, insufficient),
+      verificationPending: result.verificationPending || unverifiedCount > 0 || undefined,
+      summary: appendNotes(result.summary, notes, unverifiedCount),
     },
     notes,
   };
 }
 
-function appendNotes(summary: string, notes: string[], insufficient: number): string {
+function appendNotes(summary: string, notes: string[], unverifiedCount: number): string {
   if (notes.length === 0) return summary;
   const block = notes.map((n) => `- ${n}`).join('\n');
   const pendingLine =
-    insufficient > 0
-      ? `\n⚠️ ${insufficient} finding(s) remain unverified (insufficient evidence) — this run does not certify the PR as clean.`
+    unverifiedCount > 0
+      ? '\n⚠️ Critical concerns remain unverified due to insufficient evidence or unmatched summaries — this run does not certify the PR as clean.'
       : '';
-  return `${summary}\n\n---\n🔍 Verification withheld ${notes.length} unconfirmed finding(s):\n${block}${pendingLine}`;
+  return `${summary}\n\n---\n🔍 Verification notes:\n${block}${pendingLine}`;
 }
 
 /**
