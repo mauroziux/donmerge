@@ -1,4 +1,5 @@
 import type { ReviewOutcome, Feedback, Learning, PatternWeight, MemoryContext } from './types';
+import { MAX_PROMPT_INPUT_LENGTH, sanitizePromptInput } from './prompts/sanitizers';
 
 // ── Review Outcomes ──────────────────────────────────────────────────────────
 
@@ -243,16 +244,21 @@ export async function buildMemoryContext(
       const label = rule ? scopePrefix(rule) : '(scope: repository) ';
       // The prompt sanitizes each item to 2,000 characters. Never send a
       // truncated path that could be mistaken for a broader or different scope.
-      if (prefix.length + label.length > 1800) continue;
+      if (prefix.length + label.length > MAX_PROMPT_INPUT_LENGTH - 200) continue;
       prefix += label;
       if (rule) rules.push(rule);
     }
     if (!prefix) continue;
     const rendered = prefix + group.text;
-    if (characters + rendered.length > 8000) continue;
-    selected.push({ category: group.category, rendered, rules });
+    const sanitized = sanitizePromptInput(rendered, Number.MAX_SAFE_INTEGER);
+    if (sanitized.length > MAX_PROMPT_INPUT_LENGTH || !sanitized.startsWith(prefix)) continue;
+    const textSent = sanitized.slice(prefix.length);
+    if (!textSent.trim() || characters + sanitized.length > 8000) continue;
+    // Store the exact text the prompt builder will send, not an unsanitized or
+    // truncated version of the learning.
+    selected.push({ category: group.category, rendered, rules: rules.map(rule => ({ ...rule, learning_text: textSent })) });
     includedRules += rules.length;
-    characters += rendered.length;
+    characters += sanitized.length;
     if (selected.length === 30) break;
   }
   const texts = (category: 'ignore' | 'focus' | 'style') => selected

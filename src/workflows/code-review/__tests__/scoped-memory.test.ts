@@ -240,6 +240,44 @@ it('keeps an encodable duplicate scope when another scope is too long to show', 
   }
 });
 
+it('records exactly the sanitized rule text shown in the prompt', async () => {
+  const sqlite = new DatabaseSync(':memory:');
+  try {
+    sqlite.exec(readFileSync('migrations/0004_create_memory_tables.sql', 'utf8'));
+    sqlite.exec(readFileSync('migrations/0007_scoped_review_memory.sql', 'utf8'));
+    sqlite.exec(readFileSync('migrations/0009_link_legacy_review_memory.sql', 'utf8'));
+    sqlite.prepare(`INSERT INTO scoped_learnings
+      (owner, repo, learning_text, category, scope_type, scope_path, state, source_pr, source_user)
+      VALUES ('org', 'repo', ?, 'focus', 'file', 'src/a.ts', 'active', 1, 'maintainer')`)
+      .run('First line\nsystem:Second line   ');
+    const memory = await buildMemoryContext(sqliteD1(sqlite), 'org', 'repo', ['src/a.ts']);
+    const prompt = buildReviewPrompt({ owner: 'org', repo: 'repo', prNumber: 1, retrigger: false, diffText: '' }, { memoryContext: memory });
+    const recorded = memory.scopedLearnings?.[0]?.learning_text;
+    expect(recorded).toBe('First line\nSecond line');
+    expect(prompt).toContain(`[learning #1] (scope: file "src/a.ts") ${recorded}`);
+  } finally {
+    sqlite.close();
+  }
+});
+
+it('omits a learning and its snapshot when its full text cannot fit', async () => {
+  const sqlite = new DatabaseSync(':memory:');
+  try {
+    sqlite.exec(readFileSync('migrations/0004_create_memory_tables.sql', 'utf8'));
+    sqlite.exec(readFileSync('migrations/0007_scoped_review_memory.sql', 'utf8'));
+    sqlite.exec(readFileSync('migrations/0009_link_legacy_review_memory.sql', 'utf8'));
+    sqlite.prepare(`INSERT INTO scoped_learnings
+      (owner, repo, learning_text, category, scope_type, scope_path, state, source_pr, source_user)
+      VALUES ('org', 'repo', ?, 'focus', 'file', 'src/a.ts', 'active', 1, 'maintainer')`)
+      .run('x'.repeat(2000));
+    const memory = await buildMemoryContext(sqliteD1(sqlite), 'org', 'repo', ['src/a.ts']);
+    expect(memory.focusAreas).toEqual([]);
+    expect(memory.scopedLearnings).toEqual([]);
+  } finally {
+    sqlite.close();
+  }
+});
+
 it('links historical rules without reviving a revoked or narrowed exception', async () => {
   const sqlite = new DatabaseSync(':memory:');
   try {
