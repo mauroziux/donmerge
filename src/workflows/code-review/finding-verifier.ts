@@ -19,6 +19,7 @@ import * as v from 'valibot';
 
 import type { ModelConfig } from '../../lib/llm-providers';
 import type { FilePatch, ReviewComment, ReviewResult } from './types';
+import { commentableLinesForFile, type CommentableLines } from './comment-anchors';
 import { withTimeout } from './utils';
 import { extractJsonFromResponse, safeJsonParse } from './utils';
 
@@ -114,7 +115,7 @@ function verificationEvidence(candidate: ReviewComment, files: FilePatch[]): str
   if (matches.length !== 1 || !matches[0].patch || !Number.isSafeInteger(candidate.line) || candidate.line < 1) return null;
   if (candidate.side !== 'LEFT' && candidate.side !== 'RIGHT') return null;
 
-  type Hunk = { filename: string; text: string; anchors: { LEFT: Set<number>; RIGHT: Set<number> } };
+  type Hunk = { filename: string; text: string; anchors: CommentableLines };
   const hunks: Hunk[] = [];
   for (const file of files) {
     if (!file.patch) continue;
@@ -123,28 +124,26 @@ function verificationEvidence(candidate: ReviewComment, files: FilePatch[]): str
       const header = lines[i].match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
       if (!header) { i++; continue; }
       const start = i++;
-      let oldLine = Number(header[1]);
-      let newLine = Number(header[3]);
+      const oldLine = Number(header[1]);
+      const newLine = Number(header[3]);
       let oldRemaining = Number(header[2] ?? 1);
       let newRemaining = Number(header[4] ?? 1);
-      const anchors = { LEFT: new Set<number>(), RIGHT: new Set<number>() };
       let valid = [oldLine, newLine, oldRemaining, newRemaining].every(Number.isSafeInteger);
       while (i < lines.length && !lines[i].startsWith('@@ ')) {
         const line = lines[i++];
         if (line.startsWith('\\')) continue;
         if (line === '' && i === lines.length) continue;
         if (line.startsWith(' ') || line.startsWith('-')) {
-          anchors.LEFT.add(oldLine++);
           oldRemaining--;
         }
         if (line.startsWith(' ') || line.startsWith('+')) {
-          anchors.RIGHT.add(newLine++);
           newRemaining--;
         }
         if (![' ', '+', '-'].includes(line[0])) valid = false;
       }
       if (valid && oldRemaining === 0 && newRemaining === 0) {
-        hunks.push({ filename: file.filename, text: lines.slice(start, i).join('\n'), anchors });
+        const text = lines.slice(start, i).join('\n');
+        hunks.push({ filename: file.filename, text, anchors: commentableLinesForFile(text) });
       }
     }
   }
@@ -154,8 +153,11 @@ function verificationEvidence(candidate: ReviewComment, files: FilePatch[]): str
   const selected = [format(target[0])];
   if (selected[0].length > MAX_VERIFIER_DIFF_CHARS) return null;
   let size = selected[0].length;
-  for (const hunk of hunks) {
-    if (hunk === target[0]) continue;
+  // Same-file context is more likely to contain guards relevant to the claim.
+  const remaining = hunks.filter(hunk => hunk !== target[0]);
+  const ordered = [...remaining.filter(hunk => hunk.filename === candidate.path),
+    ...remaining.filter(hunk => hunk.filename !== candidate.path)];
+  for (const hunk of ordered) {
     const section = format(hunk);
     if (size + 2 + section.length > MAX_VERIFIER_DIFF_CHARS) continue;
     selected.push(section);
