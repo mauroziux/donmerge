@@ -295,6 +295,8 @@ export interface ReviewResult {
   verificationPending?: boolean;
   /** A potentially substantive critical candidate was withheld by the quality filter. */
   qualityFilterPending?: boolean;
+  /** Memory reached the model but the record of its provenance could not be saved. */
+  memoryProvenancePending?: boolean;
   /** Previous DonMerge review threads still need a human resolution. */
   unresolvedReviewThreads?: number;
 }

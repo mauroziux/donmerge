@@ -357,6 +357,33 @@ describe('publishReview verdict matrix', () => {
       expect(description.body).toContain('Review needs further attention');
     }
   );
+  it.each([
+    ['clean', cleanReview(), 'neutral'],
+    ['blocking', blockingReview(), 'failure'],
+  ] as const)('reports missing memory provenance for a %s review without seeding incremental coverage',
+    async (_label, review, expectedConclusion) => {
+      const calls = setupGitHubMock();
+      const bindings: unknown[][] = [];
+      const db = { prepare: vi.fn(() => ({ bind: (...args: unknown[]) => {
+        bindings.push(args);
+        return { run: async () => ({}) };
+      } })), batch: vi.fn(async () => []) };
+      const input = llmResult(fullCoverage(), { ...review, memoryProvenancePending: true });
+      const { stub } = setupProcessorStub([]);
+      const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+      await (workflow as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> }).publishReview(input, stub);
+
+      const check = calls.find(call => call.url.includes('/check-runs') && call.method === 'PATCH')?.body as {
+        conclusion: string; output: { text: string };
+      };
+      expect(check.conclusion).toBe(expectedConclusion);
+      expect(check.output.text).toContain('memory provenance could not be recorded');
+      const description = calls.find(call => call.url.includes('/pulls/42') && call.method === 'PATCH')?.body as { body: string };
+      expect(description.body).toContain('memory provenance could not be recorded');
+      expect(bindings.find(args => args.length === 7)?.at(-1)).toBe(0);
+      expect(bindings.some(args => args.length === 6)).toBe(false);
+    }
+  );
   it('publishes a neutral result and disables inherited coverage when policy is missing', async () => {
     const calls = setupGitHubMock();
     const bindings: unknown[][] = [];
