@@ -215,25 +215,55 @@ export async function buildMemoryContext(
       } : undefined,
     })),
   ];
-  const selected: typeof candidates = [];
-  const seen = new Set<string>();
-  let characters = 0;
+  const scopePrefix = (rule: ScopedLearning): string => {
+    const scope = rule.scope_type === 'repo' ? 'repository'
+      : `${rule.scope_type} ${JSON.stringify(rule.scope_path).replace(/[`\u007f-\uffff]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)}`;
+    return `[learning #${rule.id}] (scope: ${scope}) `;
+  };
+  // Identical text can have different legitimate scopes. Combine it once in
+  // the prompt while retaining every included scope and learning identifier.
+  const groups = new Map<string, { text: string; category: 'ignore' | 'focus' | 'style'; rules: Array<ScopedLearning | undefined> }>();
   for (const candidate of candidates) {
-    if (seen.has(candidate.text) || characters + candidate.text.length > 8000) continue;
-    selected.push(candidate);
-    seen.add(candidate.text);
-    characters += candidate.text.length;
+    const key = JSON.stringify([candidate.category, candidate.text]);
+    let group = groups.get(key);
+    if (!group) {
+      group = { text: candidate.text, category: candidate.category, rules: [] };
+      groups.set(key, group);
+    }
+    if (!group.rules.some(rule => rule?.id === candidate.scoped?.id)) group.rules.push(candidate.scoped);
+  }
+  const selected: Array<{ category: 'ignore' | 'focus' | 'style'; rendered: string; rules: ScopedLearning[] }> = [];
+  let characters = 0;
+  let includedRules = 0;
+  for (const group of groups.values()) {
+    let prefix = '';
+    const rules: ScopedLearning[] = [];
+    for (const rule of group.rules) {
+      if (rule && includedRules + rules.length >= 30) continue;
+      const label = rule ? scopePrefix(rule) : '(scope: repository) ';
+      // The prompt sanitizes each item to 2,000 characters. Never send a
+      // truncated path that could be mistaken for a broader or different scope.
+      if (prefix.length + label.length > 1800) continue;
+      prefix += label;
+      if (rule) rules.push(rule);
+    }
+    if (!prefix) continue;
+    const rendered = prefix + group.text;
+    if (characters + rendered.length > 8000) continue;
+    selected.push({ category: group.category, rendered, rules });
+    includedRules += rules.length;
+    characters += rendered.length;
     if (selected.length === 30) break;
   }
   const texts = (category: 'ignore' | 'focus' | 'style') => selected
     .filter(item => item.category === category)
-    .map(item => item.scoped ? `[learning #${item.scoped.id}] ${item.text}` : item.text);
+    .map(item => item.rendered);
 
   return {
     ignorePatterns: texts('ignore'),
     focusAreas: texts('focus'),
     preferences: texts('style'),
-    scopedLearnings: selected.flatMap(item => item.scoped ? [item.scoped] : []),
+    scopedLearnings: selected.flatMap(item => item.rules),
     highConfidenceRules: (patternsResult.results ?? []).map((r: { rule_id: string; confidence: number }) => ({
       ruleId: r.rule_id,
       confidence: r.confidence,
@@ -330,23 +360,27 @@ export function selectScopedLearnings(learnings: ScopedLearning[], paths: string
   const ranked = learnings.flatMap(learning => {
     const scope = learning.scope_path.replace(/\/+$/, '');
     let rank = 0;
-    if (learning.scope_type === 'file' && paths.includes(scope)) rank = 10000 + scope.length;
+    let depth = 0;
+    if (learning.scope_type === 'file' && paths.includes(scope)) rank = 3;
     if (learning.scope_type === 'directory' && scope && paths.some(path => path.startsWith(scope + '/'))) {
-      rank = 1000 + scope.split('/').length;
+      rank = 2;
+      depth = scope.split('/').length;
     }
     if (learning.scope_type === 'repo') rank = 1;
-    return rank ? [{ learning, rank }] : [];
+    return rank ? [{ learning, rank, depth }] : [];
   });
-  ranked.sort((a, b) => b.rank - a.rank || b.learning.confidence - a.learning.confidence || a.learning.id - b.learning.id);
+  ranked.sort((a, b) => b.rank - a.rank || b.depth - a.depth || b.learning.confidence - a.learning.confidence || a.learning.id - b.learning.id);
   const seen = new Set<string>();
   const selected: ScopedLearning[] = [];
   let characters = 0;
   for (const { learning } of ranked) {
-    if (seen.has(learning.learning_text) || characters + learning.learning_text.length > 8000) continue;
-    seen.add(learning.learning_text);
+    const key = JSON.stringify([learning.category, learning.learning_text]);
+    if (!seen.has(key)) {
+      if (seen.size >= 30 || characters + learning.learning_text.length > 8000) continue;
+      seen.add(key);
+      characters += learning.learning_text.length;
+    }
     selected.push(learning);
-    characters += learning.learning_text.length;
-    if (selected.length === 30) break;
   }
   return selected;
 }

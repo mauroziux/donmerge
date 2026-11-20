@@ -293,6 +293,11 @@ export async function processGitHubCodeReviewWebhook(
         return;
       }
       if (context.feedback.type === 'memory_list') {
+        const sourceLink = (pr: number | null, commentId: number | null): string => {
+          if (pr == null) return ' (source unavailable)';
+          if (pr <= 0) return ' (historical)';
+          return ` ([source](https://github.com/${context.owner}/${context.repo}/pull/${pr}${commentId ? `#discussion_r${commentId}` : ''}))`;
+        };
         const rows = await env.DB.prepare(`
           SELECT id, learning_text, scope_type, scope_path, state, source_pr, source_comment_id
           FROM scoped_learnings WHERE owner = ? AND repo = ?
@@ -303,21 +308,23 @@ export async function processGitHubCodeReviewWebhook(
         }>();
         const lines = (rows.results ?? []).map(row => {
           const text = row.learning_text.replace(/[\r\n]/g, ' ').replace(/@/g, '@\u200b').slice(0, 300);
-          const source = row.source_pr > 0
-            ? ` ([source](https://github.com/${context.owner}/${context.repo}/pull/${row.source_pr}${row.source_comment_id ? `#discussion_r${row.source_comment_id}` : ''}))`
-            : ' (historical)';
+          const source = sourceLink(row.source_pr, row.source_comment_id);
           return `- #${row.id} [${row.state}] ${row.scope_type} ${row.scope_path}: ${text}${source}`;
         });
         const used = await env.DB.prepare(`
-          SELECT head_sha, run_id, learning_id, learning_text, scope_type, scope_path, cited
-          FROM review_learning_snapshots
-          WHERE owner = ? AND repo = ? AND pr_number = ?
-          ORDER BY rowid DESC LIMIT 30
+          SELECT snapshot.head_sha, snapshot.run_id, snapshot.learning_id, snapshot.learning_text,
+                 snapshot.scope_type, snapshot.scope_path, snapshot.cited, rule.source_pr, rule.source_comment_id
+          FROM review_learning_snapshots snapshot
+          LEFT JOIN scoped_learnings rule ON rule.id = snapshot.learning_id
+            AND rule.owner = snapshot.owner AND rule.repo = snapshot.repo
+          WHERE snapshot.owner = ? AND snapshot.repo = ? AND snapshot.pr_number = ?
+          ORDER BY snapshot.rowid DESC LIMIT 30
         `).bind(context.owner, context.repo, context.prNumber).all<{
           head_sha: string; run_id: string; learning_id: number; learning_text: string; scope_type: string; scope_path: string; cited: number;
+          source_pr: number | null; source_comment_id: number | null;
         }>();
         const applied = (used.results ?? []).map(row =>
-          `- ${row.head_sha.slice(0, 12)} (run ${row.run_id}) #${row.learning_id} ${row.scope_type} ${row.scope_path}${row.cited ? ' (cited)' : ''}: ${row.learning_text.replace(/[\r\n]/g, ' ').replace(/@/g, '@\u200b').slice(0, 300)}`
+          `- ${row.head_sha.slice(0, 12)} (run ${row.run_id}) #${row.learning_id} ${row.scope_type} ${row.scope_path}${row.cited ? ' (cited)' : ''}: ${row.learning_text.replace(/[\r\n]/g, ' ').replace(/@/g, '@\u200b').slice(0, 300)}${sourceLink(row.source_pr, row.source_comment_id)}`
         );
         const body = [
           '## Scoped learnings', lines.length ? lines.join('\n') : 'No scoped learnings found.',

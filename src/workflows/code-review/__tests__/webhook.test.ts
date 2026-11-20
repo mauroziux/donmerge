@@ -3,6 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
 
 // We need to mock the imports before importing webhook
 vi.mock('../github-auth', () => ({
@@ -78,6 +80,41 @@ const mockedHandleCommentFeedback = vi.mocked(handleCommentFeedback);
 const mockedHandleReactionFeedback = vi.mocked(handleReactionFeedback);
 
 describe('scoped memory authorization', () => {
+  it('links each injected rule to its source even when it is outside the recent-rule list', async () => {
+    const sqlite = new DatabaseSync(':memory:');
+    try {
+      sqlite.exec(readFileSync('migrations/0004_create_memory_tables.sql', 'utf8'));
+      sqlite.exec(readFileSync('migrations/0007_scoped_review_memory.sql', 'utf8'));
+      const insertRule = sqlite.prepare(`INSERT INTO scoped_learnings
+        (id, owner, repo, learning_text, category, scope_type, scope_path, state, source_pr, source_comment_id, source_user)
+        VALUES (?, ?, ?, ?, 'focus', 'file', 'a.ts', 'active', ?, ?, 'author')`);
+      insertRule.run(1, 'org', 'repo', 'older rule', 7, 123);
+      for (let id = 2; id <= 32; id++) insertRule.run(id, 'org', 'repo', `recent ${id}`, 8, id);
+      insertRule.run(500, 'other', 'repo', 'other tenant secret', 99, 999);
+      const insertSnapshot = sqlite.prepare(`INSERT INTO review_learning_snapshots
+        (owner, repo, pr_number, head_sha, run_id, learning_id, learning_text, scope_type, scope_path, cited)
+        VALUES ('org', 'repo', 42, 'abc123', 'run-1', ?, ?, 'file', 'a.ts', ?)`);
+      insertSnapshot.run(1, 'older rule', 1);
+      insertSnapshot.run(500, 'stale unrelated reference', 0);
+      const db = { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({
+        all: async () => ({ results: sqlite.prepare(sql).all(...values as (string | number)[]) }),
+      }) }) } as unknown as D1Database;
+      vi.mocked(resolveGitHubToken).mockResolvedValue('token');
+      vi.mocked(githubFetch).mockResolvedValue({ permission: 'admin' });
+      await processGitHubCodeReviewWebhook({ ...baseEnv, DB: db, ReviewProcessor: {} as DurableObjectNamespace }, {
+        owner: 'org', repo: 'repo', prNumber: 42, retrigger: false,
+        commentId: 5, commentType: 'issue', githubUser: 'maintainer', feedback: { type: 'memory_list' },
+      });
+      const body = vi.mocked(postReplyComment).mock.calls.at(-1)?.[5] ?? '';
+      const applied = body.split('## Sent to this PR')[1];
+      expect(applied).toContain('#1 file a.ts (cited): older rule ([source](https://github.com/org/repo/pull/7#discussion_r123))');
+      expect(applied).toContain('#500 file a.ts: stale unrelated reference (source unavailable)');
+      expect(body).not.toContain('other tenant secret');
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it('does not change memory for a contributor without maintainer permissions', async () => {
     vi.mocked(resolveGitHubToken).mockResolvedValue('token');
     vi.mocked(githubFetch).mockResolvedValue({ permission: 'write' });
