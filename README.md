@@ -188,6 +188,13 @@ wrangler deploy                # production
 wrangler deploy --env staging  # staging
 ```
 
+CI applies a temporary, bounded readback retry workaround to the exact pinned
+Wrangler 4.105.0 bundle for [Cloudflare issue 16717](https://github.com/cloudflare/workers-sdk/issues/16717).
+It retries only error 100146 for the same uploaded version, and fails closed if
+the bundle changes. It does not skip container deployment; direct manual
+Wrangler commands do not apply the workaround. Remove or reassess it when
+upgrading Wrangler or when the upstream issue is fixed.
+
 ### Configure LLM secrets
 
 Kimi K3 is the primary model and OpenAI is the automatic fallback. Configure

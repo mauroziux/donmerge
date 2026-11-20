@@ -27,6 +27,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Extend Wrangler version readback retry
+        run: node scripts/extend-wrangler-readback.mjs
       - name: Deploy worker
         run: npx wrangler deploy
         env:
