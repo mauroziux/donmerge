@@ -48,11 +48,10 @@ export interface ApprovalGateResult {
  * modified) review plus gating metadata. Never throws.
  *
  * Note on the event mapping: in DonMerge, `approved=true` posts a non-blocking
- * COMMENT ("all good") and `approved=false` posts REQUEST_CHANGES (blocking).
- * Downgrading to false therefore BLOCKS the merge until the prior threads are
- * resolved — which is exactly the intent ("don't merge while our issues are
- * open"). The check remains neutral when the current diff is otherwise clean
- * but those threads remain unresolved; it must not certify the PR as clean.
+ * COMMENT ("all good") and `approved=false` posts REQUEST_CHANGES. Whether
+ * that prevents a merge depends on repository protection settings. The check
+ * remains neutral when the current diff is otherwise clean but those threads
+ * remain unresolved; it must not certify the PR as clean.
  */
 export function applyApprovalGate(
   review: ReviewResult,
