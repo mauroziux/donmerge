@@ -178,6 +178,27 @@ it('combines duplicate text while retaining both file scopes and identifiers', a
   }
 });
 
+it('bounds recorded identifiers even when many file rules share one text', async () => {
+  const sqlite = new DatabaseSync(':memory:');
+  try {
+    sqlite.exec(readFileSync('migrations/0004_create_memory_tables.sql', 'utf8'));
+    sqlite.exec(readFileSync('migrations/0007_scoped_review_memory.sql', 'utf8'));
+    sqlite.exec(readFileSync('migrations/0009_link_legacy_review_memory.sql', 'utf8'));
+    const insert = sqlite.prepare(`INSERT INTO scoped_learnings
+      (owner, repo, learning_text, category, scope_type, scope_path, state, source_pr, source_user)
+      VALUES ('org', 'repo', 'same rule', 'focus', 'file', ?, 'active', 1, 'maintainer')`);
+    const paths = Array.from({ length: 35 }, (_, i) => `f${i}.ts`);
+    for (const path of paths) insert.run(path);
+    const memory = await buildMemoryContext(sqliteD1(sqlite), 'org', 'repo', paths);
+    expect(memory.focusAreas).toHaveLength(1);
+    expect(memory.scopedLearnings).toHaveLength(30);
+    expect(memory.scopedLearnings?.map(rule => rule.id)).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+    expect(memory.focusAreas[0]).not.toContain('[learning #31]');
+  } finally {
+    sqlite.close();
+  }
+});
+
 it('does not inject a rule whose complete scope cannot fit in a sanitized prompt item', async () => {
   const sqlite = new DatabaseSync(':memory:');
   try {

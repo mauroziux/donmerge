@@ -234,10 +234,12 @@ export async function buildMemoryContext(
   }
   const selected: Array<{ category: 'ignore' | 'focus' | 'style'; rendered: string; rules: ScopedLearning[] }> = [];
   let characters = 0;
+  let includedRules = 0;
   for (const group of groups.values()) {
     let prefix = '';
     const rules: ScopedLearning[] = [];
     for (const rule of group.rules) {
+      if (rule && includedRules + rules.length >= 30) continue;
       const label = rule ? scopePrefix(rule) : '(scope: repository) ';
       // The prompt sanitizes each item to 2,000 characters. Never send a
       // truncated path that could be mistaken for a broader or different scope.
@@ -249,6 +251,7 @@ export async function buildMemoryContext(
     const rendered = prefix + group.text;
     if (characters + rendered.length > 8000) continue;
     selected.push({ category: group.category, rendered, rules });
+    includedRules += rules.length;
     characters += rendered.length;
     if (selected.length === 30) break;
   }
