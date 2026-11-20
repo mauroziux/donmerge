@@ -11,7 +11,9 @@
  * @param maxLength - Maximum allowed length (default 2000)
  * @returns Sanitized input safe for prompt interpolation
  */
-export function sanitizePromptInput(input: string, maxLength = 2000): string {
+export const MAX_PROMPT_INPUT_LENGTH = 2000;
+
+export function sanitizePromptInput(input: string, maxLength = MAX_PROMPT_INPUT_LENGTH): string {
   return (
     input
       // Remove potential prompt injection patterns
