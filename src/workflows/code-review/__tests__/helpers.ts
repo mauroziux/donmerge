@@ -99,7 +99,7 @@ export function createReactionPayload(
       pull_request: {},
     },
     comment: { id: 99 },
-    reaction: { content: reaction },
+    reaction: { id: 501, content: reaction },
     sender: { login: 'dev', type: 'User' },
     ...overrides,
   };

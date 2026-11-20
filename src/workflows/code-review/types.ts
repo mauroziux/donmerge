@@ -36,6 +36,8 @@ export interface WorkerEnv {
   /** 'false' → never review incrementally (default: incremental re-reviews on
    *  top of a fully-reviewed SHA, cost control). */
   DONMERGE_INCREMENTAL_REVIEW?: string;
+  /** Enable the scheduled, bounded GitHub reaction feedback collector. */
+  DONMERGE_REACTION_SYNC?: string;
   /** 'false' → review docs/lockfile-only PRs like any other (default: trivial
    *  change sets complete a neutral check without an LLM pass). */
   DONMERGE_SKIP_TRIVIAL?: string;
@@ -186,7 +188,7 @@ export interface WebhookPayload {
     user?: { login: string; type?: string };
   };
   check_run?: CheckRunPayload;
-  reaction?: { content: string };
+  reaction?: { id?: number; content: string };
   sender?: { login: string; type?: string };
 }
 
@@ -312,6 +314,7 @@ export interface WebhookContext {
   prNumber: number;
   retrigger: boolean;
   commentId?: number;
+  reactionId?: number;
   commentType?: 'issue' | 'review';
   installationId?: number;
   instruction?: string;
@@ -343,6 +346,7 @@ export interface TriggerResult {
   prNumber: number;
   retrigger: boolean;
   commentId?: number;
+  reactionId?: number;
   commentType?: 'issue' | 'review';
   instruction?: string;
   focusFiles?: string[];

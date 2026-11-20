@@ -448,6 +448,10 @@ describe('parseTrigger', () => {
   // ─── Reaction routing ─────────────────────────────────────────────
 
   describe('reaction event', () => {
+    it('ignores forwarded reactions without a stable reaction identifier', () => {
+      const result = parseTrigger('reaction', createReactionPayload('+1', { reaction: { content: '+1' } }));
+      expect(result.feedback).toBeUndefined();
+    });
     it.each([['+1', 'accept'], ['-1', 'dismiss']] as const)(
       'maps GitHub content %s to %s', (content, type) => {
         const result = parseTrigger('reaction', createReactionPayload(content));
@@ -470,6 +474,7 @@ describe('parseTrigger', () => {
       expect(result.feedback).toEqual({ type: 'dismiss' });
       expect(result.prNumber).toBe(42);
       expect(result.commentId).toBe(99);
+      expect(result.reactionId).toBe(501);
       expect(result.commentType).toBe('review');
       expect(result.githubUser).toBe('dev');
     });

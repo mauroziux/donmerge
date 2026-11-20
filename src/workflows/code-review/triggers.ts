@@ -231,9 +231,10 @@ export function parseTrigger(
   }
 
   if (event === 'reaction') {
-    // Reaction payload structure:
-    // { action: 'created', reaction: { content: 'thumbsdown' }, comment: { id: 123 }, issue: { number: 456, pull_request: {...} } }
-    if (payload.action !== 'created' || !payload.comment?.id || !payload.issue?.pull_request) {
+    // Compatibility for signed external forwarders. GitHub itself does not
+    // emit reaction webhooks; the scheduled API collector is authoritative.
+    if (payload.action !== 'created' || !payload.comment?.id || !payload.issue?.pull_request ||
+        !Number.isSafeInteger(payload.reaction?.id) || (payload.reaction?.id ?? 0) <= 0) {
       return { shouldRun: false, prNumber: 0, retrigger: false, reason: 'ignored reaction' };
     }
     if (payload.sender?.type !== 'User' || isBotUser(payload.sender)) {
@@ -249,6 +250,7 @@ export function parseTrigger(
       retrigger: false,
       feedback: { type: reactionContent === '-1' || reactionContent === 'thumbsdown' ? 'dismiss' : 'accept' },
       commentId: payload.comment.id,
+      reactionId: payload.reaction?.id,
       commentType: 'review',
       githubUser: payload.sender?.login,
     };

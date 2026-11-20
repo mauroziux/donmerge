@@ -7,13 +7,14 @@ function check(input: string) {
 
 describe('review memory deployment gate', () => {
   it('accepts a recorded migration and existing links table', () => {
-    const result = check(JSON.stringify([{ results: [{ migration_applied: 1, links_table: 1 }] }]));
+    const result = check(JSON.stringify([{ results: [{ migration_applied: 1, links_table: 1, reaction_migration_applied: 1, reaction_targets_table: 1, reaction_trigger: 1 }] }]));
     expect(result.status).toBe(0);
   });
 
   it.each([
-    JSON.stringify([{ results: [{ migration_applied: 0, links_table: 1 }] }]),
-    JSON.stringify([{ results: [{ migration_applied: 1, links_table: 0 }] }]),
+    ...['migration_applied', 'links_table', 'reaction_migration_applied', 'reaction_targets_table', 'reaction_trigger'].map(missing =>
+      JSON.stringify([{ results: [{ ...{ migration_applied: 1, links_table: 1, reaction_migration_applied: 1, reaction_targets_table: 1, reaction_trigger: 1 }, [missing]: 0 }] }])
+    ),
     'not JSON',
     '[]',
   ])('rejects incomplete or invalid schema evidence', (input) => {

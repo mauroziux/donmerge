@@ -81,13 +81,18 @@ vi.mock('./queues/code-review-consumer', () => ({
   handleCodeReviewQueue: vi.fn(),
 }));
 
+vi.mock('./workflows/code-review/reaction-feedback-sync', () => ({
+  syncReactionFeedback: vi.fn().mockResolvedValue({ attempted: 0, failed: 0, skipped: 0 }),
+}));
+
 vi.mock('@cloudflare/sandbox', () => ({
   Sandbox: class {},
 }));
 
 // Import AFTER mocks are in place. Importing app.ts runs the route registration
 // at module load, so the POST handler is captured in `routeHandlers`.
-import './app';
+import app from './app';
+import { syncReactionFeedback } from './workflows/code-review/reaction-feedback-sync';
 import { validateWebhookFast } from './workflows/code-review';
 import type { WebhookContext } from './workflows/code-review';
 
@@ -270,5 +275,30 @@ describe('POST /webhook/github — producer path (regression: waitUntil → queu
     await handler(c);
 
     expect(waitUntil).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduled reaction feedback collection', () => {
+  const controller = { scheduledTime: 0, cron: '*/15 * * * *', noRetry() {} };
+
+  it('runs the bounded collector only when explicitly enabled', async () => {
+    vi.clearAllMocks();
+    const pending: Promise<unknown>[] = [];
+    const ctx: ExecutionContext = { waitUntil: (work: Promise<unknown>) => { pending.push(work); }, passThroughOnException() {} };
+    const env = { DONMERGE_REACTION_SYNC: 'true' } as Parameters<typeof app.scheduled>[1];
+    app.scheduled(controller, env, ctx);
+    await Promise.all(pending);
+    expect(syncReactionFeedback).toHaveBeenCalledWith(env);
+    expect(pending).toHaveLength(1);
+  });
+
+  it('does not run when disabled or absent', () => {
+    vi.clearAllMocks();
+    const ctx: ExecutionContext = { waitUntil: vi.fn(), passThroughOnException() {} };
+    for (const flag of [undefined, 'false', 'invalid']) {
+      app.scheduled(controller, { DONMERGE_REACTION_SYNC: flag } as Parameters<typeof app.scheduled>[1], ctx);
+    }
+    expect(syncReactionFeedback).not.toHaveBeenCalled();
+    expect(ctx.waitUntil).not.toHaveBeenCalled();
   });
 });

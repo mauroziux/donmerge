@@ -76,6 +76,7 @@ export async function validateWebhookFast(
           prNumber: trigger.prNumber,
           retrigger: false,
           commentId: trigger.commentId,
+          reactionId: trigger.reactionId,
           commentType: trigger.commentType,
           commentBody: trigger.commentBody,
           installationId: payload.installation?.id,
@@ -459,6 +460,7 @@ export async function processGitHubCodeReviewWebhook(
               githubUser: context.githubUser ?? 'unknown',
               reaction: context.feedback.type === 'dismiss' ? 'thumbsdown' : 'thumbsup',
               commentId: context.commentId,
+              reactionId: context.reactionId,
               commentFingerprint: metadata?.fingerprint,
             });
           }
