@@ -483,6 +483,10 @@ describe('extractJsonFromResponse', () => {
 });
 
 describe('classifyError', () => {
+  it('classifies a missing review memory schema', () => {
+    expect(classifyError(new Error('[MEMORY_SCHEMA_UNAVAILABLE] Review memory schema is missing.')).code)
+      .toBe(ErrorCode.MEMORY_SCHEMA_UNAVAILABLE);
+  });
   it('classifies a destination policy read error before a generic GitHub error', () => {
     expect(classifyError(new Error('[POLICY_UNAVAILABLE] GitHub returned HTTP 403 while reading the destination policy.')).code).toBe(ErrorCode.POLICY_UNAVAILABLE);
   });

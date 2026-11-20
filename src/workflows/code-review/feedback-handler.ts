@@ -1,5 +1,5 @@
 import type { Feedback, ReviewOutcome } from './types';
-import { recordFeedback, recordReviewOutcomes, recordScopedReply, upsertLearning, upsertPatternWeight } from './memory-store';
+import { recordFeedback, recordReviewOutcomes, recordScopedPreference, recordScopedReply, upsertPatternWeight } from './memory-store';
 import { recalculatePatternWeights } from './pattern-recalculator';
 import {
   classifyReply,
@@ -138,14 +138,14 @@ export async function handleCommentFeedback(
       : command.text.toLowerCase().startsWith('focus on') ? 'focus'
       : 'style';
 
-    await upsertLearning(db, {
+    await recordScopedPreference(db, {
       owner: params.owner,
       repo: params.repo,
-      learning_text: command.text,
-      source: 'feedback',
+      prNumber: params.prNumber,
+      commentId: params.commentId,
+      user: params.githubUser,
+      text: command.text,
       category,
-      confidence: 70,
-      sample_size: 1,
     });
 
     return true;

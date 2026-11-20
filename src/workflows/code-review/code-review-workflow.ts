@@ -75,7 +75,7 @@ import {
 } from './processor-utils';
 import { recordReviewFindings } from './feedback-handler';
 import { buildReviewOutcomeInputs, newlyPublishedComments } from './review-outcomes';
-import { buildMemoryContext, getPatternWeights } from './memory-store';
+import { buildMemoryContext, getPatternWeights, isMissingMemorySchema } from './memory-store';
 import { scopedMemoryEnabledForRepo } from './memory-rollout';
 import { citedLearningIds } from './memory-citations';
 import { destroySandbox, SANDBOX_SLEEP_AFTER } from '../../lib/sandbox-lifecycle';
@@ -871,6 +871,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         // scope. They cannot suppress or demote findings across a repository.
         patternWeights = new Map([...weights].filter(([, weight]) => weight.confidence >= 0.4));
       } catch (e) {
+        if (isMissingMemorySchema(e)) {
+          throw new NonRetryableError('[MEMORY_SCHEMA_UNAVAILABLE] Review memory schema is missing; apply D1 migration 0009 before reviewing.');
+        }
         console.warn('[memory] Failed to load memory context, proceeding without:', e);
       }
     }

@@ -288,10 +288,7 @@ export function formatMissingPolicyFiles(paths: string[]): string {
   return `Policy incomplete: these files declared in .donmerge are absent at the destination commit: ${safe.join(', ')}. Restore them or update .donmerge, then re-run the review.`;
 }
 
-/**
- * Fail a check run with an error code.
- * The full detail is logged to console; only the code appears in the public check run.
- */
+/** Fail a check run with a user-facing description and log the full detail. */
 export async function failCheckRun(
   owner: string,
   repo: string,
@@ -317,6 +314,8 @@ export async function failCheckRun(
         title: `🤠 DonMerge hit a snag [${code}]`,
         summary: code === ErrorCode.POLICY_UNAVAILABLE
           ? 'The destination policy could not be loaded; the review did not complete.'
+          : code === ErrorCode.MEMORY_SCHEMA_UNAVAILABLE
+          ? 'The review memory schema is missing; the review did not complete.'
           : 'Something went wrong during the review.',
         text: `Error code: ${code} — ${description}${code === ErrorCode.POLICY_UNAVAILABLE ? `\n\n${detail.replace(/^\[POLICY_UNAVAILABLE\]\s*/, '').slice(0, 500)}` : ''}`,
       },

@@ -65,45 +65,6 @@ export async function recordFeedback(
 
 // ── Learnings ────────────────────────────────────────────────────────────────
 
-export async function upsertLearning(
-  db: D1Database,
-  learning: Omit<Learning, 'id' | 'created_at' | 'updated_at'>
-): Promise<void> {
-  // Try to find existing learning with same text and category
-  const existing = await db.prepare(`
-    SELECT id FROM learnings
-    WHERE owner = ? AND repo = ? AND learning_text = ? AND category = ?
-  `).bind(learning.owner, learning.repo, learning.learning_text, learning.category).first<{ id: number }>();
-
-  if (existing) {
-    // Read current confidence to compute correct increment
-    const existingRow = await db.prepare(`
-      SELECT confidence FROM learnings WHERE id = ?
-    `).bind(existing.id).first<{ confidence: number }>();
-
-    const currentConfidence = existingRow?.confidence ?? learning.confidence;
-    const increment = Math.min(20, Math.max(0, 100 - currentConfidence));
-
-    await db.prepare(`
-      UPDATE learnings
-      SET confidence = MIN(100, confidence + ?),
-          sample_size = sample_size + 1,
-          last_applied_at = datetime('now'),
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).bind(increment, existing.id).run();
-  } else {
-    // Insert new learning
-    await db.prepare(`
-      INSERT INTO learnings (owner, repo, learning_text, source, category, confidence, sample_size, review_state)
-      VALUES (?, ?, ?, ?, ?, ?, 1, CASE WHEN ? = 'ignore' THEN 'pending' ELSE 'active' END)
-    `).bind(
-      learning.owner, learning.repo, learning.learning_text,
-      learning.source, learning.category, learning.confidence, learning.category
-    ).run();
-  }
-}
-
 export async function getLearnings(
   db: D1Database,
   owner: string,
@@ -189,6 +150,19 @@ export async function upsertPatternWeight(
 
 // ── Memory Context (for prompt injection) ────────────────────────────────────
 
+/** A missing migration is a deployment error, not a transient D1 outage. */
+export function isMissingMemorySchema(error: unknown): boolean {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current != null && !seen.has(current)) {
+    seen.add(current);
+    const message = current instanceof Error ? current.message : String(current);
+    if (/no such table:\s*(?:["'`]?\w+["'`]?\.)?["'`]?legacy_learning_links["'`]?/i.test(message)) return true;
+    current = current instanceof Error ? current.cause : null;
+  }
+  return false;
+}
+
 export async function buildMemoryContext(
   db: D1Database,
   owner: string,
@@ -198,29 +172,24 @@ export async function buildMemoryContext(
 ): Promise<MemoryContext> {
   const minConfidence = 50;
 
-  // Get ignore learnings
-  const ignoreResult = await db.prepare(`
-    SELECT learning_text FROM learnings
-    WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
-    AND category = 'ignore' AND review_state = 'active' AND confidence >= ?
-    ORDER BY confidence DESC, learning_text ASC LIMIT 10
-  `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
-
-  // Get focus learnings
-  const focusResult = await db.prepare(`
-    SELECT learning_text FROM learnings
-    WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
-    AND category = 'focus' AND review_state = 'active' AND confidence >= ?
-    ORDER BY confidence DESC, learning_text ASC LIMIT 10
-  `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
-
-  // Get preference learnings
-  const prefResult = await db.prepare(`
-    SELECT learning_text FROM learnings
-    WHERE ((owner = ? AND repo = ?) OR (owner IS NULL AND repo IS NULL))
-    AND category = 'style' AND review_state = 'active' AND confidence >= ?
-    ORDER BY confidence DESC, learning_text ASC LIMIT 10
-  `).bind(owner, repo, minConfidence).all<{ learning_text: string }>();
+  // Legacy rows retain their previous eligibility, but linked scoped rules
+  // govern revocation and scope even when the scoped rollout is disabled.
+  const legacyQuery = (category: 'ignore' | 'focus' | 'style') => db.prepare(`
+    SELECT l.learning_text, l.category, s.id AS scoped_id, s.scope_type, s.scope_path, s.confidence
+    FROM learnings l
+    LEFT JOIN legacy_learning_links link ON link.legacy_learning_id = l.id
+    LEFT JOIN scoped_learnings s ON s.id = link.scoped_learning_id
+    WHERE ((l.owner = ? AND l.repo = ?) OR (l.owner IS NULL AND l.repo IS NULL))
+      AND l.category = ? AND l.review_state = 'active' AND l.confidence >= ?
+      AND (link.legacy_learning_id IS NULL OR (s.state = 'active' AND s.scope_type = 'repo'))
+    ORDER BY l.confidence DESC, l.learning_text ASC LIMIT 10
+  `).bind(owner, repo, category, minConfidence).all<{
+    learning_text: string; category: 'ignore' | 'focus' | 'style'; scoped_id: number | null;
+    scope_type: ScopedLearning['scope_type'] | null; scope_path: string | null; confidence: number | null;
+  }>();
+  const [ignoreResult, focusResult, prefResult] = await Promise.all([
+    legacyQuery('ignore'), legacyQuery('focus'), legacyQuery('style'),
+  ]);
 
   // Get high-confidence patterns
   const patternsResult = await db.prepare(`
@@ -237,9 +206,14 @@ export async function buildMemoryContext(
   const scoped = scopedEnabled ? selectScopedLearnings(scopedResult.results ?? [], reviewedPaths) : [];
   const candidates: Array<{ text: string; category: 'ignore' | 'focus' | 'style'; scoped?: ScopedLearning }> = [
     ...scoped.map(rule => ({ text: rule.learning_text, category: rule.category, scoped: rule })),
-    ...(ignoreResult.results ?? []).map(row => ({ text: row.learning_text, category: 'ignore' as const })),
-    ...(focusResult.results ?? []).map(row => ({ text: row.learning_text, category: 'focus' as const })),
-    ...(prefResult.results ?? []).map(row => ({ text: row.learning_text, category: 'style' as const })),
+    ...[...(ignoreResult.results ?? []), ...(focusResult.results ?? []), ...(prefResult.results ?? [])].map(row => ({
+      text: row.learning_text,
+      category: row.category,
+      scoped: row.scoped_id != null ? {
+        id: row.scoped_id, learning_text: row.learning_text, category: row.category,
+        scope_type: row.scope_type!, scope_path: row.scope_path ?? '', confidence: row.confidence ?? 0,
+      } : undefined,
+    })),
   ];
   const selected: typeof candidates = [];
   const seen = new Set<string>();
@@ -274,6 +248,49 @@ export interface ScopedLearning {
   scope_type: 'file' | 'directory' | 'repo';
   scope_path: string;
   confidence: number;
+}
+
+/** Record an explicit repository preference after the caller verifies maintainer permission. */
+export async function recordScopedPreference(
+  db: D1Database,
+  input: {
+    owner: string; repo: string; prNumber: number; commentId: number;
+    user: string; text: string; category: 'ignore' | 'focus' | 'style';
+  },
+): Promise<void> {
+  const state = input.category === 'ignore' ? 'pending' : 'active';
+  await db.batch([
+    db.prepare(`INSERT OR IGNORE INTO scoped_learning_events
+      (owner, repo, pr_number, source_type, source_id) VALUES (?, ?, ?, 'command', ?)`)
+      .bind(input.owner, input.repo, input.prNumber, String(input.commentId)),
+    db.prepare(`INSERT INTO feedback
+      (owner, repo, pr_number, fingerprint, feedback_type, feedback_source, feedback_text, github_user, github_comment_id)
+      SELECT ?, ?, ?, ?, 'preference', 'command', ?, ?, ? WHERE changes() = 1`)
+      .bind(input.owner, input.repo, input.prNumber, `preference:${input.commentId}`, input.text.slice(0, 2000), input.user, input.commentId),
+    db.prepare(`INSERT INTO scoped_learnings
+      (owner, repo, learning_text, category, scope_type, scope_path, state, confidence, source_pr, source_comment_id, source_user, confirmed_by)
+      SELECT ?, ?, ?, ?, 'repo', '', ?, 70, ?, ?, ?, ? WHERE changes() = 1
+      ON CONFLICT(owner, repo, category, scope_type, scope_path, learning_text) DO UPDATE SET
+        sample_size = scoped_learnings.sample_size + 1,
+        confirmed_by = CASE WHEN scoped_learnings.state = 'active' THEN COALESCE(scoped_learnings.confirmed_by, excluded.confirmed_by) ELSE scoped_learnings.confirmed_by END,
+        updated_at = datetime('now')`)
+      .bind(input.owner, input.repo, input.text, input.category, state, input.prNumber, input.commentId, input.user,
+        state === 'active' ? input.user : null),
+    // Preserve old behavior for explicit non-suppressive repo preferences
+    // while the scoped rollout is disabled. Exceptions stay pending.
+    db.prepare(`INSERT INTO learnings (owner, repo, learning_text, source, category, confidence, sample_size, review_state)
+      SELECT ?, ?, ?, 'feedback', ?, 70, 1, ? WHERE changes() = 1 AND NOT EXISTS (
+        SELECT 1 FROM learnings WHERE owner = ? AND repo = ? AND learning_text = ? AND category = ?
+      )`)
+      .bind(input.owner, input.repo, input.text, input.category, state,
+        input.owner, input.repo, input.text, input.category),
+    db.prepare(`INSERT OR IGNORE INTO legacy_learning_links (legacy_learning_id, scoped_learning_id)
+      SELECT l.id, s.id FROM learnings l JOIN scoped_learnings s
+        ON s.owner = l.owner AND s.repo = l.repo AND s.category = l.category AND s.learning_text = l.learning_text
+      WHERE l.owner = ? AND l.repo = ? AND l.category = ? AND l.learning_text = ?
+        AND s.scope_type = 'repo' AND s.scope_path = ''`)
+      .bind(input.owner, input.repo, input.category, input.text),
+  ]);
 }
 
 /** Store the triggering comment, feedback, and learning in one D1 transaction. */
