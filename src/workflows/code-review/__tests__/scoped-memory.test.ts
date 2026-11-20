@@ -151,10 +151,12 @@ it('records preference commands once, keeps exceptions pending, and honors revoc
     const pref = { owner: 'org', repo: 'repo', prNumber: 7, commentId: 8, user: 'maintainer', text: 'Focus on auth', category: 'focus' as const };
     await Promise.all([recordScopedPreference(db, pref), recordScopedPreference(db, pref)]);
     expect(sqlite.prepare('SELECT count(*) AS n FROM feedback').get()).toMatchObject({ n: 1 });
-    expect(sqlite.prepare('SELECT sample_size, source_pr, source_comment_id, source_user FROM scoped_learnings').get())
-      .toMatchObject({ sample_size: 1, source_pr: 7, source_comment_id: 8, source_user: 'maintainer' });
+    expect(sqlite.prepare('SELECT sample_size, source_pr, source_comment_id, source_user, confirmed_by FROM scoped_learnings').get())
+      .toMatchObject({ sample_size: 1, source_pr: 7, source_comment_id: 8, source_user: 'maintainer', confirmed_by: 'maintainer' });
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'], false)).focusAreas).toEqual(['[learning #1] Focus on auth']);
     await recordScopedPreference(db, { ...pref, commentId: 9, text: "Don't comment on noise", category: 'ignore' });
+    expect(sqlite.prepare("SELECT state, confirmed_by FROM scoped_learnings WHERE category = 'ignore'").get())
+      .toMatchObject({ state: 'pending', confirmed_by: null });
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'], true)).ignorePatterns).toEqual([]);
     sqlite.exec("UPDATE scoped_learnings SET state = 'active', confirmed_by = 'maintainer' WHERE category = 'ignore'");
     expect((await buildMemoryContext(db, 'org', 'repo', ['src/a.ts'], true)).ignorePatterns).toEqual(["[learning #2] Don't comment on noise"]);

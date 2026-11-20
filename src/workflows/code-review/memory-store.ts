@@ -237,7 +237,7 @@ export interface ScopedLearning {
   confidence: number;
 }
 
-/** Record a maintainer's explicit repository preference and its provenance. */
+/** Record an explicit repository preference after the caller verifies maintainer permission. */
 export async function recordScopedPreference(
   db: D1Database,
   input: {
@@ -255,11 +255,14 @@ export async function recordScopedPreference(
       SELECT ?, ?, ?, ?, 'preference', 'command', ?, ?, ? WHERE changes() = 1`)
       .bind(input.owner, input.repo, input.prNumber, `preference:${input.commentId}`, input.text.slice(0, 2000), input.user, input.commentId),
     db.prepare(`INSERT INTO scoped_learnings
-      (owner, repo, learning_text, category, scope_type, scope_path, state, confidence, source_pr, source_comment_id, source_user)
-      SELECT ?, ?, ?, ?, 'repo', '', ?, 70, ?, ?, ? WHERE changes() = 1
+      (owner, repo, learning_text, category, scope_type, scope_path, state, confidence, source_pr, source_comment_id, source_user, confirmed_by)
+      SELECT ?, ?, ?, ?, 'repo', '', ?, 70, ?, ?, ?, ? WHERE changes() = 1
       ON CONFLICT(owner, repo, category, scope_type, scope_path, learning_text) DO UPDATE SET
-        sample_size = scoped_learnings.sample_size + 1, updated_at = datetime('now')`)
-      .bind(input.owner, input.repo, input.text, input.category, state, input.prNumber, input.commentId, input.user),
+        sample_size = scoped_learnings.sample_size + 1,
+        confirmed_by = CASE WHEN scoped_learnings.state = 'active' THEN COALESCE(scoped_learnings.confirmed_by, excluded.confirmed_by) ELSE scoped_learnings.confirmed_by END,
+        updated_at = datetime('now')`)
+      .bind(input.owner, input.repo, input.text, input.category, state, input.prNumber, input.commentId, input.user,
+        state === 'active' ? input.user : null),
     // Preserve old behavior for explicit non-suppressive repo preferences
     // while the scoped rollout is disabled. Exceptions stay pending.
     db.prepare(`INSERT INTO learnings (owner, repo, learning_text, source, category, confidence, sample_size, review_state)
