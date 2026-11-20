@@ -1044,7 +1044,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
             flue.client.prompt(p, opts as never) as Promise<string>,
           model: models[0],
           repo: prData.repo,
-          diffText,
+          filePatches: preparedFiles.filePatches,
           result,
         });
         if (verified.notes.length > 0) {

@@ -23,6 +23,10 @@ import { hasBlockingFindings } from '../processor-utils';
 import { checkConclusion } from '../review-coverage';
 
 const MODEL: ModelConfig = { providerID: 'kimi', modelID: 'k3' };
+const PATCHES = [
+  { filename: 'src/api/bookings.ts', patch: '@@ -42 +42 @@\n-oldBooking()\n+createBooking()' },
+  { filename: 'src/other.ts', patch: '@@ -9 +9 @@\n-oldOther()\n+newOther()' },
+];
 
 function critical(overrides: Partial<ReviewComment> = {}): ReviewComment {
   return {
@@ -105,11 +109,74 @@ describe('buildVerificationPrompt', () => {
 });
 
 describe('verifyReviewResult', () => {
+  it('places a late candidate hunk first even when earlier files exceed the context budget', async () => {
+    const promptFn = vi.fn(async (_prompt: string) => verifierSupported);
+    const filePatches = [
+      { filename: 'src/large.ts', patch: `@@ -0,0 +1 @@\n+${'x'.repeat(21_000)}` },
+      ...PATCHES,
+    ];
+    const output = await verifyReviewResult({ promptFn, model: MODEL, repo: 'acme/rms', filePatches, result: review([critical()]) });
+    expect(output.result.lineComments).toHaveLength(1);
+    const prompt = promptFn.mock.calls[0][0];
+    expect(prompt).toContain('FILE: src/api/bookings.ts\n@@ -42 +42 @@\n-oldBooking()\n+createBooking()');
+    expect(prompt).not.toContain('x'.repeat(21_000));
+  });
+
+  it('finds the candidate hunk after an oversized earlier hunk in the same file', async () => {
+    const promptFn = vi.fn(async (_prompt: string) => verifierSupported);
+    const filePatches = [{ filename: 'src/api/bookings.ts', patch:
+      `@@ -1 +1 @@\n-old\n+${'x'.repeat(21_000)}\n@@ -42 +42 @@\n-oldBooking()\n+createBooking()` }];
+    await verifyReviewResult({ promptFn, model: MODEL, repo: 'acme/rms', filePatches, result: review([critical()]) });
+    expect(promptFn).toHaveBeenCalledTimes(1);
+    expect(promptFn.mock.calls[0][0]).toContain('@@ -42 +42 @@\n-oldBooking()\n+createBooking()');
+  });
+
+  it('prioritizes the candidate file’s other hunks before unrelated files', async () => {
+    const promptFn = vi.fn(async (_prompt: string) => verifierSupported);
+    const filePatches = [
+      { filename: 'src/other.ts', patch: `@@ -1 +1 @@\n-old\n+${'x'.repeat(19_860)}` },
+      { filename: 'src/api/bookings.ts', patch:
+        '@@ -42 +42 @@\n-oldBooking()\n+createBooking()\n@@ -80 +80 @@\n-oldGuard()\n+newGuard()' },
+    ];
+    await verifyReviewResult({ promptFn, model: MODEL, repo: 'acme/rms', filePatches, result: review([critical()]) });
+    const prompt = promptFn.mock.calls[0][0];
+    expect(prompt).toContain('+newGuard()');
+    expect(prompt).not.toContain('x'.repeat(19_860));
+  });
+
+  it.each([
+    ['missing file', [{ filename: 'other.ts', patch: '@@ -42 +42 @@\n-old\n+new' }]],
+    ['missing patch', [{ filename: 'src/api/bookings.ts' }]],
+    ['wrong side', [{ filename: 'src/api/bookings.ts', patch: '@@ -42 +42,0 @@\n-removed' }]],
+    ['truncated hunk', [{ filename: 'src/api/bookings.ts', patch: '@@ -42,2 +42,2 @@\n-old\n+new' }]],
+    ['oversized candidate hunk', [{ filename: 'src/api/bookings.ts', patch: `@@ -42 +42 @@\n-old\n+${'x'.repeat(21_000)}` }]],
+  ])('keeps the review neutral for %s instead of asking the model to guess', async (_label, filePatches) => {
+    const promptFn = vi.fn(async () => verifierRefuted);
+    const output = await verifyReviewResult({
+      promptFn, model: MODEL, repo: 'acme/rms', filePatches,
+      result: { ...review([critical()]), criticalIssues: [] },
+    });
+    expect(promptFn).not.toHaveBeenCalled();
+    expect(output.result.verificationPending).toBe(true);
+    expect(output.notes[0]).toContain('insufficient_evidence');
+    expect(checkConclusion(hasBlockingFindings(output.result), undefined, output.result.verificationPending)).toBe('neutral');
+  });
+
+  it('verifies removed lines on the LEFT side of a complete hunk', async () => {
+    const promptFn = vi.fn(async () => verifierSupported);
+    const output = await verifyReviewResult({
+      promptFn, model: MODEL, repo: 'acme/rms', filePatches: PATCHES,
+      result: review([critical({ side: 'LEFT' })]),
+    });
+    expect(promptFn).toHaveBeenCalledTimes(1);
+    expect(output.result.lineComments).toHaveLength(1);
+  });
+
   it('keeps supported criticals untouched and passes suggestions through unverified', async () => {
     const promptFn = vi.fn(async () => verifierSupported);
     const input = review([critical(), suggestion()]);
 
-    const output = await verifyReviewResult({ promptFn, model: MODEL, repo: 'acme/rms', diffText: 'd', result: input });
+    const output = await verifyReviewResult({ promptFn, model: MODEL, repo: 'acme/rms', filePatches: PATCHES, result: input });
 
     expect(promptFn).toHaveBeenCalledTimes(1); // only the critical was verified
     expect(output.result.lineComments).toHaveLength(2);
@@ -123,7 +190,7 @@ describe('verifyReviewResult', () => {
       promptFn,
       model: MODEL,
       repo: 'acme/rms',
-      diffText: 'd',
+      filePatches: PATCHES,
       result: { ...review([critical()]), criticalIssues: [] },
     });
 
@@ -143,7 +210,7 @@ describe('verifyReviewResult', () => {
       criticalIssues: ['A separate SQL injection permits an attacker to read another tenant’s data.'],
     };
     const output = await verifyReviewResult({
-      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', diffText: 'd', result: input,
+      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', filePatches: PATCHES, result: input,
     });
     expect(output.result.lineComments).toEqual([]);
     expect(output.result.verificationPending).toBe(true);
@@ -153,7 +220,7 @@ describe('verifyReviewResult', () => {
 
   it('treats a possibly duplicate summary as unresolved without a stable finding ID', async () => {
     const output = await verifyReviewResult({
-      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', diffText: 'd',
+      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', filePatches: PATCHES,
       result: review([critical()]),
     });
     expect(output.result.lineComments).toEqual([]);
@@ -164,7 +231,7 @@ describe('verifyReviewResult', () => {
   it('preserves an earlier pending-verification state when a later claim is refuted', async () => {
     const input = { ...review([critical()]), criticalIssues: [], verificationPending: true };
     const output = await verifyReviewResult({
-      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', diffText: 'd', result: input,
+      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', filePatches: PATCHES, result: input,
     });
     expect(output.result.verificationPending).toBe(true);
   });
@@ -178,7 +245,7 @@ describe('verifyReviewResult', () => {
       promptFn,
       model: MODEL,
       repo: 'acme/rms',
-      diffText: 'd',
+      filePatches: PATCHES,
       result: review([critical()]),
     });
 
@@ -196,7 +263,7 @@ describe('verifyReviewResult', () => {
       promptFn,
       model: MODEL,
       repo: 'acme/rms',
-      diffText: 'd',
+      filePatches: PATCHES,
       result: review([critical()]),
     });
 
@@ -212,7 +279,7 @@ describe('verifyReviewResult', () => {
       promptFn,
       model: MODEL,
       repo: 'acme/rms',
-      diffText: 'd',
+      filePatches: PATCHES,
       result: review([critical(), critical({ path: 'src/other.ts', line: 9, issueKey: 'second' })]),
     });
 
