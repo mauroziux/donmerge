@@ -150,6 +150,19 @@ export async function upsertPatternWeight(
 
 // ── Memory Context (for prompt injection) ────────────────────────────────────
 
+/** A missing migration is a deployment error, not a transient D1 outage. */
+export function isMissingMemorySchema(error: unknown): boolean {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current != null && !seen.has(current)) {
+    seen.add(current);
+    const message = current instanceof Error ? current.message : String(current);
+    if (/no such table:\s*(?:["'`]?\w+["'`]?\.)?["'`]?legacy_learning_links["'`]?/i.test(message)) return true;
+    current = current instanceof Error ? current.cause : null;
+  }
+  return false;
+}
+
 export async function buildMemoryContext(
   db: D1Database,
   owner: string,

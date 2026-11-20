@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import { buildMemoryContext, recordScopedPreference, recordScopedReply, selectScopedLearnings, type ScopedLearning } from '../memory-store';
+import { buildMemoryContext, isMissingMemorySchema, recordScopedPreference, recordScopedReply, selectScopedLearnings, type ScopedLearning } from '../memory-store';
 import { scopedMemoryEnabledForRepo } from '../memory-rollout';
 
 function learning(id: number, scope_type: ScopedLearning['scope_type'], scope_path: string, text: string): ScopedLearning {
@@ -34,6 +34,13 @@ function sqliteD1(sqlite: DatabaseSync): D1Database {
 }
 
 describe('scoped review memory', () => {
+  it('distinguishes a missing migration from a transient D1 failure', () => {
+    expect(isMissingMemorySchema(new Error('D1_ERROR: no such table: legacy_learning_links: SQLITE_ERROR'))).toBe(true);
+    expect(isMissingMemorySchema(new Error('D1 failed', { cause: new Error('no such table: main.legacy_learning_links') }))).toBe(true);
+    expect(isMissingMemorySchema(new Error('D1 request timed out'))).toBe(false);
+    expect(isMissingMemorySchema(new Error('no such table: some_other_table'))).toBe(false);
+  });
+
   it('limits an enabled rollout to explicitly listed repositories and honors the global kill switch', () => {
     const pilot = { DONMERGE_SCOPED_MEMORY: 'true', DONMERGE_SCOPED_MEMORY_REPOS: ' Org/Repo , other/project ' };
     expect(scopedMemoryEnabledForRepo(pilot, 'ORG', 'repo')).toBe(true);
