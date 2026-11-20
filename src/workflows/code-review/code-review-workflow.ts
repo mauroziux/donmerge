@@ -872,7 +872,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
         patternWeights = new Map([...weights].filter(([, weight]) => weight.confidence >= 0.4));
       } catch (e) {
         if (isMissingMemorySchema(e)) {
-          throw new NonRetryableError('Review memory schema is missing; apply D1 migration 0009 before reviewing.');
+          throw new NonRetryableError('[MEMORY_SCHEMA_UNAVAILABLE] Review memory schema is missing; apply D1 migration 0009 before reviewing.');
         }
         console.warn('[memory] Failed to load memory context, proceeding without:', e);
       }

@@ -20,6 +20,8 @@ export const ErrorCode = {
   PUBLISH_UNRESOLVED: 'DM-E009',
   /** Destination policy could not be read or validated. */
   POLICY_UNAVAILABLE: 'DM-E010',
+  /** The review memory schema has not been migrated. */
+  MEMORY_SCHEMA_UNAVAILABLE: 'DM-E011',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -44,4 +46,6 @@ export const ErrorCodeDescriptions: Record<ErrorCode, string> = {
     'The review POST may or may not have reached GitHub (ambiguous transport failure) and could not be confirmed. Automated re-posting is disabled to avoid duplicates — verify the PR and re-trigger if the review is missing.',
   [ErrorCode.POLICY_UNAVAILABLE]:
     'DonMerge could not read or validate the policy at the destination commit. Check .donmerge and its referenced files, then re-trigger the review.',
+  [ErrorCode.MEMORY_SCHEMA_UNAVAILABLE]:
+    'The review memory schema is missing. Apply D1 migration 0009_link_legacy_review_memory.sql and re-trigger the review.',
 };

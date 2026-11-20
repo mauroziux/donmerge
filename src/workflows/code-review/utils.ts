@@ -284,6 +284,9 @@ export function classifyError(error: unknown): { code: ErrorCodeType; detail: st
   if (message.startsWith('[POLICY_UNAVAILABLE]')) {
     return { code: ErrorCode.POLICY_UNAVAILABLE, detail: message };
   }
+  if (message.startsWith('[MEMORY_SCHEMA_UNAVAILABLE]')) {
+    return { code: ErrorCode.MEMORY_SCHEMA_UNAVAILABLE, detail: message };
+  }
   if (message.includes('GitHub API error')) {
     return { code: ErrorCode.GITHUB_API, detail: message };
   }

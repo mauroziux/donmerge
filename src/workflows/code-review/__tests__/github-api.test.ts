@@ -303,6 +303,16 @@ describe('completeCheckRun', () => {
 });
 
 describe('failCheckRun', () => {
+  it('tells maintainers which migration is missing', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await failCheckRun('owner', 'repo', 123, 'DM-E011', 'internal detail', 'token');
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.conclusion).toBe('failure');
+    expect(body.output.text).toContain('0009_link_legacy_review_memory.sql');
+    expect(body.output.summary).toContain('memory schema');
+    expect(body.output.text).not.toContain('internal detail');
+  });
+
   it('explains destination policy failures in the check', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await failCheckRun('owner', 'repo', 123, 'DM-E010', '[POLICY_UNAVAILABLE] GitHub returned HTTP 403 while reading the destination policy.', 'token');
