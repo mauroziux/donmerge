@@ -142,8 +142,8 @@ async function verifyCandidate(
  * Verify every critical lineComment of a review.
  *
  *   - `supported` criticals stay and may block.
- *   - `refuted` criticals are withheld — the claim was wrong; a green verdict
- *     for the rest is correct.
+ *   - `refuted` criticals are withheld. The rest may be green only if no
+ *     independent critical summary or earlier verification limitation remains.
  *   - `insufficient_evidence` criticals are withheld AND mark the result
  *     `verificationPending`, so a full-coverage run can never report a green
  *     clean check while an unconfirmed critical limitation exists — the check

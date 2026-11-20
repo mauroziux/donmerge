@@ -151,6 +151,16 @@ describe('verifyReviewResult', () => {
     expect(checkConclusion(hasBlockingFindings(output.result), undefined, output.result.verificationPending)).toBe('neutral');
   });
 
+  it('treats a possibly duplicate summary as unresolved without a stable finding ID', async () => {
+    const output = await verifyReviewResult({
+      promptFn: vi.fn(async () => verifierRefuted), model: MODEL, repo: 'acme/rms', diffText: 'd',
+      result: review([critical()]),
+    });
+    expect(output.result.lineComments).toEqual([]);
+    expect(output.result.verificationPending).toBe(true);
+    expect(checkConclusion(hasBlockingFindings(output.result), undefined, output.result.verificationPending)).toBe('neutral');
+  });
+
   it('preserves an earlier pending-verification state when a later claim is refuted', async () => {
     const input = { ...review([critical()]), criticalIssues: [], verificationPending: true };
     const output = await verifyReviewResult({
