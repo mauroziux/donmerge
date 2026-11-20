@@ -200,6 +200,11 @@ function isVagueAdvisory(text: string): boolean {
   return !hasConcreteFailureDescription(text);
 }
 
+/** Pure style noise can be discarded without implying an unresolved defect. */
+function isClearlyStyleNoise(text: string): boolean {
+  return STYLE_NOISE_PATTERNS.some((pattern) => pattern.test(text)) && !CRITICAL_DOMAIN_PATTERN.test(text);
+}
+
 function hasConcreteFailureDescription(text: string): boolean {
   return (
     CONCRETE_FAILURE_PATTERN.test(text) ||
@@ -253,9 +258,19 @@ export function normalizeReviewResult(
 
   const finalLineComments = filterLineCommentsByQuality(overriddenLineComments, patternWeights);
 
-  const criticalIssues = Array.isArray(result.criticalIssues)
-    ? filterCriticalIssuesByQuality(result.criticalIssues)
-    : [];
+  const rawCriticalIssues = Array.isArray(result.criticalIssues) ? result.criticalIssues : [];
+  const criticalIssues = filterCriticalIssuesByQuality(rawCriticalIssues);
+
+  // Withholding a potentially substantive critical is not evidence that it is
+  // false. Keep the check neutral until the concern can be reviewed, rather
+  // than converting a model/filter disagreement into a clean verdict.
+  const qualityFilterPending = rawCriticalIssues.some(
+    (issue) => issue.trim() !== '' && !shouldKeepCriticalIssue(issue) && !isClearlyStyleNoise(issue)
+  ) || overriddenLineComments.some((comment) => {
+    if (comment.severity !== 'critical' || shouldKeepLineComment(comment, patternWeights)) return false;
+    const searchable = `${comment.body ?? ''}\n${comment.issueKey ?? ''}\n${comment.ruleId ?? ''}`;
+    return !isClearlyStyleNoise(searchable);
+  });
 
   const approved = !hasBlockingFindings({ lineComments: finalLineComments, criticalIssues });
 
@@ -284,6 +299,7 @@ export function normalizeReviewResult(
     suggestions: Array.isArray(result.suggestions) ? result.suggestions : [],
     resolvedComments: [],
     fileSummaries: Array.isArray(result.fileSummaries) ? result.fileSummaries : [],
+    qualityFilterPending: qualityFilterPending || undefined,
   };
 }
 

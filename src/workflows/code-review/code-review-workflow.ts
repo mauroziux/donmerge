@@ -1175,8 +1175,14 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       });
     }
 
-    const reviewForPublication = missingPolicyFiles.length
-      ? { ...gated.review, summary: `${gated.review.summary}\n\n${formatMissingPolicyFiles(missingPolicyFiles)}` }
+    const reviewNotes = [
+      ...(missingPolicyFiles.length ? [formatMissingPolicyFiles(missingPolicyFiles)] : []),
+      ...(gated.review.qualityFilterPending
+        ? ['A potentially critical candidate was withheld by the quality filter. Inspect the summary and reviewed changes; this review does not certify the PR as clean.']
+        : []),
+    ];
+    const reviewForPublication = reviewNotes.length
+      ? { ...gated.review, summary: `${gated.review.summary}\n\n${reviewNotes.join('\n\n')}` }
       : gated.review;
 
     // Publish review (validates anchors against threaded patches; returns dropped comments)
@@ -1302,7 +1308,8 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           baseRef: prData.baseBranch,
           baseSha: prData.baseSha,
           headSha,
-          fullCoverage: preparedFiles.coverage.scopeComplete && missingPolicyFiles.length === 0,
+          fullCoverage: preparedFiles.coverage.scopeComplete && missingPolicyFiles.length === 0 &&
+            !reviewForPublication.verificationPending && !reviewForPublication.qualityFilterPending,
         });
       } catch (error) {
         console.warn('[review-state] failed to record review state', {

@@ -232,22 +232,32 @@ export function mergeSecondPass(first: ReviewResult, second: ReviewResult): Revi
   const additions = second.lineComments.filter(
     (c) => !existingKeys.has(c.issueKey ?? `${c.path}:${c.line}`)
   );
+  const normalized = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+  const knownCriticals = new Set(first.criticalIssues.map(normalized));
+  const secondCriticals = second.criticalIssues.filter((issue) => {
+    const key = normalized(issue);
+    if (!key || knownCriticals.has(key)) return false;
+    knownCriticals.add(key);
+    return true;
+  });
 
-  if (additions.length === 0) {
-    return first;
+  if (additions.length === 0 && secondCriticals.length === 0) {
+    return second.qualityFilterPending && !first.qualityFilterPending
+      ? { ...first, qualityFilterPending: true }
+      : first;
   }
 
   const criticalAdditions = additions.filter((c) => c.severity === 'critical');
 
   return {
     ...first,
+    qualityFilterPending: first.qualityFilterPending || second.qualityFilterPending || undefined,
     lineComments: [...first.lineComments, ...additions],
-    // criticalIssues must stay consistent with the inline findings it
-    // summarizes: only the NEW criticals append entries.
-    criticalIssues: [
-      ...first.criticalIssues,
-      ...criticalAdditions.map((c) => c.body.split('\n')[0].replace(/^🔴\s*\*\*Issue:\*\*\s*/i, '').trim()),
-    ],
-    summary: `${first.summary}\n\n---\n🧭 A second independent pass on this high-risk change surfaced ${additions.length} additional finding(s).`,
+    // Standalone critical issues are valid output too, even if no inline
+    // anchor could be attached. Preserve them across the second pass.
+    criticalIssues: [...first.criticalIssues, ...secondCriticals, ...criticalAdditions
+      .map((c) => c.body.split('\n')[0].replace(/^🔴\s*\*\*Issue:\*\*\s*/i, '').trim())
+      .filter((issue) => !knownCriticals.has(normalized(issue)))],
+    summary: `${first.summary}\n\n---\n🧭 A second independent pass on this high-risk change surfaced additional finding(s).`,
   };
 }

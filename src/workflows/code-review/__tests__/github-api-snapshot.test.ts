@@ -229,6 +229,16 @@ describe('completeCheckRun with coverage', () => {
     expect(body.output.title).toContain('unverified');
   });
 
+  it('a withheld critical candidate reports neutral with an explicit explanation', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    const complete = { ...partialManifest(), scopeComplete: true, pendingCount: 0, pending: [] };
+    await completeCheckRun('owner', 'repo', 1, { ...cleanReview, qualityFilterPending: true }, 'token', [], complete);
+    const body = JSON.parse((mockFetch.mock.calls[0][1] as any).body);
+    expect(body.conclusion).toBe('neutral');
+    expect(body.output.title).toContain('critical candidate withheld');
+    expect(body.output.text).toContain('does not certify the PR as clean');
+  });
+
   it('keeps the historical success default when no coverage manifest is provided', async () => {
     mockFetch.mockResolvedValue(jsonResponse({}));
 

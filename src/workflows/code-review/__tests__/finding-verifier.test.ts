@@ -213,4 +213,17 @@ describe('mergeSecondPass', () => {
 
     expect(merged).toBe(first);
   });
+
+  it('retains a withheld critical candidate from the second pass even without new comments', () => {
+    const first = review([]);
+    const second = { ...review([]), qualityFilterPending: true };
+    expect(mergeSecondPass(first, second).qualityFilterPending).toBe(true);
+  });
+
+  it('retains a standalone blocking issue from a second pass without inline anchors', () => {
+    const first = review([]);
+    const second = { ...review([]), criticalIssues: ['Removing the guard allows unbounded SMS abuse.'] };
+    const merged = mergeSecondPass(first, second);
+    expect(merged.criticalIssues).toContain('Removing the guard allows unbounded SMS abuse.');
+  });
 });
