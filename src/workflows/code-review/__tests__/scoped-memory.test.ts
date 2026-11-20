@@ -48,8 +48,13 @@ describe('scoped review memory', () => {
     expect(scopedMemoryEnabledForRepo(pilot, 'org', 'repo-fork')).toBe(false);
     expect(scopedMemoryEnabledForRepo(pilot, 'elsewhere', 'repo')).toBe(false);
     expect(scopedMemoryEnabledForRepo({ ...pilot, DONMERGE_SCOPED_MEMORY: 'false' }, 'org', 'repo')).toBe(false);
+    expect(scopedMemoryEnabledForRepo({ ...pilot, DONMERGE_SCOPED_MEMORY: ' FALSE ' }, 'org', 'repo')).toBe(false);
+    expect(scopedMemoryEnabledForRepo({ ...pilot, DONMERGE_SCOPED_MEMORY: 'not-true' }, 'org', 'repo')).toBe(false);
+    expect(scopedMemoryEnabledForRepo({ ...pilot, DONMERGE_SCOPED_MEMORY: ' TRUE ' }, 'org', 'repo')).toBe(true);
+    expect(scopedMemoryEnabledForRepo({ DONMERGE_SCOPED_MEMORY: 'true' }, 'org', 'repo')).toBe(false);
+    expect(scopedMemoryEnabledForRepo({ DONMERGE_SCOPED_MEMORY_REPOS: 'org/repo' }, 'org', 'repo')).toBe(false);
     expect(scopedMemoryEnabledForRepo({ DONMERGE_SCOPED_MEMORY_REPOS: '' }, 'org', 'repo')).toBe(false);
-    expect(scopedMemoryEnabledForRepo({}, 'org', 'repo')).toBe(true);
+    expect(scopedMemoryEnabledForRepo({}, 'org', 'repo')).toBe(false);
   });
 
   it('orders exact file, nearest directory and repository rules, with segment boundaries', () => {
