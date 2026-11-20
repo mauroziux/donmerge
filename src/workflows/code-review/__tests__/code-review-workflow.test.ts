@@ -215,6 +215,8 @@ function setupProcessorStub(seedIssues: TrackedIssue[]) {
     saveTrackedIssuesRpc: vi.fn(async (issues: TrackedIssue[]) => {
       saved.push(issues);
     }),
+    isIncrementalBaselineUncertain: vi.fn(async () => false),
+    setIncrementalBaselineUncertain: vi.fn(async () => true),
     updateFromWorkflow: vi.fn(async () => {}),
   };
   return { stub, saved };
@@ -277,6 +279,63 @@ describe('workflow ownership at startup', () => {
 // ── the matrix ───────────────────────────────────────────────────────────────
 
 describe('publishReview verdict matrix', () => {
+  it('does not report a clean check when an earlier review thread is unresolved', async () => {
+    const calls = setupGitHubMock();
+    const input = llmResult({ ...fullCoverage(), incrementalSince: 'previous-head' }, cleanReview());
+    input.preparedFiles.activePreviousComments = [{ id: 9, path: 'a.ts', line: 1, body: 'Prior issue', resolved: false }];
+    const bindings: unknown[][] = [];
+    const db = { prepare: vi.fn(() => ({ bind: (...args: unknown[]) => { bindings.push(args); return {}; } })), batch: vi.fn(async () => []) };
+    const { stub } = setupProcessorStub([]);
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+    await (workflow as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> }).publishReview(input, stub);
+    const check = calls.find(call => call.url.includes('/check-runs') && call.method === 'PATCH')?.body as {
+      conclusion: string; output: { title: string; summary: string; text: string };
+    };
+    expect(check.conclusion).toBe('neutral');
+    expect(check.output.title).toContain('threads need attention');
+    expect(check.output.summary).toContain('still unresolved');
+    expect(check.output.text).not.toContain('nada que objetar');
+    expect(bindings.find(args => args.length === 7)?.at(-1)).toBe(1); // full scope, but not a clean baseline
+    expect(bindings.some(args => args.length === 6)).toBe(false);
+    expect(db.batch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['clean review', cleanReview(), true],
+    ['standalone blocking summary', blockingReview(), false],
+  ] as const)('records a reusable baseline only for a %s', async (_label, review, eligible) => {
+    setupGitHubMock();
+    const bindings: unknown[][] = [];
+    const db = { prepare: vi.fn(() => ({ bind: (...args: unknown[]) => { bindings.push(args); return {}; } })), batch: vi.fn(async () => []) };
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+    const { stub } = setupProcessorStub([]);
+    await (workflow as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> })
+      .publishReview(llmResult(fullCoverage(), review), stub);
+    expect(bindings.find(args => args.length === 7)?.at(-1)).toBe(1);
+    expect(bindings.some(args => args.length === 6)).toBe(eligible);
+    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(stub.setIncrementalBaselineUncertain.mock.calls).toEqual([[undefined, true], [undefined, false]]);
+  });
+
+  it('keeps the durable baseline uncertain when the review-state write fails', async () => {
+    setupGitHubMock();
+    const db = { prepare: () => ({ bind: () => ({}) }), batch: vi.fn(async () => { throw new Error('D1 unavailable'); }) };
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+    const { stub } = setupProcessorStub([]);
+    await (workflow as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> })
+      .publishReview(llmResult(fullCoverage(), blockingReview()), stub);
+    expect(stub.setIncrementalBaselineUncertain.mock.calls).toEqual([[undefined, true]]);
+  });
+
+  it('does not publish if the run cannot persist its uncertainty fence', async () => {
+    const calls = setupGitHubMock();
+    const { stub } = setupProcessorStub([]);
+    stub.setIncrementalBaselineUncertain.mockResolvedValue(false);
+    await expect((makeWorkflow() as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> })
+      .publishReview(llmResult(fullCoverage(), cleanReview()), stub)).rejects.toThrow('Cannot fence incremental state');
+    expect(calls.some(call => call.url.endsWith('/reviews') && call.method === 'POST')).toBe(false);
+  });
+
   it.each(['qualityFilterPending', 'verificationPending'] as const)(
     'does not inherit coverage after a review with %s', async (flag) => {
       const calls = setupGitHubMock();
@@ -284,14 +343,16 @@ describe('publishReview verdict matrix', () => {
       const db = { prepare: vi.fn(() => ({ bind: (...args: unknown[]) => {
         bindings.push(args);
         return { run: async () => ({}) };
-      } })) };
+      } })), batch: vi.fn(async () => []) };
       const input = llmResult(fullCoverage(), { ...cleanReview(), [flag]: true });
       const { stub } = setupProcessorStub([]);
       const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
       await (workflow as unknown as { publishReview: (r: unknown, s: unknown) => Promise<void> }).publishReview(input, stub);
       const check = calls.find(call => call.url.includes('/check-runs') && call.method === 'PATCH')?.body as { conclusion: string };
       expect(check.conclusion).toBe('neutral');
-      expect(bindings.at(-1)?.at(-1)).toBe(0);
+      expect(bindings.find(args => args.length === 7)?.at(-1)).toBe(0);
+      expect(bindings.some(args => args.length === 6)).toBe(false);
+      expect(db.batch).toHaveBeenCalledTimes(1);
       const description = calls.find(call => call.url.includes('/pulls/42') && call.method === 'PATCH')?.body as { body: string };
       expect(description.body).toContain('Review needs further attention');
     }
@@ -302,7 +363,7 @@ describe('publishReview verdict matrix', () => {
     const db = { prepare: vi.fn(() => ({ bind: (...args: unknown[]) => {
       bindings.push(args);
       return { run: async () => ({}) };
-    } })) };
+    } })), batch: vi.fn(async () => []) };
     const input = llmResult(fullCoverage(), cleanReview());
     input.preparedFiles.donmerge = { config: {}, skills: [], skillErrors: [['RULES.md', 'File not found']] };
     const { stub } = setupProcessorStub([]);
@@ -313,7 +374,9 @@ describe('publishReview verdict matrix', () => {
     expect(check.output.text).toContain('RULES.md');
     const description = calls.find(call => call.url.includes('/pulls/42') && call.method === 'PATCH')?.body as { body: string };
     expect(description.body).toContain('incomplete policy');
-    expect(bindings.at(-1)?.at(-1)).toBe(0);
+    expect(bindings.find(args => args.length === 7)?.at(-1)).toBe(0);
+    expect(bindings.some(args => args.length === 6)).toBe(false);
+    expect(db.batch).toHaveBeenCalledTimes(1);
   });
   it.each(['new', 'anchor', 'same-fingerprint'] as const)('records a published finding after retries (%s)', async (scenario) => {
     const calls = setupGitHubMock();
@@ -700,6 +763,42 @@ describe('prepareFiles', () => {
     expect(prepared.filePatches).toHaveLength(1);
     expect(db.prepare).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['legacy full review without clean marker', 0, false, 'ahead', ['a.ts', 'b.ts'], false],
+    ['uncertain later publication after D1 failure', 1, true, 'ahead', ['a.ts', 'b.ts'], false],
+    ['clean linear advance', 1, false, 'ahead', ['b.ts'], true],
+    ['clean baseline followed by divergent force push', 1, false, 'diverged', ['a.ts', 'b.ts'], false],
+    ['clean baseline followed by rollback', 1, false, 'behind', ['a.ts', 'b.ts'], false],
+  ] as const)('selects the correct files for %s', async (_label, eligible, uncertain, status, expectedFiles, incremental) => {
+    const calls: string[] = [];
+    mockFetch.mockImplementation(async (url: string) => {
+      calls.push(url);
+      if (url.includes('/pulls/42/files')) return filesResponse([
+        { filename: 'a.ts', patch: '@@ -1 +1 @@\n+a' },
+        { filename: 'b.ts', patch: '@@ -1 +1 @@\n+b' },
+      ]);
+      if (url.includes('/compare/')) return { ok: true, json: async () => ({
+        status, merge_base_commit: { sha: status === 'ahead' ? 'previous-head' : 'other-base' },
+        files: [{ filename: 'b.ts', patch: '@@ -1 +1 @@\n+b' }],
+      }) };
+      if (url.includes('/pulls/42/comments')) return { ok: true, json: async () => [] };
+      if (url.includes('/pulls/42')) return { ok: true, json: async () => ({ head: { sha: 'headsha' }, base: { ref: 'main', sha: 'basesha' } }) };
+      return { ok: false, status: 404, text: async () => 'not found' };
+    });
+    const db = { prepare: () => ({ bind: () => ({ first: async () => ({
+      base_ref: 'main', base_sha: 'basesha', last_reviewed_sha: 'previous-head', full_coverage: 1,
+      incremental_eligible: eligible,
+    }) }) }) };
+    const workflow = new CodeReviewWorkflow({} as never, { MAX_REVIEW_FILES: '50', DB: db } as never);
+    const processor = { isIncrementalBaselineUncertain: vi.fn(async () => uncertain) };
+    const prepared = await (workflow as unknown as { prepareFiles: (p: unknown, s: unknown, id: string) => Promise<WorkflowPreparedFiles> })
+      .prepareFiles({ ...prData(), retrigger: true, changedFilesCount: 2 }, processor, 'run');
+    expect(prepared.filePatches.map(file => file.filename)).toEqual(expectedFiles);
+    expect(Boolean(prepared.coverage.incrementalSince)).toBe(incremental);
+    expect(calls.some(url => url.includes('/compare/'))).toBe(eligible === 1 && !uncertain);
+  });
+
   function makeEnv() {
     return { MAX_REVIEW_FILES: '50' } as never;
   }

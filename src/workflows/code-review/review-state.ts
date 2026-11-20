@@ -5,9 +5,9 @@
  * diff, so a retrigger can review only the commits since that SHA instead of
  * re-sending the whole accumulated diff to the model (cost control).
  *
- * Honest-coverage rule: incremental reviews are only built from a state whose
- * `fullCoverage` is true — the previous run's coverage manifest was
- * scopeComplete, so "unchanged files inherit the previous verdict" is grounded.
+ * Incremental reviews require both full coverage and a separately recorded
+ * clean baseline for the same snapshot. A full review with a blocking finding
+ * or an unresolved thread cannot certify unchanged files as clean later.
  */
 
 export interface ReviewState {
@@ -21,6 +21,8 @@ export interface ReviewState {
   lastReviewedSha: string;
   /** True when the recorded review covered the whole PR diff (scopeComplete). */
   fullCoverage: boolean;
+  /** A complete, clean review established a reusable baseline for this snapshot. */
+  incrementalEligible: boolean;
 }
 
 interface ReviewStateRow {
@@ -28,6 +30,7 @@ interface ReviewStateRow {
   base_sha: string | null;
   last_reviewed_sha: string;
   full_coverage: number;
+  incremental_eligible: number;
 }
 
 export async function getReviewState(
@@ -38,9 +41,13 @@ export async function getReviewState(
 ): Promise<ReviewState | null> {
   const row = await db
     .prepare(
-      `SELECT base_ref, base_sha, last_reviewed_sha, full_coverage
-       FROM review_state
-       WHERE owner = ? AND repo = ? AND pr_number = ?
+      `SELECT s.base_ref, s.base_sha, s.last_reviewed_sha, s.full_coverage,
+              CASE WHEN b.pr_number IS NULL THEN 0 ELSE 1 END AS incremental_eligible
+       FROM review_state s
+       LEFT JOIN review_incremental_baselines b
+         ON b.owner = s.owner AND b.repo = s.repo AND b.pr_number = s.pr_number
+        AND b.base_ref = s.base_ref AND b.base_sha = s.base_sha AND b.head_sha = s.last_reviewed_sha
+       WHERE s.owner = ? AND s.repo = ? AND s.pr_number = ?
        LIMIT 1`
     )
     .bind(owner, repo, prNumber)
@@ -54,6 +61,7 @@ export async function getReviewState(
     baseSha: row.base_sha ?? null,
     lastReviewedSha: row.last_reviewed_sha,
     fullCoverage: row.full_coverage === 1,
+    incrementalEligible: row.incremental_eligible === 1,
   };
 }
 
@@ -75,10 +83,10 @@ export async function recordReviewState(
     baseSha?: string;
     headSha: string;
     fullCoverage: boolean;
+    incrementalEligible: boolean;
   }
 ): Promise<void> {
-  await db
-    .prepare(
+  const state = db.prepare(
       `INSERT INTO review_state (owner, repo, pr_number, base_ref, base_sha, last_reviewed_sha, full_coverage, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
@@ -87,8 +95,7 @@ export async function recordReviewState(
          last_reviewed_sha = excluded.last_reviewed_sha,
          full_coverage = excluded.full_coverage,
          updated_at = datetime('now')`
-    )
-    .bind(
+    ).bind(
       input.owner,
       input.repo,
       input.prNumber,
@@ -96,6 +103,15 @@ export async function recordReviewState(
       input.baseSha ?? null,
       input.headSha,
       input.fullCoverage ? 1 : 0
-    )
-    .run();
+    );
+  // The trigger clears any prior marker on every write, including writes made
+  // by an older Worker. This batch restores it only for an eligible snapshot.
+  const statements = [state, db.prepare(`DELETE FROM review_incremental_baselines
+    WHERE owner = ? AND repo = ? AND pr_number = ?`).bind(input.owner, input.repo, input.prNumber)];
+  if (input.fullCoverage && input.incrementalEligible && input.baseRef && input.baseSha && input.headSha) {
+    statements.push(db.prepare(`INSERT INTO review_incremental_baselines
+      (owner, repo, pr_number, base_ref, base_sha, head_sha) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(input.owner, input.repo, input.prNumber, input.baseRef, input.baseSha, input.headSha));
+  }
+  await db.batch(statements);
 }
