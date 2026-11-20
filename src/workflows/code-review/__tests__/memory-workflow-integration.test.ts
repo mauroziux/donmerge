@@ -142,4 +142,51 @@ describe('memory in the review workflow', () => {
       sqlite.close();
     }
   });
+
+  it('marks provenance as unavailable when rules reached the model but their snapshot cannot be stored', async () => {
+    const sqlite = new DatabaseSync(':memory:');
+    try {
+      for (const name of ['0004_create_memory_tables.sql', '0007_scoped_review_memory.sql', '0009_link_legacy_review_memory.sql']) {
+        sqlite.exec(readFileSync(`migrations/${name}`, 'utf8'));
+      }
+      sqlite.exec(`INSERT INTO scoped_learnings
+        (id, owner, repo, learning_text, category, scope_type, scope_path, state, source_pr, source_user)
+        VALUES (1, 'org', 'repo', 'Check the guard', 'focus', 'file', 'src/a.ts', 'active', 1, 'maintainer')`);
+      const db = sqliteD1(sqlite);
+      const originalBatch = db.batch.bind(db);
+      db.batch = vi.fn(async () => { throw new Error('D1 snapshot write failed'); });
+      const env = {
+        DB: db, Sandbox: {}, CODEX_MODEL: 'openai/gpt-4o', OPENAI_API_KEY: 'test',
+        DONMERGE_SCOPED_MEMORY: 'true', DONMERGE_SCOPED_MEMORY_REPOS: 'org/repo',
+      };
+      const workflow = new CodeReviewWorkflow({} as never, env as never) as unknown as {
+        runLlmReview(prepared: unknown, runId: string): Promise<{ result: { memoryProvenancePending?: boolean } }>;
+      };
+      const prepared = (filename: string) => ({
+        prData: {
+          owner: 'org', repo: 'repo', prNumber: 42, headSha: 'head',
+          checkRunId: 777, githubToken: 'fixture', retrigger: false,
+        },
+        diffText: `FILE: ${filename}\n+changed`, repoContext: {}, activePreviousComments: [],
+        filePatches: [{ filename, patch: '@@ -1 +1 @@\n+changed' }],
+      });
+
+      mocks.review.mockClear();
+      const withRules = await workflow.runLlmReview(prepared('src/a.ts'), 'failed-audit');
+      expect(mocks.review.mock.calls.at(-1)![0].prompt).toContain('Check the guard');
+      expect(withRules.result.memoryProvenancePending).toBe(true);
+
+      const withoutRules = await workflow.runLlmReview(prepared('src/b.ts'), 'no-rules');
+      expect(mocks.review.mock.calls.at(-1)![0].prompt).not.toContain('Check the guard');
+      expect(withoutRules.result.memoryProvenancePending).toBeUndefined();
+
+      db.batch = originalBatch;
+      const recovered = await workflow.runLlmReview(prepared('src/a.ts'), 'failed-audit');
+      expect(recovered.result.memoryProvenancePending).toBeUndefined();
+      expect(sqlite.prepare("SELECT learning_id, cited FROM review_learning_snapshots WHERE run_id = 'failed-audit'").all())
+        .toEqual([{ learning_id: 1, cited: 1 }]);
+    } finally {
+      sqlite.close();
+    }
+  });
 });

@@ -41,6 +41,7 @@ import {
   completeCheckRun,
   completeCheckRunNeutral,
   formatMissingPolicyFiles,
+  formatMissingMemoryProvenance,
   fetchInheritedCommitRefs,
   fetchPrFilesBetween,
   supersedeBaseChangedReviews,
@@ -1078,6 +1079,9 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           ]);
         } catch (error) {
           console.warn('[memory] Failed to record citations', error);
+          if (memoryContext.scopedLearnings?.length) {
+            result = { ...result, memoryProvenancePending: true };
+          }
         }
       }
 
@@ -1190,6 +1194,7 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
       ...(gated.review.qualityFilterPending
         ? ['A potentially critical candidate was withheld by the quality filter. Inspect the summary and reviewed changes; this review does not certify the PR as clean.']
         : []),
+      ...(gated.review.memoryProvenancePending ? [formatMissingMemoryProvenance()] : []),
     ];
     const reviewForPublication = reviewNotes.length
       ? { ...gated.review, summary: `${gated.review.summary}\n\n${reviewNotes.join('\n\n')}` }
@@ -1319,9 +1324,11 @@ export class CodeReviewWorkflow extends WorkflowEntrypoint<WorkflowEnv, Workflow
           baseSha: prData.baseSha,
           headSha,
           fullCoverage: preparedFiles.coverage.scopeComplete && missingPolicyFiles.length === 0 &&
-            !reviewForPublication.verificationPending && !reviewForPublication.qualityFilterPending,
+            !reviewForPublication.verificationPending && !reviewForPublication.qualityFilterPending &&
+            !reviewForPublication.memoryProvenancePending,
           incrementalEligible: preparedFiles.coverage.scopeComplete && missingPolicyFiles.length === 0 &&
             !reviewForPublication.verificationPending && !reviewForPublication.qualityFilterPending &&
+            !reviewForPublication.memoryProvenancePending &&
             reviewForPublication.approved && !gated.overridden,
         });
         const cleared = await (processorStub as any).setIncrementalBaselineUncertain(runId, false);
